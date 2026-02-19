@@ -77,7 +77,7 @@ fn is_blocked(name: &str, path_str: &str) -> bool {
 fn dir_mtime(dir: &std::path::Path) -> u64 {
     dir.metadata()
         .and_then(|m| m.modified())
-        .and_then(|t| Ok(t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()))
+        .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
         .unwrap_or(0)
 }
 

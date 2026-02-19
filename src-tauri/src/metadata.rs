@@ -250,7 +250,7 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
                     for node in el.children() {
                         use scraper::node::Node;
                         match node.value() {
-                            Node::Text(t) => result.push_str(&t),
+                            Node::Text(t) => result.push_str(t),
                             Node::Element(e) => {
                                 // Skip labelLink and label-append elements
                                 let cls = e.attr("class").unwrap_or("");
@@ -309,7 +309,7 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
             // Skip the first if it's the same as the cover
             let skip = cover_url
                 .as_ref()
-                .map(|c| from_links.first().map_or(false, |f| f == c))
+                .map(|c| from_links.first() == Some(c))
                 .unwrap_or(false);
             from_links.into_iter().skip(if skip { 1 } else { 0 }).take(8).collect()
         } else {

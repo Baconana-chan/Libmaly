@@ -401,7 +401,7 @@ pub async fn preview_update(
 
     // Estimate file count from zip (just count entries)
     let zip_entry_count: Option<u32> = if source_is_zip {
-        match fs::File::open(&source_path).map(|f| zip::ZipArchive::new(f)) {
+        match fs::File::open(&source_path).map(zip::ZipArchive::new) {
             Ok(Ok(archive)) => Some(archive.len() as u32),
             _ => None,
         }

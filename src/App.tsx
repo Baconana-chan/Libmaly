@@ -1575,6 +1575,7 @@ export default function App() {
   const [launchConfig, setLaunchConfig]   = useState<LaunchConfig>(() => loadCache(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG));
   const [, setRecentGames]     = useState<RecentGame[]>(() => loadCache(SK_RECENT, []));
   const [showWineSettings, setShowWineSettings] = useState(false);
+  const [appUpdate, setAppUpdate]         = useState<{ version: string; url: string } | null>(null);
   const isSyncing = useRef(false);
 
   // No auto-select: show HomeView when nothing is selected
@@ -1582,6 +1583,10 @@ export default function App() {
   useEffect(() => {
     invoke<boolean>("f95_is_logged_in").then(setF95LoggedIn).catch(() => {});
     invoke<string>("get_platform").then(setPlatform).catch(() => {});
+    // Check for a newer release on GitHub (once per startup, never again)
+    invoke<{ version: string; url: string } | null>("check_app_update")
+      .then((u) => { if (u) setAppUpdate(u); })
+      .catch(() => {});
     // Push stored recent games into the tray on startup
     const storedRecent = loadCache<RecentGame[]>(SK_RECENT, []);
     if (storedRecent.length > 0) {
@@ -2060,6 +2065,19 @@ export default function App() {
               style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #2a475e" }}>
               Sign in to F95zone
             </button>
+          )}
+          {appUpdate && (
+            <a
+              href={appUpdate.url}
+              target="_blank"
+              rel="noreferrer"
+              className="w-full py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1.5"
+              style={{ background: "#1a3a1a", color: "#6dbf6d", border: "1px solid #2a5a2a", animation: "pulse 2s infinite" }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "#1e4a1e")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "#1a3a1a")}
+              title={`v${appUpdate.version} is available — click to open release page`}>
+              ↑ v{appUpdate.version} available
+            </a>
           )}
           <button onClick={handleSelectFolder}
             className="w-full py-2 rounded text-xs font-semibold"

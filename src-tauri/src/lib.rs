@@ -403,6 +403,58 @@ fn kill_game(app: AppHandle) -> Result<(), String> {
     }
 }
 
+/// Information about an available application update.
+#[derive(Serialize)]
+struct AppUpdateInfo {
+    version: String,
+    url: String,
+}
+
+/// Checks the GitHub Releases API for a newer version of LIBMALY.
+/// Returns `None` when already up-to-date or if the check fails silently.
+#[tauri::command]
+async fn check_app_update() -> Result<Option<AppUpdateInfo>, String> {
+    let current = env!("CARGO_PKG_VERSION");
+
+    fn parse_ver(s: &str) -> (u32, u32, u32) {
+        let mut p = s.split('.').filter_map(|x| x.parse::<u32>().ok());
+        (p.next().unwrap_or(0), p.next().unwrap_or(0), p.next().unwrap_or(0))
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent("libmaly-update-checker")
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .get("https://api.github.com/repos/Baconana-chan/Libmaly/releases/latest")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Ok(None); // no releases yet or rate-limited — ignore silently
+    }
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let tag = json["tag_name"]
+        .as_str()
+        .unwrap_or("")
+        .trim_start_matches('v')
+        .to_string();
+    let url = json["html_url"].as_str().unwrap_or("").to_string();
+
+    if tag.is_empty() {
+        return Ok(None);
+    }
+    if parse_ver(&tag) > parse_ver(current) {
+        Ok(Some(AppUpdateInfo { version: tag, url }))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Build the tray context-menu from a list of recent games.
 fn build_tray_menu(
     app: &AppHandle,
@@ -486,6 +538,7 @@ pub fn run() {
             kill_game,
             delete_game,
             set_recent_games,
+            check_app_update,
             fetch_f95_metadata,
             fetch_dlsite_metadata,
             f95_login,

@@ -12,16 +12,19 @@ pub struct ActiveGame {
 
 pub struct ActiveGameState(pub Mutex<Option<ActiveGame>>);
 
-// ── Global state for WH_KEYBOARD_LL callback ────────────────────────────
+// ── Global state for WH_KEYBOARD_LL callback (Windows only) ────────────────
 
+#[cfg(windows)]
 struct HookState {
     pid: u32,
     exe: String,
     app: AppHandle,
 }
 
+#[cfg(windows)]
 static HOOK_STATE: std::sync::OnceLock<Mutex<Option<HookState>>> = std::sync::OnceLock::new();
 
+#[cfg(windows)]
 fn hook_state() -> &'static Mutex<Option<HookState>> {
     HOOK_STATE.get_or_init(|| Mutex::new(None))
 }

@@ -71,7 +71,7 @@ jobs:
             bundles: dmg
 
           - name: macOS x64 (Intel)
-            runner: macos-13             # last Intel runner
+            runner: macos-latest         # cross-compile x86_64 from ARM runner
             target: x86_64-apple-darwin
             bundles: dmg
 

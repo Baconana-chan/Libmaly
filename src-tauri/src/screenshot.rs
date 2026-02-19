@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
+#[cfg(windows)]
+use tauri::Emitter;
 
 // ── Shared state: currently-running game ──────────────────────────────────
 
@@ -71,6 +73,7 @@ pub struct Screenshot {
     pub timestamp: u64,
 }
 
+#[cfg(windows)]
 #[derive(Serialize, Clone)]
 pub struct ScreenshotTakenPayload {
     pub game_exe: String,

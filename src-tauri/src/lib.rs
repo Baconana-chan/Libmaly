@@ -1,23 +1,22 @@
 use serde::{Deserialize, Serialize};
-use walkdir::WalkDir;
 use std::collections::HashMap;
 use std::process::Command;
 use std::thread;
 use std::time::{Instant, UNIX_EPOCH};
-use tauri::Emitter;
-use tauri::Manager;
-use tauri::AppHandle;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::AppHandle;
+use tauri::Emitter;
+use tauri::Manager;
+use walkdir::WalkDir;
 
 mod metadata;
 use metadata::{
-    fetch_f95_metadata, fetch_dlsite_metadata,
-    f95_login, f95_logout, f95_is_logged_in,
+    f95_is_logged_in, f95_login, f95_logout, fetch_dlsite_metadata, fetch_f95_metadata,
 };
 
 mod updater;
-use updater::{update_game, preview_update};
+use updater::{preview_update, update_game};
 
 mod screenshot;
 use screenshot::{get_screenshots, open_screenshots_folder, take_screenshot_manual};
@@ -81,6 +80,35 @@ fn dir_mtime(dir: &std::path::Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// Returns true when the exe stem is a generic engine/launcher name that gives
+/// no useful info about the actual game (e.g. "Game", "nw", "app", "renpy").
+/// In that case the scanner will prefer the parent folder name instead.
+fn is_generic_name(name: &str) -> bool {
+    matches!(
+        name.to_lowercase().as_str(),
+        "game"
+            | "start"
+            | "play"
+            | "launch"
+            | "launcher"
+            | "nw"
+            | "nwjs"
+            | "app"
+            | "electron"
+            | "main"
+            | "run"
+            | "exec"
+            | "renpy"
+            | "lib"
+            | "engine"
+            | "ux"
+            | "client"
+            | "project"
+            | "visual_novel"
+            | "vn"
+    )
+}
+
 /// Collect every exe inside `dir` (non-recursive, single directory).
 fn scan_dir_shallow(dir: &std::path::Path) -> Vec<Game> {
     let mut out = Vec::new();
@@ -90,20 +118,39 @@ fn scan_dir_shallow(dir: &std::path::Path) -> Vec<Game> {
     };
     for entry in entries.filter_map(|e| e.ok()) {
         let p = entry.path();
-        if !p.is_file() { continue; }
+        if !p.is_file() {
+            continue;
+        }
         if p.extension().map(|e| e.to_string_lossy().to_lowercase()) != Some("exe".into()) {
             continue;
         }
-        let name = match p.file_stem() {
+        let name_raw = match p.file_stem() {
             Some(n) => n.to_string_lossy().into_owned(),
             None => continue,
         };
         let path_str = p.to_string_lossy().into_owned();
-        if is_blocked(&name, &path_str) { continue; }
-        if let Ok(meta) = p.metadata() {
-            if meta.len() < 100 * 1024 { continue; }
+        if is_blocked(&name_raw, &path_str) {
+            continue;
         }
-        out.push(Game { name, path: path_str });
+        if let Ok(meta) = p.metadata() {
+            if meta.len() < 100 * 1024 {
+                continue;
+            }
+        }
+        // If the exe stem is a generic engine/launcher name (e.g. "Game", "nw",
+        // "renpy"), prefer the parent folder name for a more descriptive title.
+        // Example: D:\Games\072 project_Sonia\Game.exe  →  "072 project_Sonia"
+        let name = if is_generic_name(&name_raw) {
+            dir.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or(name_raw)
+        } else {
+            name_raw
+        };
+        out.push(Game {
+            name,
+            path: path_str,
+        });
     }
     out
 }
@@ -163,12 +210,17 @@ fn scan_games_incremental(
     let mut merged_games: Vec<Game> = Vec::new();
 
     for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if !entry.file_type().is_dir() { continue; }
+        if !entry.file_type().is_dir() {
+            continue;
+        }
         let dir_path = entry.path();
-        let dir_str  = dir_path.to_string_lossy().into_owned();
+        let dir_str = dir_path.to_string_lossy().into_owned();
         let current_mtime = dir_mtime(dir_path);
 
-        new_mtimes.push(DirMtime { path: dir_str.clone(), mtime: current_mtime });
+        new_mtimes.push(DirMtime {
+            path: dir_str.clone(),
+            mtime: current_mtime,
+        });
 
         let known_mtime = mtime_map.get(&dir_str).copied().unwrap_or(0);
         if current_mtime != 0 && current_mtime == known_mtime {
@@ -196,10 +248,22 @@ struct GameEndedPayload {
 
 #[tauri::command]
 fn get_platform() -> &'static str {
-    #[cfg(windows)]        { "windows" }
-    #[cfg(target_os = "linux")]  { "linux" }
-    #[cfg(target_os = "macos")] { "macos" }
-    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))] { "unknown" }
+    #[cfg(windows)]
+    {
+        "windows"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "linux"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "macos"
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        "unknown"
+    }
 }
 
 #[derive(Serialize)]
@@ -224,7 +288,11 @@ fn detect_wine_runners() -> Vec<WineRunner> {
         ];
         for c in &wine_candidates {
             if std::path::Path::new(c).exists() {
-                runners.push(WineRunner { name: "Wine".into(), path: c.to_string(), kind: "wine".into() });
+                runners.push(WineRunner {
+                    name: "Wine".into(),
+                    path: c.to_string(),
+                    kind: "wine".into(),
+                });
                 break;
             }
         }
@@ -233,7 +301,11 @@ fn detect_wine_runners() -> Vec<WineRunner> {
             if let Ok(out) = Command::new("which").arg("wine").output() {
                 let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if !path.is_empty() {
-                    runners.push(WineRunner { name: "Wine (which)".into(), path, kind: "wine".into() });
+                    runners.push(WineRunner {
+                        name: "Wine (which)".into(),
+                        path,
+                        kind: "wine".into(),
+                    });
                 }
             }
         }
@@ -247,7 +319,9 @@ fn detect_wine_runners() -> Vec<WineRunner> {
         ];
         for steam_common in &steam_common_paths {
             let p = std::path::Path::new(steam_common);
-            if !p.exists() { continue; }
+            if !p.exists() {
+                continue;
+            }
             if let Ok(entries) = std::fs::read_dir(p) {
                 let mut proton_dirs: Vec<_> = entries
                     .filter_map(|e| e.ok())
@@ -272,7 +346,12 @@ fn detect_wine_runners() -> Vec<WineRunner> {
     runners
 }
 #[tauri::command]
-fn launch_game(app: AppHandle, path: String, runner: Option<String>, prefix: Option<String>) -> Result<(), String> {
+fn launch_game(
+    app: AppHandle,
+    path: String,
+    runner: Option<String>,
+    prefix: Option<String>,
+) -> Result<(), String> {
     let path_clone = path.clone();
     thread::spawn(move || {
         let parent = std::path::Path::new(&path_clone).parent();
@@ -284,7 +363,9 @@ fn launch_game(app: AppHandle, path: String, runner: Option<String>, prefix: Opt
             {
                 let _ = (&runner, &prefix); // unused on Windows
                 let mut cmd = Command::new(&path_clone);
-                if let Some(p) = parent { cmd.current_dir(p); }
+                if let Some(p) = parent {
+                    cmd.current_dir(p);
+                }
                 cmd
             }
             #[cfg(not(windows))]
@@ -315,12 +396,16 @@ fn launch_game(app: AppHandle, path: String, runner: Option<String>, prefix: Opt
                         }
                     }
                     cmd.arg(&path_clone);
-                    if let Some(p) = parent { cmd.current_dir(p); }
+                    if let Some(p) = parent {
+                        cmd.current_dir(p);
+                    }
                     cmd
                 } else {
                     // No runner — attempt to run directly (native or Wine-managed script)
                     let mut cmd = Command::new(&path_clone);
-                    if let Some(p) = parent { cmd.current_dir(p); }
+                    if let Some(p) = parent {
+                        cmd.current_dir(p);
+                    }
                     cmd
                 }
             }
@@ -364,10 +449,13 @@ fn launch_game(app: AppHandle, path: String, runner: Option<String>, prefix: Opt
                     *state.0.lock().unwrap() = None;
                 }
 
-                let _ = app.emit("game-finished", GameEndedPayload {
-                    path: path_clone,
-                    duration_secs: duration,
-                });
+                let _ = app.emit(
+                    "game-finished",
+                    GameEndedPayload {
+                        path: path_clone,
+                        duration_secs: duration,
+                    },
+                );
             }
             Err(e) => {
                 eprintln!("Failed to launch game: {}", e);
@@ -392,10 +480,25 @@ fn kill_game(app: AppHandle) -> Result<(), String> {
         }
         #[cfg(not(windows))]
         {
+            // SIGTERM first — let the game save/clean up
             Command::new("kill")
-                .args(["-9", &active.pid.to_string()])
+                .args(["-15", &active.pid.to_string()])
                 .spawn()
                 .map_err(|e| e.to_string())?;
+            // Give the process 3 seconds to exit gracefully
+            let pid = active.pid;
+            thread::spawn(move || {
+                thread::sleep(std::time::Duration::from_secs(3));
+                // Check if process is still alive; if so, send SIGKILL
+                let still_alive = Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if still_alive {
+                    let _ = Command::new("kill").args(["-9", &pid.to_string()]).spawn();
+                }
+            });
         }
         Ok(())
     } else {
@@ -407,7 +510,11 @@ fn kill_game(app: AppHandle) -> Result<(), String> {
 #[derive(Serialize)]
 struct AppUpdateInfo {
     version: String,
+    /// HTML page URL (for "view changelog" link)
     url: String,
+    /// Direct download URL for the platform-appropriate asset (zip/tar.gz).
+    /// Empty string when no matching asset was found in the release.
+    download_url: String,
 }
 
 /// Checks the GitHub Releases API for a newer version of LIBMALY.
@@ -418,8 +525,22 @@ async fn check_app_update() -> Result<Option<AppUpdateInfo>, String> {
 
     fn parse_ver(s: &str) -> (u32, u32, u32) {
         let mut p = s.split('.').filter_map(|x| x.parse::<u32>().ok());
-        (p.next().unwrap_or(0), p.next().unwrap_or(0), p.next().unwrap_or(0))
+        (
+            p.next().unwrap_or(0),
+            p.next().unwrap_or(0),
+            p.next().unwrap_or(0),
+        )
     }
+
+    // Pick preferred asset extensions per platform (first match wins)
+    #[cfg(windows)]
+    let preferred = ["windows", "win"];
+    #[cfg(target_os = "macos")]
+    let preferred = ["macos", "mac"];
+    #[cfg(target_os = "linux")]
+    let preferred = ["linux"];
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    let preferred: [&str; 0] = [];
 
     let client = reqwest::Client::builder()
         .user_agent("libmaly-update-checker")
@@ -448,11 +569,232 @@ async fn check_app_update() -> Result<Option<AppUpdateInfo>, String> {
     if tag.is_empty() {
         return Ok(None);
     }
-    if parse_ver(&tag) > parse_ver(current) {
-        Ok(Some(AppUpdateInfo { version: tag, url }))
-    } else {
-        Ok(None)
+    if parse_ver(&tag) <= parse_ver(current) {
+        return Ok(None);
     }
+
+    // Pick the best asset download URL for this platform
+    let mut download_url = String::new();
+    if let Some(assets) = json["assets"].as_array() {
+        // Prefer a .zip or .tar.gz archive over a setup installer so we can
+        // do in-place extraction without needing admin rights.
+        let archive_exts = [".zip", ".tar.gz", ".tgz"];
+        'outer: for keyword in &preferred {
+            for asset in assets {
+                let name = asset["name"].as_str().unwrap_or("").to_lowercase();
+                let dl = asset["browser_download_url"].as_str().unwrap_or("");
+                if name.contains(keyword) && archive_exts.iter().any(|e| name.ends_with(e)) {
+                    download_url = dl.to_string();
+                    break 'outer;
+                }
+            }
+        }
+        // Fallback: any archive for this platform
+        if download_url.is_empty() {
+            'outer2: for keyword in &preferred {
+                for asset in assets {
+                    let name = asset["name"].as_str().unwrap_or("").to_lowercase();
+                    let dl = asset["browser_download_url"].as_str().unwrap_or("");
+                    if name.contains(keyword) && !dl.is_empty() {
+                        download_url = dl.to_string();
+                        break 'outer2;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Some(AppUpdateInfo {
+        version: tag,
+        url,
+        download_url,
+    }))
+}
+
+/// Download the update archive, extract it next to the current executable, and
+/// launch a tiny platform script that will copy the files over once we exit.
+///
+/// Keeps all user data safe: localStorage lives in AppData, not the install dir.
+#[tauri::command]
+async fn apply_update(app: AppHandle, download_url: String) -> Result<(), String> {
+    use std::io::Write;
+
+    if download_url.is_empty() {
+        return Err("No download URL provided".to_string());
+    }
+
+    // 1. Where is the current exe?
+    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let install_dir = exe_path
+        .parent()
+        .ok_or("Cannot determine install directory")?
+        .to_path_buf();
+
+    // 2. Temp extraction directory
+    let tmp_dir = std::env::temp_dir().join("libmaly-update");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+
+    // 3. Download the archive
+    let client = reqwest::Client::builder()
+        .user_agent("libmaly-updater")
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let bytes = client
+        .get(&download_url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 4. Save and extract the archive
+    let archive_name = download_url
+        .split('/')
+        .last()
+        .unwrap_or("update.zip")
+        .to_string();
+    let archive_path = tmp_dir.join(&archive_name);
+    {
+        let mut f = std::fs::File::create(&archive_path).map_err(|e| e.to_string())?;
+        f.write_all(&bytes).map_err(|e| e.to_string())?;
+    }
+
+    if archive_name.ends_with(".zip") {
+        let f = std::fs::File::open(&archive_path).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
+
+        // Detect whether the zip has a single top-level directory wrapper
+        // (common pattern: "libmaly-1.2.0/libmaly.exe") and unwrap it.
+        let strip_prefix: Option<String> = {
+            let mut dirs = std::collections::HashSet::new();
+            for i in 0..archive.len() {
+                let entry = archive.by_index(i).map_err(|e| e.to_string())?;
+                if let Some(first) = entry.name().split('/').next() {
+                    if !first.is_empty() {
+                        dirs.insert(first.to_string());
+                    }
+                }
+            }
+            if dirs.len() == 1 {
+                dirs.into_iter().next()
+            } else {
+                None
+            }
+        };
+
+        let f2 = std::fs::File::open(&archive_path).map_err(|e| e.to_string())?;
+        let mut archive2 = zip::ZipArchive::new(f2).map_err(|e| e.to_string())?;
+        for i in 0..archive2.len() {
+            let mut entry = archive2.by_index(i).map_err(|e| e.to_string())?;
+            let raw_name = entry.name().to_string();
+            let name = match &strip_prefix {
+                Some(pfx) => raw_name
+                    .strip_prefix(&format!("{}/", pfx))
+                    .unwrap_or(&raw_name)
+                    .to_string(),
+                None => raw_name,
+            };
+            if name.is_empty() {
+                continue;
+            }
+            let out_path = tmp_dir.join(&name);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
+            } else {
+                if let Some(p) = out_path.parent() {
+                    std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+                }
+                let mut out_file = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
+                std::io::copy(&mut entry, &mut out_file).map_err(|e| e.to_string())?;
+            }
+        }
+    } else {
+        // For non-zip archives (tar.gz etc.) just leave the archive in tmp_dir;
+        // the script will deal with them or the user can update manually.
+        // For now we return an error suggesting manual install.
+        return Err(format!(
+            "Archive format not supported for auto-update: {}. Please install manually from the release page.",
+            archive_name
+        ));
+    }
+
+    // 5. Write the update script and launch it detached
+    let install_dir_str = install_dir.to_string_lossy().into_owned();
+    let tmp_dir_str = tmp_dir.to_string_lossy().into_owned();
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Determine the main exe name so we can relaunch it
+        let exe_name = exe_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "libmaly.exe".to_string());
+
+        let script_path = tmp_dir.join("_libmaly_update.bat");
+        let mut script_lines: Vec<String> = Vec::new();
+        script_lines.push("@echo off".to_string());
+        script_lines.push("timeout /t 2 /nobreak >nul".to_string());
+        script_lines.push(format!(
+            r#"xcopy /E /Y /I /Q "{}\*" "{}\" >nul 2>&1"#,
+            tmp_dir_str, install_dir_str
+        ));
+        script_lines.push(format!(r#"start "" "{}\{}""#, install_dir_str, exe_name));
+        script_lines.push("del \"%~f0\"".to_string());
+        let script_content = script_lines.join("\r\n") + "\r\n";
+        {
+            let mut f = std::fs::File::create(&script_path).map_err(|e| e.to_string())?;
+            f.write_all(script_content.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        Command::new("cmd")
+            .args(["/C", &script_path.to_string_lossy()])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(windows))]
+    {
+        let exe_name = exe_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "libmaly".to_string());
+
+        let script_path = tmp_dir.join("_libmaly_update.sh");
+        let mut script_lines: Vec<String> = Vec::new();
+        script_lines.push("#!/bin/sh".to_string());
+        script_lines.push("sleep 2".to_string());
+        script_lines.push(format!(
+            r#"cp -rf "{}/." "{}/""#,
+            tmp_dir_str, install_dir_str
+        ));
+        script_lines.push(format!(r#"chmod +x "{}/{}""#, install_dir_str, exe_name));
+        script_lines.push(format!(r#""{}/{}" &"#, install_dir_str, exe_name));
+        script_lines.push("rm -- \"$0\"".to_string());
+        let script_content = script_lines.join("\n") + "\n";
+        {
+            let mut f = std::fs::File::create(&script_path).map_err(|e| e.to_string())?;
+            f.write_all(script_content.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+        Command::new("sh")
+            .arg(&script_path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    // 6. Exit the application so the script can replace the binary
+    app.exit(0);
+    Ok(())
 }
 
 /// Build the tray context-menu from a list of recent games.
@@ -469,9 +811,7 @@ fn build_tray_menu(
     let show = MenuItemBuilder::with_id("show", "Show Window").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit LIBMALY").build(app)?;
 
-    let mut builder = MenuBuilder::new(app)
-        .item(&title)
-        .item(&sep1);
+    let mut builder = MenuBuilder::new(app).item(&title).item(&sep1);
 
     if recent.is_empty() {
         let placeholder = MenuItemBuilder::with_id("_empty", "No recent games")
@@ -522,6 +862,35 @@ fn delete_game(path: String) -> Result<(), String> {
         .map_err(|e| format!("Failed to delete '{}': {}", parent.display(), e))
 }
 
+/// Lists every executable file (.exe / .sh / .bin / .app) directly inside
+/// `folder` (non-recursive). Returns full paths. No file-size or block-list
+/// filters — the user is explicitly choosing so we show everything.
+#[tauri::command]
+fn list_executables_in_folder(folder: String) -> Vec<String> {
+    let dir = std::path::Path::new(&folder);
+    let mut out: Vec<String> = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    let exe_exts = ["exe", "sh", "bin", "app"];
+    for entry in entries.filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        let ext = p
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if exe_exts.contains(&ext.as_str()) {
+            out.push(p.to_string_lossy().into_owned());
+        }
+    }
+    out.sort();
+    out
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -532,6 +901,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_games,
             scan_games_incremental,
+            list_executables_in_folder,
             get_platform,
             detect_wine_runners,
             launch_game,
@@ -539,6 +909,7 @@ pub fn run() {
             delete_game,
             set_recent_games,
             check_app_update,
+            apply_update,
             fetch_f95_metadata,
             fetch_dlsite_metadata,
             f95_login,
@@ -571,9 +942,8 @@ pub fn run() {
                         _ if id.starts_with("recent_") => {
                             // Quick-launch game from tray
                             if let Ok(idx) = id["recent_".len()..].parse::<usize>() {
-                                let games = app
-                                    .state::<RecentGamesState>()
-                                    .0.lock().unwrap().clone();
+                                let games =
+                                    app.state::<RecentGamesState>().0.lock().unwrap().clone();
                                 if let Some(game) = games.get(idx) {
                                     let path = game.path.clone();
                                     let app2 = app.clone();
@@ -593,10 +963,13 @@ pub fn run() {
                 })
                 .on_tray_icon_event(|tray, event| {
                     // Left-click toggles window visibility
-                    if let TrayIconEvent::Click { button, button_state, .. } = event {
-                        if button == MouseButton::Left
-                            && button_state == MouseButtonState::Up
-                        {
+                    if let TrayIconEvent::Click {
+                        button,
+                        button_state,
+                        ..
+                    } = event
+                    {
+                        if button == MouseButton::Left && button_state == MouseButtonState::Up {
                             let app = tray.app_handle();
                             if let Some(w) = app.get_webview_window("main") {
                                 if w.is_visible().unwrap_or(false) {

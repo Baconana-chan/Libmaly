@@ -3,18 +3,18 @@
 ## 🔥 High Priority
 
 ### Library & Scanning
-- [ ] **Multi-folder library** — scan multiple root directories instead of one; each shown as a separate section or merged
-- [ ] **Manual game add** — "Add Game" button to point directly at an .exe without scanning a folder
-- [ ] **Executable override** — per-game setting to choose a different .exe when multiple launchers exist in the same folder
-- [ ] **Sub-folder grouping** — detect when multiple games live under one parent dir and show them grouped (e.g. a "Games" folder with 50 subdirs)
-- [ ] **Rescan selected folder** — right-click a game → "Rescan folder" to pick up new files without re-scanning the whole library
+- [x] **Multi-folder library** — scan multiple root directories instead of one; each shown as a separate section or merged
+- [x] **Manual game add** — "Add Game" button to point directly at an .exe without scanning a folder
+- [x] **Executable override** — per-game setting to choose a different .exe when multiple launchers exist in the same folder
+- [x] **Sub-folder grouping** — detect when multiple games live under one parent dir and show them grouped (e.g. a "Games" folder with 50 subdirs)
+- [x] **Rescan selected folder** — right-click a game → "Rescan folder" to pick up new files without re-scanning the whole library
 
 ### Game Detail
 - [ ] **Age / content warning gate** — optional blur + click-to-reveal for games tagged as adult content
-- [ ] **Custom sort order** — drag-and-drop reordering of games in the sidebar (saved per collection too)
+- [x] **Custom sort order** — drag-and-drop reordering of games in the sidebar (saved per collection too)
 - [ ] **Multiple executables per game** — let the user pin 2–3 launch targets (e.g. game.exe + config.exe)
 - [ ] **Launch arguments** — text field per game for command-line flags passed to the executable
-- [ ] **Launch count** — track number of sessions (not just total time); show "played 42 times"
+- [x] **Launch count** — track number of sessions (not just total time); show "played 42 times"
 
 ---
 
@@ -121,8 +121,8 @@
 
 ## 🐛 Known Limitations to Address
 
-- [ ] Screenshot hotkey on non-Windows (currently shows "not supported")
+- [/] Screenshot support on Linux/macOS (Manual capture works; global hotkey pending)
 - [ ] DLsite pages behind age-gate require manual cookies / session (no login flow yet)
-- [ ] Very large libraries (1000+ games) may cause slow initial renders — virtualise the sidebar list
-- [ ] `kill_game` on Linux/macOS sends SIGKILL; consider SIGTERM first with a timeout fallback
+- [x] Very large libraries (1000+ games) may cause slow initial renders — virtualise the sidebar list
+- [x] `kill_game` on Linux/macOS sends SIGTERM first with a timeout fallback
 - [ ] Tray icon on macOS requires `NSStatusItem` — test and fix if needed after macOS build is set up

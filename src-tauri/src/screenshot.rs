@@ -59,7 +59,13 @@ pub fn screenshots_dir(game_exe: &str) -> PathBuf {
         .unwrap_or_else(|| "unknown".to_string());
     let sanitized: String = folder_name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     base.join("libmaly").join("screenshots").join(sanitized)
 }
@@ -107,7 +113,11 @@ pub fn get_screenshots(game_exe: String) -> Result<Vec<Screenshot>, String> {
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            Screenshot { path: path_str, filename, timestamp }
+            Screenshot {
+                path: path_str,
+                filename,
+                timestamp,
+            }
         })
         .collect();
     shots.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
@@ -124,7 +134,8 @@ pub fn open_screenshots_folder(game_exe: String) -> Result<(), String> {
             .arg(dir.as_os_str())
             .spawn()
             .map_err(|e| e.to_string())?;
-    }    #[cfg(target_os = "linux")]
+    }
+    #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
             .arg(dir.as_os_str())
@@ -137,13 +148,12 @@ pub fn open_screenshots_folder(game_exe: String) -> Result<(), String> {
             .arg(dir.as_os_str())
             .spawn()
             .map_err(|e| e.to_string())?;
-    }    Ok(())
+    }
+    Ok(())
 }
 
 #[tauri::command]
-pub fn take_screenshot_manual(
-    state: tauri::State<ActiveGameState>,
-) -> Result<Screenshot, String> {
+pub fn take_screenshot_manual(state: tauri::State<ActiveGameState>) -> Result<Screenshot, String> {
     let guard = state.0.lock().unwrap();
     match &*guard {
         None => Err("No game is currently running.".to_string()),
@@ -158,10 +168,18 @@ pub fn capture_window_of(pid: u32, game_exe: &str) -> Result<Screenshot, String>
     {
         win::capture_and_save(pid, game_exe)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        capture_linux(pid, game_exe)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        capture_macos(game_exe)
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = (pid, game_exe);
-        Err("Screenshots are only supported on Windows.".to_string())
+        Err("Screenshots are not supported on this platform.".to_string())
     }
 }
 
@@ -170,11 +188,7 @@ pub fn capture_window_of(pid: u32, game_exe: &str) -> Result<Screenshot, String>
 /// Global low-level keyboard callback.
 /// Called synchronously by Windows from the hook thread's message loop.
 #[cfg(windows)]
-unsafe extern "system" fn ll_keyboard_proc(
-    code: i32,
-    wparam: usize,
-    lparam: isize,
-) -> isize {
+unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: usize, lparam: isize) -> isize {
     use winapi::um::winuser::{CallNextHookEx, KBDLLHOOKSTRUCT, WM_KEYDOWN};
     if code >= 0 && wparam == WM_KEYDOWN as usize {
         let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
@@ -214,8 +228,7 @@ pub fn start_hotkey_listener(
     unsafe {
         use winapi::um::processthreadsapi::GetCurrentThreadId;
         use winapi::um::winuser::{
-            GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-            WH_KEYBOARD_LL, MSG,
+            GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx, MSG, WH_KEYBOARD_LL,
         };
 
         // Store state so the hook callback can access it
@@ -268,27 +281,140 @@ pub fn stop_hotkey_thread(thread_id: u32) {
     let _ = thread_id;
 }
 
+// ── Linux screenshot capture ───────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn capture_linux(pid: u32, game_exe: &str) -> Result<Screenshot, String> {
+    use std::process::Command;
+    let dir = screenshots_dir(game_exe);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let filename = format!("screenshot_{}.png", now);
+    let out_path = dir.join(&filename);
+    let out_str = out_path.to_string_lossy().to_string();
+
+    // Try to find the window ID for this PID via xdotool, then
+    // capture only that window. Fall back to full-screen capture.
+    let window_id: Option<String> = Command::new("xdotool")
+        .args(["search", "--pid", &pid.to_string(), "--limit", "1"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        });
+
+    // Tool preference order: scrot (focused window) → gnome-screenshot → import
+    let ok = if let Some(ref wid) = window_id {
+        // scrot with window id
+        Command::new("scrot")
+            .args(["--window", wid, &out_str])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    let ok = ok
+        || Command::new("scrot")
+            .args(["--focused", &out_str])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+    let ok = ok
+        || Command::new("gnome-screenshot")
+            .args(["--file", &out_str])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+    // ImageMagick import: screenshot of root window
+    let ok = ok
+        || Command::new("import")
+            .args(["-window", "root", &out_str])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+    if !ok || !out_path.exists() {
+        return Err(
+            "Screenshot failed. Install 'scrot' or 'gnome-screenshot' for screenshot support."
+                .to_string(),
+        );
+    }
+
+    Ok(Screenshot {
+        path: out_str,
+        filename,
+        timestamp: now,
+    })
+}
+
+// ── macOS screenshot capture ────────────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+fn capture_macos(game_exe: &str) -> Result<Screenshot, String> {
+    use std::process::Command;
+    let dir = screenshots_dir(game_exe);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let filename = format!("screenshot_{}.png", now);
+    let out_path = dir.join(&filename);
+    let out_str = out_path.to_string_lossy().to_string();
+
+    // screencapture -x = no sound; -m = main screen only
+    let ok = Command::new("screencapture")
+        .args(["-x", "-m", &out_str])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !ok || !out_path.exists() {
+        return Err("screencapture failed (macOS screenshot)".to_string());
+    }
+
+    Ok(Screenshot {
+        path: out_str,
+        filename,
+        timestamp: now,
+    })
+}
+
 // ── Windows GDI capture ────────────────────────────────────────────────────
 
 #[cfg(windows)]
 mod win {
-    use super::{Screenshot, screenshots_dir};
-    use winapi::shared::minwindef::{BOOL, DWORD, LPARAM, TRUE, FALSE};
+    use super::{screenshots_dir, Screenshot};
+    use winapi::shared::minwindef::{BOOL, DWORD, FALSE, LPARAM, TRUE};
     use winapi::shared::windef::{HBITMAP, HWND, RECT};
     use winapi::um::wingdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-        GetDIBits, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-        RGBQUAD, SRCCOPY,
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
+        SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
     };
     use winapi::um::winuser::{
         EnumWindows, GetClientRect, GetDC, GetWindowLongW, GetWindowTextW,
-        GetWindowThreadProcessId, IsWindowVisible, PrintWindow, ReleaseDC,
-        GWL_STYLE,
+        GetWindowThreadProcessId, IsWindowVisible, PrintWindow, ReleaseDC, GWL_STYLE,
     };
 
     // ── Window finder ──────────────────────────────────────────────────────
 
-    struct FindData { pid: DWORD, hwnd: HWND, strict: bool }
+    struct FindData {
+        pid: DWORD,
+        hwnd: HWND,
+        strict: bool,
+    }
 
     unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let d = &mut *(lparam as *mut FindData);
@@ -314,15 +440,27 @@ mod win {
 
     fn find_game_window(pid: u32) -> Option<HWND> {
         // First pass: strict – prefer titled, captioned windows
-        let mut data = FindData { pid, hwnd: std::ptr::null_mut(), strict: true };
+        let mut data = FindData {
+            pid,
+            hwnd: std::ptr::null_mut(),
+            strict: true,
+        };
         unsafe { EnumWindows(Some(enum_proc), &mut data as *mut _ as LPARAM) };
         if !data.hwnd.is_null() {
             return Some(data.hwnd);
         }
         // Loose pass: any visible window from this PID
-        let mut data2 = FindData { pid, hwnd: std::ptr::null_mut(), strict: false };
+        let mut data2 = FindData {
+            pid,
+            hwnd: std::ptr::null_mut(),
+            strict: false,
+        };
         unsafe { EnumWindows(Some(enum_proc), &mut data2 as *mut _ as LPARAM) };
-        if data2.hwnd.is_null() { None } else { Some(data2.hwnd) }
+        if data2.hwnd.is_null() {
+            None
+        } else {
+            Some(data2.hwnd)
+        }
     }
 
     // ── GDI capture ───────────────────────────────────────────────────────
@@ -370,14 +508,23 @@ mod win {
                     biClrUsed: 0,
                     biClrImportant: 0,
                 },
-                bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
+                bmiColors: [RGBQUAD {
+                    rgbBlue: 0,
+                    rgbGreen: 0,
+                    rgbRed: 0,
+                    rgbReserved: 0,
+                }],
             };
 
             let mut buf: Vec<u8> = vec![0u8; (w * h) as usize * 4];
             let ret = GetDIBits(
-                hdc_mem, hbmp, 0, h as u32,
+                hdc_mem,
+                hbmp,
+                0,
+                h as u32,
                 buf.as_mut_ptr() as *mut _,
-                &mut bmi, DIB_RGB_COLORS,
+                &mut bmi,
+                DIB_RGB_COLORS,
             );
 
             SelectObject(hdc_mem, old);

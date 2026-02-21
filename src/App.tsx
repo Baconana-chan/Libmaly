@@ -1,15 +1,84 @@
-import { useState, useEffect, useRef, useMemo } from "preact/hooks";
+import { useState, useEffect, useRef, useMemo, useCallback } from "preact/hooks";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { marked } from "marked";
 import "./App.css";
 
+// ─── Virtual list hook ────────────────────────────────────────────────────────
+/** Renders only the visible slice of a list, dramatically reducing DOM nodes for
+ *  large libraries. Each item declares its own height for accurate positioning. */
+function useVirtualList<T>(
+  items: T[],
+  getHeight: (item: T) => number,
+  containerRef: { current: HTMLElement | null },
+  overscan = 5,
+) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const [containerH, setContainerH] = useState(600);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onScroll = () => setScrollTop(el.scrollTop);
+    const ro = new ResizeObserver(() => setContainerH(el.clientHeight));
+    el.addEventListener("scroll", onScroll, { passive: true });
+    ro.observe(el);
+    setContainerH(el.clientHeight);
+    return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
+  }, [containerRef.current]); // eslint-disable-line
+
+  return useMemo(() => {
+    if (items.length === 0) return { virtualItems: [], totalHeight: 0, offsetTop: 0 };
+
+    // Build cumulative offsets
+    const offsets = new Array<number>(items.length + 1);
+    offsets[0] = 0;
+    for (let i = 0; i < items.length; i++) {
+      offsets[i + 1] = offsets[i] + getHeight(items[i]);
+    }
+    const totalHeight = offsets[items.length];
+
+    // Find visible range
+    const top = Math.max(0, scrollTop);
+    const bottom = top + containerH;
+
+    let start = 0;
+    let end = items.length - 1;
+    // Binary search for start
+    let lo = 0, hi = items.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (offsets[mid + 1] < top) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    start = Math.max(0, lo - overscan);
+    // Find end
+    lo = start; hi = items.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (offsets[mid] < bottom) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    end = Math.min(items.length - 1, lo + overscan);
+
+    return {
+      virtualItems: items.slice(start, end + 1).map((item, i) => ({
+        item,
+        index: start + i,
+        offsetTop: offsets[start + i],
+      })),
+      totalHeight,
+      offsetTop: offsets[start],
+    };
+  }, [items, getHeight, scrollTop, containerH, overscan]); // eslint-disable-line
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Game { name: string; path: string; }
 interface DirMtime { path: string; mtime: number; }
-interface GameStats { totalTime: number; lastPlayed: number; lastSession: number; }
+interface GameStats { totalTime: number; lastPlayed: number; lastSession: number; launchCount: number; }
 interface GameMetadata {
   source: string;
   source_url: string;
@@ -69,34 +138,68 @@ interface GameCustomization {
   displayName?: string;
   coverUrl?: string;
   backgroundUrl?: string;
+  /** Alternate executable to launch instead of the scanned game.path */
+  exeOverride?: string;
+}
+
+// ─── Generic exe-name detection ──────────────────────────────────────────────
+/** Exe stems that are engine/launcher names and give no info about the game. */
+const GENERIC_EXE_NAMES = new Set([
+  "game", "start", "play", "launch", "launcher",
+  "nw", "nwjs", "app", "electron",
+  "main", "run", "exec",
+  "renpy", "lib", "engine",
+  "ux", "client", "project",
+  "visual_novel", "vn",
+]);
+
+/**
+ * Given a full exe path, derive a human-readable game name:
+ * - If the exe stem is a known generic name, return the parent folder name
+ * - Otherwise return the stem
+ * Mirrors the Rust logic in scan_dir_shallow / is_generic_name.
+ */
+function deriveGameName(exePath: string): string {
+  const parts = exePath.replace(/\\/g, "/").split("/");
+  const fileName = parts[parts.length - 1] ?? exePath;
+  const stem = fileName.replace(/\.[^.]+$/, "");
+  if (GENERIC_EXE_NAMES.has(stem.toLowerCase()) && parts.length >= 2) {
+    return parts[parts.length - 2]; // parent folder name
+  }
+  return stem;
 }
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
-const SK_GAMES  = "games-list-v2";
+const SK_GAMES = "games-list-v2";
 const SK_MTIMES = "dir-mtimes-v2";
-const SK_PATH   = "scanned-path";
-const SK_STATS  = "game-stats";
-const SK_META   = "game-metadata";
+const SK_PATH = "scanned-path";        // legacy – single folder
+const SK_FOLDERS = "library-folders-v1"; // v3: array of LibraryFolder
+const SK_STATS = "game-stats";
+const SK_META = "game-metadata";
 const SK_HIDDEN = "hidden-games-v1";
-const SK_FAVS   = "fav-games-v1";
+const SK_FAVS = "fav-games-v1";
 const SK_CUSTOM = "game-custom-v1";
-const SK_NOTES  = "game-notes-v1";
+const SK_NOTES = "game-notes-v1";
 const SK_COLLECTIONS = "collections-v1";
-const SK_LAUNCH      = "launch-config-v1";
-const SK_RECENT      = "recent-games-v1";
+const SK_LAUNCH = "launch-config-v1";
+const SK_RECENT = "recent-games-v1";
+const SK_ORDER = "custom-order-v1"; // custom sort: { [contextKey]: string[] }
+
+/** A library root directory that's been added by the user. */
+interface LibraryFolder { path: string; }
 
 interface RecentGame { name: string; path: string; }
 
 interface LaunchConfig {
-  enabled:    boolean;        // false = always run directly
-  runner:     "wine" | "proton" | "custom";
+  enabled: boolean;        // false = always run directly
+  runner: "wine" | "proton" | "custom";
   runnerPath: string;         // path to wine/proton binary
   prefixPath: string;         // WINEPREFIX / STEAM_COMPAT_DATA_PATH
 }
 
 const DEFAULT_LAUNCH_CONFIG: LaunchConfig = { enabled: false, runner: "wine", runnerPath: "", prefixPath: "" };
 
-const COLLECTION_COLORS = ["#66c0f4","#c8a951","#a170c8","#e8734a","#5ba85b","#d45252","#4a8ee8","#e85480"];
+const COLLECTION_COLORS = ["#66c0f4", "#c8a951", "#a170c8", "#e8734a", "#5ba85b", "#d45252", "#4a8ee8", "#e85480"];
 
 interface Collection {
   id: string;
@@ -105,7 +208,7 @@ interface Collection {
   gamePaths: string[];
 }
 
-type SortMode = "name" | "lastPlayed" | "playtime";
+type SortMode = "name" | "lastPlayed" | "playtime" | "custom";
 type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "unlinked";
 
 function loadCache<T>(key: string, fallback: T): T {
@@ -161,9 +264,9 @@ function MetaRow({ label, value }: { label: string; value?: string }) {
 
 // ─── F95 Login Modal ──────────────────────────────────────────────────────────
 function F95LoginModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
-  const [user, setUser]     = useState("");
-  const [pass, setPass]     = useState("");
-  const [error, setError]   = useState("");
+  const [user, setUser] = useState("");
+  const [pass, setPass] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const doLogin = async () => {
@@ -226,8 +329,8 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
   f95LoggedIn: boolean;
   onOpenF95Login: () => void;
 }) {
-  const [url, setUrl]         = useState("");
-  const [error, setError]     = useState("");
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const src = isF95Url(url) ? "f95" : isDLsiteUrl(url) ? "dlsite" : null;
@@ -302,11 +405,11 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
 // ─── Update Modal ────────────────────────────────────────────────────────────
 function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
   type Phase = "idle" | "previewing" | "ready" | "updating" | "done" | "error";
-  const [phase, setPhase]       = useState<Phase>("idle");
+  const [phase, setPhase] = useState<Phase>("idle");
   const [sourcePath, setSourcePath] = useState("");
-  const [preview, setPreview]   = useState<UpdatePreview | null>(null);
-  const [result, setResult]     = useState<UpdateResult | null>(null);
-  const [errMsg, setErrMsg]     = useState("");
+  const [preview, setPreview] = useState<UpdatePreview | null>(null);
+  const [result, setResult] = useState<UpdateResult | null>(null);
+  const [errMsg, setErrMsg] = useState("");
 
   const pickSource = async () => {
     const sel = await open({
@@ -532,7 +635,7 @@ function NotesModal({ displayTitle, initialNote, onSave, onClose }: {
   displayTitle: string; initialNote: string;
   onSave: (text: string) => void; onClose: () => void;
 }) {
-  const [text, setText]       = useState(initialNote);
+  const [text, setText] = useState(initialNote);
   const [preview, setPreview] = useState(false);
   const saveRef = useRef(onSave);
   saveRef.current = onSave;
@@ -555,7 +658,7 @@ function NotesModal({ displayTitle, initialNote, onSave, onClose }: {
         {/* Header */}
         <div className="flex items-center gap-3 px-5 pt-4 pb-3 flex-shrink-0 border-b" style={{ borderColor: "#1b3a50" }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
           </svg>
           <span className="font-bold flex-1" style={{ color: "#fff" }}>Notes — {displayTitle}</span>
           <div className="flex rounded overflow-hidden" style={{ border: "1px solid #2a475e" }}>
@@ -684,10 +787,16 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
   onSave: (c: GameCustomization) => void; onClose: () => void;
 }) {
   const [displayName, setDisplayName] = useState(custom.displayName ?? meta?.title ?? game.name);
-  const [coverUrl, setCoverUrl]       = useState(custom.coverUrl ?? "");
-  const [bgUrl, setBgUrl]             = useState(custom.backgroundUrl ?? "");
+  const [coverUrl, setCoverUrl] = useState(custom.coverUrl ?? "");
+  const [bgUrl, setBgUrl] = useState(custom.backgroundUrl ?? "");
+  const [exeOverride, setExeOverride] = useState(custom.exeOverride ?? "");
+  const [siblingExes, setSiblingExes] = useState<string[]>([]);
+  const [detectingExes, setDetectingExes] = useState(false);
 
-  const pickFile = async (setter: (s: string) => void) => {
+  // Derive game folder from its exe path
+  const gameFolder = game.path.replace(/[\\/][^\\/]+$/, "");
+
+  const pickImage = async (setter: (s: string) => void) => {
     const sel = await open({
       multiple: false, directory: false,
       filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }],
@@ -695,11 +804,37 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
     if (sel && typeof sel === "string") setter(convertFileSrc(sel));
   };
 
+  const pickExe = async () => {
+    const sel = await open({
+      multiple: false, directory: false,
+      defaultPath: gameFolder,
+      filters: [{ name: "Executable", extensions: ["exe", "sh", "bin", "app"] }],
+    }).catch(() => null);
+    if (sel && typeof sel === "string") setExeOverride(sel);
+  };
+
+  /** Scan the game's folder for all .exe files other than the current one */
+  const detectSiblings = async () => {
+    setDetectingExes(true);
+    try {
+      const exes = await invoke<string[]>("list_executables_in_folder", {
+        folder: gameFolder,
+      });
+      setSiblingExes(exes.filter((e) => e !== game.path));
+    } catch {
+      // Command may not exist in older builds — graceful no-op
+      setSiblingExes([]);
+    } finally {
+      setDetectingExes(false);
+    }
+  };
+
   const doSave = () => {
     onSave({
       displayName: displayName.trim() || undefined,
       coverUrl: coverUrl.trim() || undefined,
       backgroundUrl: bgUrl.trim() || undefined,
+      exeOverride: exeOverride.trim() && exeOverride.trim() !== game.path ? exeOverride.trim() : undefined,
     });
     onClose();
   };
@@ -708,7 +843,7 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.85)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="rounded-lg shadow-2xl w-[500px] max-h-[90vh] overflow-y-auto"
+      <div className="rounded-lg shadow-2xl w-[520px] max-h-[90vh] overflow-y-auto"
         style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
         <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b" style={{ borderColor: "#1b3a50" }}>
           <span style={{ fontSize: "20px" }}>🎨</span>
@@ -723,11 +858,135 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
             <label className="block text-xs font-semibold mb-1.5" style={{ color: "#8f98a0" }}>
               Display Name <span style={{ fontWeight: "normal", color: "#4a5568" }}>(used in list &amp; search)</span>
             </label>
-            <input type="text" value={displayName}
-              onInput={(e) => setDisplayName((e.target as HTMLInputElement).value)}
-              className="w-full px-3 py-2 rounded text-sm outline-none"
-              style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+            <div className="flex gap-2">
+              <input type="text" value={displayName}
+                onInput={(e) => setDisplayName((e.target as HTMLInputElement).value)}
+                className="flex-1 px-3 py-2 rounded text-sm outline-none"
+                style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+              {/* Quick-fill: use the parent folder name as the game title */}
+              <button
+                title="Use the parent folder name as the game title"
+                onClick={() => {
+                  const folder = game.path.replace(/[\\/][^\\/]+$/, "");
+                  const folderName = folder.replace(/\\/g, "/").split("/").pop() ?? folder;
+                  setDisplayName(folderName);
+                }}
+                className="px-2.5 py-2 rounded text-xs flex-shrink-0 flex items-center gap-1"
+                style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3d5a73" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
+                Folder
+              </button>
+            </div>
+            {/* Hint when the exe name is generic */}
+            {GENERIC_EXE_NAMES.has((game.path.replace(/\\/g, "/").split("/").pop() ?? "").replace(/\.[^.]+$/, "").toLowerCase()) && (
+              <p className="mt-1 text-[10px]" style={{ color: "#c8a951" }}>
+                ⚠ Generic exe detected — folder name was used as the title automatically during scan.
+              </p>
+            )}
           </div>
+
+          {/* ── Executable Override ───────────────────────────────────── */}
+          <div>
+            <label className="block text-xs font-semibold mb-1" style={{ color: "#8f98a0" }}>
+              Launch Executable
+              <span style={{ fontWeight: "normal", color: "#4a5568" }}> (override scanned .exe)</span>
+            </label>
+            {/* current / override path */}
+            <div className="rounded px-3 py-2 mb-2 text-xs font-mono break-all"
+              style={{ background: "#0d1b2a", border: "1px solid #1e3a50", color: exeOverride ? "#c8a951" : "#4a5568" }}>
+              {exeOverride || game.path}
+              {exeOverride && (
+                <span className="ml-2 font-sans"
+                  style={{ color: "#4a5568", fontSize: "10px" }}>
+                  (override active)
+                </span>
+              )}
+            </div>
+            <div className="flex gap-2 mb-2">
+              <button onClick={pickExe}
+                className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
+                style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#c6d4df"; }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                Browse…
+              </button>
+              <button onClick={detectSiblings} disabled={detectingExes}
+                className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
+                style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
+                onMouseEnter={(e) => { if (!detectingExes) { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; } }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#c6d4df"; }}>
+                {detectingExes
+                  ? <span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                  : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+                  </svg>}
+                Detect others…
+              </button>
+              {exeOverride && (
+                <button onClick={() => { setExeOverride(""); setSiblingExes([]); }}
+                  className="px-3 py-1.5 rounded text-xs flex-shrink-0"
+                  style={{ background: "transparent", color: "#e57373", border: "1px solid #3a1010" }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#3a1010"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  title="Clear override — use the originally scanned exe">
+                  ✕ Clear
+                </button>
+              )}
+            </div>
+            {/* Sibling exe picker list */}
+            {siblingExes.length > 0 && (
+              <div className="rounded border overflow-hidden" style={{ borderColor: "#1e3a50" }}>
+                <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest"
+                  style={{ background: "#0d1b2a", color: "#4a5568" }}>
+                  Executables found in game folder — click to select
+                </p>
+                {siblingExes.map((exe) => {
+                  const fname = exe.replace(/\\/g, "/").split("/").pop() ?? exe;
+                  const isActive = exeOverride === exe;
+                  return (
+                    <button key={exe} onClick={() => setExeOverride(exe)}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
+                      style={{
+                        background: isActive ? "#1a3a5c" : "#131d28",
+                        color: isActive ? "#66c0f4" : "#8f98a0",
+                        borderTop: "1px solid #1e3a50",
+                      }}
+                      onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "#1b2d3d"; }}
+                      onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "#131d28"; }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+                        stroke={isActive ? "#66c0f4" : "#4a5568"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
+                      </svg>
+                      <span className="font-mono flex-1 truncate">{fname}</span>
+                      {isActive && (
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+                {siblingExes.length === 0 && (
+                  <p className="px-3 py-3 text-xs text-center" style={{ color: "#4a5568", background: "#131d28" }}>
+                    No other executables found in this folder.
+                  </p>
+                )}
+              </div>
+            )}
+            {!detectingExes && siblingExes.length === 0 && exeOverride === "" && (
+              <p className="text-[10px]" style={{ color: "#4a5568" }}>
+                By default the game launches the scanned .exe above. Use this to pick a different launcher in the same folder.
+              </p>
+            )}
+          </div>
+
           {/* Cover image */}
           <div>
             <label className="block text-xs font-semibold mb-1.5" style={{ color: "#8f98a0" }}>
@@ -738,7 +997,7 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
                 onInput={(e) => setCoverUrl((e.target as HTMLInputElement).value)}
                 className="flex-1 px-3 py-2 rounded text-sm outline-none"
                 style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
-              <button onClick={() => pickFile(setCoverUrl)}
+              <button onClick={() => pickImage(setCoverUrl)}
                 className="px-3 py-2 rounded text-xs flex-shrink-0"
                 style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d5a73" }}>Browse</button>
             </div>
@@ -757,7 +1016,7 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
                 onInput={(e) => setBgUrl((e.target as HTMLInputElement).value)}
                 className="flex-1 px-3 py-2 rounded text-sm outline-none"
                 style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
-              <button onClick={() => pickFile(setBgUrl)}
+              <button onClick={() => pickImage(setBgUrl)}
                 className="px-3 py-2 rounded text-xs flex-shrink-0"
                 style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d5a73" }}>Browse</button>
             </div>
@@ -886,14 +1145,14 @@ function WineSettingsModal({ config, onSave, onClose }: {
   onSave: (c: LaunchConfig) => void;
   onClose: () => void;
 }) {
-  const [cfg, setCfg]       = useState<LaunchConfig>(config);
-  const [detected, setDetected] = useState<{name:string;path:string;kind:string}[]>([]);
+  const [cfg, setCfg] = useState<LaunchConfig>(config);
+  const [detected, setDetected] = useState<{ name: string; path: string; kind: string }[]>([]);
   const [detecting, setDetecting] = useState(false);
 
   useEffect(() => {
     setDetecting(true);
-    invoke<{name:string;path:string;kind:string}[]>("detect_wine_runners")
-      .then(setDetected).catch(() => {}).finally(() => setDetecting(false));
+    invoke<{ name: string; path: string; kind: string }[]>("detect_wine_runners")
+      .then(setDetected).catch(() => { }).finally(() => setDetecting(false));
   }, []);
 
   const upd = (patch: Partial<LaunchConfig>) => setCfg((p) => ({ ...p, ...patch }));
@@ -933,13 +1192,13 @@ function WineSettingsModal({ config, onSave, onClose }: {
             <div>
               <p className="text-xs font-semibold mb-2" style={{ color: "#8f98a0" }}>Runner type</p>
               <div className="flex gap-2">
-                {(["wine","proton","custom"] as const).map((r) => (
+                {(["wine", "proton", "custom"] as const).map((r) => (
                   <button key={r} onClick={() => upd({ runner: r })}
                     className="flex-1 py-2 rounded text-xs font-semibold capitalize"
                     style={{
-                      background: cfg.runner===r ? "#2a6db5" : "#1b2d3d",
-                      color:      cfg.runner===r ? "#fff"    : "#5a6a7a",
-                      border:     `1px solid ${cfg.runner===r ? "#3d7dc8" : "#253545"}`,
+                      background: cfg.runner === r ? "#2a6db5" : "#1b2d3d",
+                      color: cfg.runner === r ? "#fff" : "#5a6a7a",
+                      border: `1px solid ${cfg.runner === r ? "#3d7dc8" : "#253545"}`,
                     }}>{r === "wine" ? "🍷 Wine" : r === "proton" ? "⚙ Proton" : "🔧 Custom"}</button>
                 ))}
               </div>
@@ -952,11 +1211,11 @@ function WineSettingsModal({ config, onSave, onClose }: {
                 <div className="space-y-1">
                   {detected.map((d) => (
                     <button key={d.path}
-                      onClick={() => upd({ runnerPath: d.path, runner: d.kind as "wine"|"proton"|"custom" })}
+                      onClick={() => upd({ runnerPath: d.path, runner: d.kind as "wine" | "proton" | "custom" })}
                       className="w-full flex items-center gap-2 px-3 py-2 rounded text-xs text-left"
                       style={{
-                        background: cfg.runnerPath===d.path ? "#1a3a5c" : "#1b2d3d",
-                        border: `1px solid ${cfg.runnerPath===d.path ? "#3d7dc8" : "#253545"}`,
+                        background: cfg.runnerPath === d.path ? "#1a3a5c" : "#1b2d3d",
+                        border: `1px solid ${cfg.runnerPath === d.path ? "#3d7dc8" : "#253545"}`,
                         color: "#c6d4df",
                       }}>
                       <span>{d.kind === "wine" ? "🍷" : "⚙"}</span>
@@ -1008,7 +1267,7 @@ function WineSettingsModal({ config, onSave, onClose }: {
             {cfg.runner === "proton" && (
               <div className="rounded-lg px-3 py-2.5 text-xs" style={{ background: "#1a2636", border: "1px solid #2a3f54", color: "#8f98a0", lineHeight: 1.6 }}>
                 <p className="font-semibold mb-1" style={{ color: "#66c0f4" }}>Proton notes</p>
-                <p>The <code style={{ color:"#f88379" }}>proton</code> script requires <strong>python3</strong> and a Steam installation.</p>
+                <p>The <code style={{ color: "#f88379" }}>proton</code> script requires <strong>python3</strong> and a Steam installation.</p>
                 <p>Set the data path to a folder that will hold the Proton prefix (Wine bottle) for your games.</p>
               </div>
             )}
@@ -1038,7 +1297,7 @@ function ManageCollectionsModal({ gamePath, displayTitle, collections, onToggle,
   onClose: () => void;
 }) {
   const [creating, setCreating] = useState(false);
-  const [newName, setNewName]   = useState("");
+  const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState(COLLECTION_COLORS[0]);
   const handleCreate = () => {
     if (!newName.trim()) return;
@@ -1052,7 +1311,7 @@ function ManageCollectionsModal({ gamePath, displayTitle, collections, onToggle,
       <div className="rounded-xl shadow-2xl w-96 flex flex-col" style={{ background: "#1e2d3d", border: "1px solid #3d5a73", maxHeight: "72vh" }}>
         <div className="flex items-center gap-2 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: "#0d1117" }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
           </svg>
           <span className="font-bold flex-1 text-sm truncate" style={{ color: "#fff" }}>Collections — {displayTitle}</span>
           <button onClick={onClose} className="text-lg leading-none" style={{ color: "#8f98a0" }}>✕</button>
@@ -1090,8 +1349,10 @@ function ManageCollectionsModal({ gamePath, displayTitle, collections, onToggle,
                 {COLLECTION_COLORS.map((c) => (
                   <button key={c} onClick={() => setNewColor(c)}
                     className="w-4 h-4 rounded-full flex-shrink-0"
-                    style={{ background: c, outline: newColor === c ? "2px solid #fff" : "none", outlineOffset: "1px",
-                      transform: newColor === c ? "scale(1.25)" : "scale(1)", transition: "transform 0.1s" }} />
+                    style={{
+                      background: c, outline: newColor === c ? "2px solid #fff" : "none", outlineOffset: "1px",
+                      transform: newColor === c ? "scale(1.25)" : "scale(1)", transition: "transform 0.1s"
+                    }} />
                 ))}
               </div>
               <div className="flex gap-2">
@@ -1122,21 +1383,21 @@ function ManageCollectionsModal({ gamePath, displayTitle, collections, onToggle,
 function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots, isHidden, isFav,
   onPlay, onStop, isRunning, runnerLabel, onDelete, onLinkPage, onOpenF95Login, onClearMeta, onUpdate,
   onTakeScreenshot, onOpenScreenshotsFolder, onToggleHide, onToggleFav, onOpenCustomize, onOpenNotes, hasNotes, onManageCollections }: {
-  game: Game; stat: GameStats; meta?: GameMetadata;
-  customization: GameCustomization; f95LoggedIn: boolean;
-  screenshots: Screenshot[]; isHidden: boolean; isFav: boolean;
-  onPlay: () => void; onStop: () => void; isRunning: boolean; runnerLabel?: string;
-  onDelete: () => void; onLinkPage: () => void;
-  onOpenF95Login: () => void; onClearMeta: () => void; onUpdate: () => void;
-  onTakeScreenshot: () => void; onOpenScreenshotsFolder: () => void;
-  onToggleHide: () => void; onToggleFav: () => void; onOpenCustomize: () => void;
-  onOpenNotes: () => void; hasNotes: boolean; onManageCollections: () => void;
-}) {
+    game: Game; stat: GameStats; meta?: GameMetadata;
+    customization: GameCustomization; f95LoggedIn: boolean;
+    screenshots: Screenshot[]; isHidden: boolean; isFav: boolean;
+    onPlay: () => void; onStop: () => void; isRunning: boolean; runnerLabel?: string;
+    onDelete: () => void; onLinkPage: () => void;
+    onOpenF95Login: () => void; onClearMeta: () => void; onUpdate: () => void;
+    onTakeScreenshot: () => void; onOpenScreenshotsFolder: () => void;
+    onToggleHide: () => void; onToggleFav: () => void; onOpenCustomize: () => void;
+    onOpenNotes: () => void; hasNotes: boolean; onManageCollections: () => void;
+  }) {
   const [activeShot, setActiveShot] = useState(0);
-  const cover        = customization.coverUrl ?? meta?.cover_url;
-  const heroBg       = customization.backgroundUrl ?? cover;
+  const cover = customization.coverUrl ?? meta?.cover_url;
+  const heroBg = customization.backgroundUrl ?? cover;
   const displayTitle = customization.displayName ?? meta?.title ?? game.name;
-  const shots        = meta?.screenshots ?? [];
+  const shots = meta?.screenshots ?? [];
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
@@ -1145,7 +1406,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
       <div className="relative flex-shrink-0 overflow-hidden" style={{ height: "240px" }}>
         {heroBg
           ? <img src={heroBg} alt={displayTitle} className="absolute inset-0 w-full h-full object-cover"
-              style={{ filter: "brightness(0.5)" }} />
+            style={{ filter: "brightness(0.5)" }} />
           : <div className="absolute inset-0" style={{ background: heroGradient(game.name) }} />}
         <div className="absolute inset-0"
           style={{ background: "linear-gradient(to top,#1b2838 0%,rgba(27,40,56,0.15) 60%,transparent 100%)" }} />
@@ -1182,7 +1443,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
           {isRunning
             ? <><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" /></svg>Stop</>
             : <><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-               Play{runnerLabel && <span className="ml-1 text-[10px] font-normal normal-case opacity-80">via {runnerLabel}</span>}</>
+              Play{runnerLabel && <span className="ml-1 text-[10px] font-normal normal-case opacity-80">via {runnerLabel}</span>}</>
           }
         </button>
         <button onClick={onLinkPage}
@@ -1215,7 +1476,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
           onMouseLeave={(e) => { e.currentTarget.style.background = hasNotes ? "#1e2d1a" : "#2a3f54"; e.currentTarget.style.color = hasNotes ? "#6dbf6d" : "#8f98a0"; }}
           title="Game notes (Markdown supported)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
           </svg>
           Notes{hasNotes && <span className="w-1.5 h-1.5 rounded-full bg-current ml-0.5" />}
         </button>
@@ -1297,8 +1558,10 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
                   {shots.map((s, i) => (
                     <button key={i} onClick={() => setActiveShot(i)}
                       className="rounded overflow-hidden flex-shrink-0"
-                      style={{ width: "78px", height: "50px", opacity: i === activeShot ? 1 : 0.5,
-                        outline: i === activeShot ? "2px solid #66c0f4" : "none" }}>
+                      style={{
+                        width: "78px", height: "50px", opacity: i === activeShot ? 1 : 0.5,
+                        outline: i === activeShot ? "2px solid #66c0f4" : "none"
+                      }}>
                       <img src={s} alt="" className="w-full h-full object-cover" />
                     </button>
                   ))}
@@ -1353,39 +1616,66 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
                   <p className="text-sm" style={{ color: "#c6d4df" }}>{formatTime(stat.lastSession)}</p>
                 </div>
               )}
+              {(stat.launchCount ?? 0) > 0 && (
+                <div>
+                  <p className="text-xs" style={{ color: "#8f98a0" }}>Times played</p>
+                  <p className="text-sm font-semibold" style={{ color: "#66c0f4" }}>
+                    {stat.launchCount} {stat.launchCount === 1 ? "session" : "sessions"}
+                  </p>
+                </div>
+              )}
             </div>
             {meta && (
               <div className="rounded-lg p-4 space-y-2" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
                 <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "#8f98a0" }}>Game Info</h2>
                 {/* F95 fields */}
-                <MetaRow label="Developer"      value={meta.developer} />
-                <MetaRow label="Version"        value={meta.version} />
-                <MetaRow label="Engine"         value={meta.engine} />
-                <MetaRow label="OS"             value={meta.os} />
-                <MetaRow label="Language"       value={meta.language} />
-                <MetaRow label="Censored"       value={meta.censored} />
-                <MetaRow label="Released"       value={meta.release_date} />
-                <MetaRow label="Updated"        value={meta.last_updated} />
-                <MetaRow label="Price"          value={meta.price} />
+                <MetaRow label="Developer" value={meta.developer} />
+                <MetaRow label="Version" value={meta.version} />
+                <MetaRow label="Engine" value={meta.engine} />
+                <MetaRow label="OS" value={meta.os} />
+                <MetaRow label="Language" value={meta.language} />
+                <MetaRow label="Censored" value={meta.censored} />
+                <MetaRow label="Released" value={meta.release_date} />
+                <MetaRow label="Updated" value={meta.last_updated} />
+                <MetaRow label="Price" value={meta.price} />
                 {/* DLsite extended fields */}
-                <MetaRow label="Circle"         value={meta.circle} />
-                <MetaRow label="Series"         value={meta.series} />
-                <MetaRow label="Author"         value={meta.author} />
-                <MetaRow label="Illustration"   value={meta.illustration} />
-                <MetaRow label="Voice Actor"    value={meta.voice_actor} />
-                <MetaRow label="Music"          value={meta.music} />
-                <MetaRow label="Age Rating"     value={meta.age_rating} />
-                <MetaRow label="Format"         value={meta.product_format} />
-                <MetaRow label="File Format"    value={meta.file_format} />
-                <MetaRow label="File Size"      value={meta.file_size} />
+                <MetaRow label="Circle" value={meta.circle} />
+                <MetaRow label="Series" value={meta.series} />
+                <MetaRow label="Author" value={meta.author} />
+                <MetaRow label="Illustration" value={meta.illustration} />
+                <MetaRow label="Voice Actor" value={meta.voice_actor} />
+                <MetaRow label="Music" value={meta.music} />
+                <MetaRow label="Age Rating" value={meta.age_rating} />
+                <MetaRow label="Format" value={meta.product_format} />
+                <MetaRow label="File Format" value={meta.file_format} />
+                <MetaRow label="File Size" value={meta.file_size} />
               </div>
             )}
             <div className="rounded-lg p-4 space-y-2" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
               <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "#8f98a0" }}>Files</h2>
-              <div>
-                <p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Executable</p>
-                <p className="text-xs font-mono break-all" style={{ color: "#66c0f4" }}>{game.path}</p>
-              </div>
+              {customization.exeOverride ? (
+                <>
+                  <div>
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <p className="text-xs" style={{ color: "#c8a951" }}>Launch override</p>
+                      <span className="text-[9px] px-1.5 py-px rounded font-semibold"
+                        style={{ background: "#3a2800", color: "#c8a951", border: "1px solid #5a4200" }}>active</span>
+                    </div>
+                    <p className="text-xs font-mono break-all" style={{ color: "#c8a951" }}>
+                      {customization.exeOverride}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Scanned exe</p>
+                    <p className="text-xs font-mono break-all" style={{ color: "#4a5568" }}>{game.path}</p>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Executable</p>
+                  <p className="text-xs font-mono break-all" style={{ color: "#66c0f4" }}>{game.path}</p>
+                </div>
+              )}
               <div>
                 <p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Folder</p>
                 <p className="text-xs font-mono break-all" style={{ color: "#c6d4df" }}>
@@ -1480,9 +1770,9 @@ function HomeView({ games, stats, metadata, customizations, favGames, notes, run
         ) : (
           <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" }}>
             {recent.map((game) => {
-              const st  = stats[game.path] ?? { totalTime: 0, lastPlayed: 0, lastSession: 0 };
+              const st = stats[game.path] ?? { totalTime: 0, lastPlayed: 0, lastSession: 0 };
               const cover = coverSrc(game);
-              const name  = displayName(game);
+              const name = displayName(game);
               const isFav = !!favGames[game.path];
               return (
                 <div key={game.path}
@@ -1513,8 +1803,8 @@ function HomeView({ games, stats, metadata, customizations, favGames, notes, run
                     <button onClick={() => onSelect(game)}
                       className="px-2.5 py-1 rounded text-xs flex-shrink-0"
                       style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3d5a73" }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background="#1e4060"; e.currentTarget.style.color="#66c0f4"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background="#2a3f54"; e.currentTarget.style.color="#8f98a0"; }}>
+                      onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}>
                       View
                     </button>
                     <button
@@ -1538,62 +1828,254 @@ function HomeView({ games, stats, metadata, customizations, favGames, notes, run
   );
 }
 
+// ─── App Update Modal ─────────────────────────────────────────────────────────
+function AppUpdateModal({
+  version, url, downloadUrl, onClose,
+}: { version: string; url: string; downloadUrl: string; onClose: () => void }) {
+  type Phase = "idle" | "downloading" | "done" | "error";
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [errMsg, setErrMsg] = useState("");
+
+  const handleInstall = async () => {
+    if (!downloadUrl) return;
+    setPhase("downloading");
+    try {
+      await invoke("apply_update", { downloadUrl });
+      // apply_update calls app.exit(0) on success, so we'll never reach here
+      setPhase("done");
+    } catch (e: any) {
+      setErrMsg(String(e));
+      setPhase("error");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.82)" }}
+      onClick={(e) => { if (e.target === e.currentTarget && phase !== "downloading") onClose(); }}>
+      <div className="rounded-xl shadow-2xl w-[440px]"
+        style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+
+        {/* Header */}
+        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b" style={{ borderColor: "#1b3a50" }}>
+          <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+            style={{ background: "linear-gradient(135deg,#2a6db5,#1a4a80)" }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" />
+              <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="font-bold text-base" style={{ color: "#fff" }}>Update Available</h2>
+            <p className="text-xs" style={{ color: "#8f98a0" }}>LIBMALY {version}</p>
+          </div>
+          {phase !== "downloading" && (
+            <button onClick={onClose} className="text-xl leading-none" style={{ color: "#4a5568" }}>✕</button>
+          )}
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          {phase === "idle" && (
+            <>
+              <p className="text-sm leading-relaxed" style={{ color: "#b8c8d4" }}>
+                A new version of LIBMALY is ready.{" "}
+                {downloadUrl
+                  ? "Click <strong>Install Now</strong> to download and apply the update automatically — your library data, stats, and covers are stored in AppData and will not be affected."
+                  : "No automatic installer is available for this release yet."}
+              </p>
+              {downloadUrl && (
+                <div className="rounded-lg p-3 flex items-start gap-2.5"
+                  style={{ background: "#0f1d2a", border: "1px solid #1e3a50" }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0 mt-0.5">
+                    <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                  <p className="text-xs" style={{ color: "#8cb4d5" }}>
+                    The app will close automatically after downloading so the update script can safely replace the files, then relaunch.
+                  </p>
+                </div>
+              )}
+              <div className="flex gap-3 justify-end pt-1">
+                <a href={url} target="_blank" rel="noreferrer"
+                  className="px-4 py-2 rounded text-xs flex items-center gap-1.5"
+                  style={{ background: "transparent", color: "#8f98a0", border: "1px solid #2a475e" }}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
+                  </svg>
+                  Changelog
+                </a>
+                {downloadUrl ? (
+                  <button onClick={handleInstall}
+                    className="px-5 py-2 rounded text-sm font-semibold flex items-center gap-2"
+                    style={{ background: "#2a6db5", color: "#fff" }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="8 17 12 21 16 17" /><line x1="12" y1="12" x2="12" y2="21" />
+                      <path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29" />
+                    </svg>
+                    Install Now
+                  </button>
+                ) : (
+                  <button onClick={onClose}
+                    className="px-4 py-2 rounded text-sm"
+                    style={{ background: "#2a3f54", color: "#c6d4df" }}>Close</button>
+                )}
+              </div>
+            </>
+          )}
+
+          {phase === "downloading" && (
+            <div className="space-y-4 py-2">
+              <div className="flex items-center gap-3">
+                <div className="relative flex-shrink-0">
+                  <div className="w-10 h-10 rounded-full" style={{ border: "3px solid #1e3a50" }} />
+                  <div className="absolute inset-0 w-10 h-10 rounded-full animate-spin border-t-transparent border-2"
+                    style={{ borderColor: "#66c0f4", borderTopColor: "transparent" }} />
+                </div>
+                <div>
+                  <p className="text-sm font-medium" style={{ color: "#fff" }}>Downloading & installing…</p>
+                  <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>The app will relaunch automatically.</p>
+                </div>
+              </div>
+              {/* Indeterminate progress bar */}
+              <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "#0d1b2a" }}>
+                <div className="h-full rounded-full animate-pulse" style={{ background: "linear-gradient(90deg, #2a6db5, #66c0f4)", width: "60%" }} />
+              </div>
+            </div>
+          )}
+
+          {phase === "done" && (
+            <p className="text-sm text-center py-3" style={{ color: "#6dbf6d" }}>
+              ✓ Update applied! Relaunching…
+            </p>
+          )}
+
+          {phase === "error" && (
+            <div className="space-y-3">
+              <div className="rounded p-3" style={{ background: "#3a1010", border: "1px solid #8b2020" }}>
+                <p className="text-xs font-semibold mb-1" style={{ color: "#e57373" }}>Auto-install failed</p>
+                <p className="text-xs font-mono break-all" style={{ color: "#c89090" }}>{errMsg}</p>
+              </div>
+              <p className="text-xs" style={{ color: "#8f98a0" }}>
+                You can{" "}
+                <a href={url} target="_blank" rel="noreferrer" style={{ color: "#66c0f4" }}>download the update manually</a>
+                {" "}from the release page.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button onClick={() => { setPhase("idle"); setErrMsg(""); }}
+                  className="px-4 py-2 rounded text-sm"
+                  style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Retry</button>
+                <button onClick={onClose}
+                  className="px-4 py-2 rounded text-sm"
+                  style={{ background: "#2a3f54", color: "#c6d4df" }}>Close</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [games, setGames]             = useState<Game[]>(() => loadCache<Game[]>(SK_GAMES, []));
-  const [stats, setStats]             = useState<Record<string, GameStats>>(() => loadCache(SK_STATS, {}));
-  const [metadata, setMetadata]       = useState<Record<string, GameMetadata>>(() => loadCache(SK_META, {}));
-  const [scannedPath, setScannedPath] = useState<string>(() => localStorage.getItem(SK_PATH) ?? "");
-  const [selected, setSelected]       = useState<Game | null>(null);
-  const [search, setSearch]           = useState("");
-  const [syncState, setSyncState]     = useState<"idle" | "syncing" | "full-scan">("idle");
+  // ── Migrate legacy single-path storage to new multi-folder array ────────────
+  const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>(() => {
+    const stored = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
+    if (stored.length > 0) return stored;
+    // Backward compat: promote old single scanned-path
+    const legacy = localStorage.getItem(SK_PATH);
+    if (legacy) return [{ path: legacy }];
+    return [];
+  });
+
+  const [games, setGames] = useState<Game[]>(() => loadCache<Game[]>(SK_GAMES, []));
+  const [stats, setStats] = useState<Record<string, GameStats>>(() => loadCache(SK_STATS, {}));
+  const [metadata, setMetadata] = useState<Record<string, GameMetadata>>(() => loadCache(SK_META, {}));
+  const [selected, setSelected] = useState<Game | null>(null);
+  const [search, setSearch] = useState("");
+  const [syncState, setSyncState] = useState<"idle" | "syncing" | "full-scan">("idle");
   const [deleteTarget, setDeleteTarget] = useState<Game | null>(null);
-  const [isDeleting, setIsDeleting]   = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [showLinkModal, setShowLinkModal] = useState(false);
-  const [showF95Login, setShowF95Login]   = useState(false);
-  const [f95LoggedIn, setF95LoggedIn]     = useState(false);
+  const [showF95Login, setShowF95Login] = useState(false);
+  const [f95LoggedIn, setF95LoggedIn] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
-  const [screenshots, setScreenshots]   = useState<Record<string, Screenshot[]>>({});
-  const [hiddenGames, setHiddenGames]   = useState<Record<string, boolean>>(() => loadCache(SK_HIDDEN, {}));
-  const [favGames, setFavGames]         = useState<Record<string, boolean>>(() => loadCache(SK_FAVS, {}));
+  const [screenshots, setScreenshots] = useState<Record<string, Screenshot[]>>({});
+  const [hiddenGames, setHiddenGames] = useState<Record<string, boolean>>(() => loadCache(SK_HIDDEN, {}));
+  const [favGames, setFavGames] = useState<Record<string, boolean>>(() => loadCache(SK_FAVS, {}));
   const [customizations, setCustomizations] = useState<Record<string, GameCustomization>>(() => loadCache(SK_CUSTOM, {}));
-  const [notes, setNotes]               = useState<Record<string, string>>(() => loadCache(SK_NOTES, {}));
-  const [collections, setCollections]   = useState<Collection[]>(() => loadCache(SK_COLLECTIONS, []));
-  const [activeCollectionId, setActiveCollectionId]       = useState<string | null>(null);
+  const [notes, setNotes] = useState<Record<string, string>>(() => loadCache(SK_NOTES, {}));
+  const [collections, setCollections] = useState<Collection[]>(() => loadCache(SK_COLLECTIONS, []));
+  const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null);
   const [showManageCollections, setShowManageCollections] = useState(false);
-  const [creatingCollection, setCreatingCollection]       = useState(false);
-  const [newCollectionName, setNewCollectionName]         = useState("");
-  const [newCollectionColor, setNewCollectionColor]       = useState(COLLECTION_COLORS[0]);
-  const [renamingCollectionId, setRenamingCollectionId]   = useState<string | null>(null);
+  const [creatingCollection, setCreatingCollection] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [newCollectionColor, setNewCollectionColor] = useState(COLLECTION_COLORS[0]);
+  const [renamingCollectionId, setRenamingCollectionId] = useState<string | null>(null);
   const [renamingCollectionName, setRenamingCollectionName] = useState("");
   const [showCustomizeModal, setShowCustomizeModal] = useState(false);
-  const [showNotesModal, setShowNotesModal]         = useState(false);
-  const [filterMode, setFilterMode]     = useState<FilterMode>("all");
-  const [sortMode, setSortMode]         = useState<SortMode>("lastPlayed");
+  const [showNotesModal, setShowNotesModal] = useState(false);
+  const [filterMode, setFilterMode] = useState<FilterMode>("all");
+  const [sortMode, setSortMode] = useState<SortMode>("lastPlayed");
+  /** custom-order map: contextKey -> ordered array of game paths */
+  const [customOrder, setCustomOrder] = useState<Record<string, string[]>>(
+    () => loadCache(SK_ORDER, {})
+  );
+  /** path currently being dragged in the sidebar */
+  const dragPath = useRef<string | null>(null);
+
+  /**
+   * Key that identifies the current "view context" for custom ordering.
+   * Global view  ->  "global"
+   * Collection   ->  "col:" + collectionId
+   */
+  const orderKey = activeCollectionId ? `col:${activeCollectionId}` : "global";
+
+  /** Reorder customOrder[orderKey] by moving `fromPath` before `toPath`. */
+  const applyDrop = (fromPath: string, toPath: string) => {
+    setCustomOrder((prev) => {
+      // Start from the current custom order for this context, or build one from `filtered`
+      const base: string[] = prev[orderKey] ?? filtered.map((g) => g.path);
+      const without = base.filter((p) => p !== fromPath);
+      const idx = without.indexOf(toPath);
+      const next = idx === -1
+        ? [...without, fromPath]
+        : [...without.slice(0, idx), fromPath, ...without.slice(idx)];
+      const updated = { ...prev, [orderKey]: next };
+      saveCache(SK_ORDER, updated);
+      return updated;
+    });
+  };
   const [runningGamePath, setRunningGamePath] = useState<string | null>(null);
-  const [platform, setPlatform]           = useState<string>("windows");
-  const [launchConfig, setLaunchConfig]   = useState<LaunchConfig>(() => loadCache(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG));
-  const [, setRecentGames]     = useState<RecentGame[]>(() => loadCache(SK_RECENT, []));
+  const [platform, setPlatform] = useState<string>("windows");
+  const [launchConfig, setLaunchConfig] = useState<LaunchConfig>(() => loadCache(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG));
+  const [, setRecentGames] = useState<RecentGame[]>(() => loadCache(SK_RECENT, []));
   const [showWineSettings, setShowWineSettings] = useState(false);
-  const [appUpdate, setAppUpdate]         = useState<{ version: string; url: string } | null>(null);
+  const [appUpdate, setAppUpdate] = useState<{ version: string; url: string; downloadUrl: string } | null>(null);
+  const [showAppUpdateModal, setShowAppUpdateModal] = useState(false);
+  /** Controls the "+ Add" dropdown in the sidebar */
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement>(null);
   const isSyncing = useRef(false);
 
   // No auto-select: show HomeView when nothing is selected
 
   useEffect(() => {
-    invoke<boolean>("f95_is_logged_in").then(setF95LoggedIn).catch(() => {});
-    invoke<string>("get_platform").then(setPlatform).catch(() => {});
+    invoke<boolean>("f95_is_logged_in").then(setF95LoggedIn).catch(() => { });
+    invoke<string>("get_platform").then(setPlatform).catch(() => { });
     // Check for a newer release on GitHub (once per startup, never again)
-    invoke<{ version: string; url: string } | null>("check_app_update")
-      .then((u) => { if (u) setAppUpdate(u); })
-      .catch(() => {});
+    invoke<{ version: string; url: string; download_url: string } | null>("check_app_update")
+      .then((u) => { if (u) setAppUpdate({ version: u.version, url: u.url, downloadUrl: u.download_url }); })
+      .catch(() => { });
     // Push stored recent games into the tray on startup
     const storedRecent = loadCache<RecentGame[]>(SK_RECENT, []);
     if (storedRecent.length > 0) {
-      invoke("set_recent_games", { games: storedRecent }).catch(() => {});
+      invoke("set_recent_games", { games: storedRecent }).catch(() => { });
     }
-    const path = localStorage.getItem(SK_PATH);
-    if (path) runIncrementalSync(path);
+    // Initial incremental sync for all known library folders
+    const folders = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
+    const legacyPath = localStorage.getItem(SK_PATH);
+    const roots = folders.length > 0 ? folders : (legacyPath ? [{ path: legacyPath }] : []);
+    if (roots.length > 0) runIncrementalSyncAll(roots);
     const unlistenFinished = listen("game-finished", (ev: any) => {
       const p = ev.payload as { path: string; duration_secs: number };
       updateStats(p.path, p.duration_secs);
@@ -1616,62 +2098,155 @@ export default function App() {
     };
   }, []);
 
+  // Close the Add dropdown when clicking outside
+  useEffect(() => {
+    if (!showAddMenu) return;
+    const h = (e: MouseEvent) => {
+      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) setShowAddMenu(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [showAddMenu]);
+
   // Load on-disk screenshots whenever the selected game changes
   useEffect(() => {
     if (!selected) return;
     invoke<Screenshot[]>("get_screenshots", { gameExe: selected.path })
       .then((shots) => setScreenshots((prev) => ({ ...prev, [selected.path]: shots })))
-      .catch(() => {});
+      .catch(() => { });
   }, [selected?.path]);
 
   const updateStats = (path: string, dur: number) => {
     setStats((prev) => {
-      const cur = prev[path] || { totalTime: 0, lastPlayed: 0, lastSession: 0 };
-      const next = { ...prev, [path]: { totalTime: cur.totalTime + dur, lastPlayed: Date.now(), lastSession: dur } };
+      const cur = prev[path] || { totalTime: 0, lastPlayed: 0, lastSession: 0, launchCount: 0 };
+      const next = {
+        ...prev,
+        [path]: {
+          totalTime: cur.totalTime + dur,
+          lastPlayed: Date.now(),
+          lastSession: dur,
+          launchCount: (cur.launchCount ?? 0) + 1,
+        },
+      };
       saveCache(SK_STATS, next); return next;
     });
   };
 
-  const persistGames = (ng: Game[], nm: DirMtime[], path: string) => {
-    setGames(ng); saveCache(SK_GAMES, ng); saveCache(SK_MTIMES, nm);
-    localStorage.setItem(SK_PATH, path); setScannedPath(path);
+  // ── Persist helpers ─────────────────────────────────────────────────────────
+  /** Merge scanned results from one folder into the global game list. */
+  const mergeGames = (scanned: Game[], nm: DirMtime[], folderPath: string) => {
+    setGames((prev) => {
+      // Remove all entries that previously came from this folder path
+      const kept = prev.filter((g) => !g.path.startsWith(folderPath + "\\") && !g.path.startsWith(folderPath + "/") && g.path !== folderPath);
+      const merged = [...kept, ...scanned];
+      saveCache(SK_GAMES, merged);
+      return merged;
+    });
+    saveCache(SK_MTIMES, nm);
   };
 
-  const runIncrementalSync = async (path: string) => {
+  const persistFolders = (folders: LibraryFolder[]) => {
+    setLibraryFolders(folders);
+    saveCache(SK_FOLDERS, folders);
+  };
+
+  // ── Scanning ────────────────────────────────────────────────────────────────
+  const runIncrementalSyncAll = async (folders: LibraryFolder[]) => {
     if (isSyncing.current) return;
     isSyncing.current = true; setSyncState("syncing");
     try {
-      const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games_incremental", {
-        path, cachedGames: loadCache<Game[]>(SK_GAMES, []), cachedMtimes: loadCache<DirMtime[]>(SK_MTIMES, []),
-      });
-      persistGames(ng, nm, path);
-    } catch { await runFullScan(path); }
-    finally { isSyncing.current = false; setSyncState("idle"); }
+      for (const f of folders) {
+        try {
+          const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games_incremental", {
+            path: f.path,
+            cachedGames: loadCache<Game[]>(SK_GAMES, []),
+            cachedMtimes: loadCache<DirMtime[]>(SK_MTIMES, []),
+          });
+          mergeGames(ng, nm, f.path);
+        } catch {
+          // Fall back to full scan for this folder
+          const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: f.path }).catch(() => [[], []] as [Game[], DirMtime[]]);
+          mergeGames(ng, nm, f.path);
+        }
+      }
+    } finally {
+      isSyncing.current = false; setSyncState("idle");
+    }
   };
 
-  const runFullScan = async (path: string) => {
+  const runFullScanAll = async (folders: LibraryFolder[]) => {
     setSyncState("full-scan");
     try {
-      const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path });
-      persistGames(ng, nm, path);
+      for (const f of folders) {
+        const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: f.path }).catch(() => [[], []] as [Game[], DirMtime[]]);
+        mergeGames(ng, nm, f.path);
+      }
+    } finally {
+      setSyncState("idle");
+    }
+  };
+
+  // Add a new library folder (scan it fresh and register it)
+  const handleAddFolder = async () => {
+    setShowAddMenu(false);
+    const sel = await open({ directory: true, multiple: false }).catch(() => null);
+    if (!sel || typeof sel !== "string") return;
+    // Skip if already registered
+    if (libraryFolders.some((f) => f.path === sel)) return;
+    const newFolders = [...libraryFolders, { path: sel }];
+    persistFolders(newFolders);
+    setSyncState("full-scan");
+    try {
+      const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: sel });
+      mergeGames(ng, nm, sel);
     } catch (e) { alert("Failed to scan: " + e); }
     finally { setSyncState("idle"); }
   };
 
-  const handleSelectFolder = async () => {
-    const sel = await open({ directory: true, multiple: false }).catch(() => null);
-    if (sel && typeof sel === "string") {
-      localStorage.removeItem(SK_GAMES); localStorage.removeItem(SK_MTIMES);
-      await runFullScan(sel);
-    }
+  // Add a game manually by pointing at its .exe
+  const handleAddGameManually = async () => {
+    setShowAddMenu(false);
+    const sel = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Executable", extensions: ["exe", "sh", "bin", "app"] }],
+    }).catch(() => null);
+    if (!sel || typeof sel !== "string") return;
+    const name = deriveGameName(sel);
+    const newGame: Game = { name, path: sel };
+    setGames((prev) => {
+      if (prev.some((g) => g.path === sel)) return prev; // already exists
+      const next = [...prev, newGame];
+      saveCache(SK_GAMES, next);
+      return next;
+    });
+    setSelected(newGame);
+  };
+
+  // Remove a library folder (and its games from the list)
+  const handleRemoveFolder = (folderPath: string) => {
+    const newFolders = libraryFolders.filter((f) => f.path !== folderPath);
+    persistFolders(newFolders);
+    setGames((prev) => {
+      const kept = prev.filter(
+        (g) =>
+          !g.path.startsWith(folderPath + "\\") &&
+          !g.path.startsWith(folderPath + "/") &&
+          g.path !== folderPath
+      );
+      saveCache(SK_GAMES, kept);
+      return kept;
+    });
   };
 
   const launchGame = async (path: string) => {
     const useRunner = launchConfig.enabled && platform !== "windows";
     const runner = useRunner ? (launchConfig.runnerPath || (launchConfig.runner !== "custom" ? launchConfig.runner : null)) : null;
     const prefix = useRunner && launchConfig.prefixPath ? launchConfig.prefixPath : null;
+    // Honour per-game executable override (keeps original `path` as the cache key)
+    const actualPath = customizations[path]?.exeOverride ?? path;
     try {
-      await invoke("launch_game", { path, runner, prefix });
+      await invoke("launch_game", { path: actualPath, runner, prefix });
       // ── Track recent games (last 5, deduplicated) ────────────────────────
       const game = games.find((g) => g.path === path);
       if (game) {
@@ -1679,9 +2254,9 @@ export default function App() {
           customizations[path]?.displayName ?? metadata[path]?.title ?? game.name;
         setRecentGames((prev) => {
           const filtered = prev.filter((r) => r.path !== path);
-          const updated  = [{ name: displayName, path }, ...filtered].slice(0, 5);
+          const updated = [{ name: displayName, path }, ...filtered].slice(0, 5);
           saveCache(SK_RECENT, updated);
-          invoke("set_recent_games", { games: updated }).catch(() => {});
+          invoke("set_recent_games", { games: updated }).catch(() => { });
           return updated;
         });
       }
@@ -1736,7 +2311,7 @@ export default function App() {
   const handleSaveCustomization = (c: GameCustomization) => {
     if (!selected) return;
     const next = { ...customizations };
-    if (!c.displayName && !c.coverUrl && !c.backgroundUrl) delete next[selected.path];
+    if (!c.displayName && !c.coverUrl && !c.backgroundUrl && !c.exeOverride) delete next[selected.path];
     else next[selected.path] = c;
     setCustomizations(next); saveCache(SK_CUSTOM, next);
   };
@@ -1782,6 +2357,52 @@ export default function App() {
   const gameDisplayName = (g: Game) =>
     customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name;
 
+  // ── Context menu state ──────────────────────────────────────────────────────
+  interface CtxMenu { x: number; y: number; game: Game; }
+  const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const h = (e: MouseEvent) => {
+      if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target as Node)) setCtxMenu(null);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [ctxMenu]);
+
+  /** Re-scan just the game's immediate parent folder, merging results. */
+  const rescanGameFolder = async (game: Game) => {
+    setCtxMenu(null);
+    const folder = game.path.replace(/[\\/][^\\/]+$/, "");
+    setSyncState("full-scan");
+    try {
+      const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: folder });
+      mergeGames(ng, nm, folder);
+    } catch (e) { alert("Rescan failed: " + e); }
+    finally { setSyncState("idle"); }
+  };
+
+  // ── Subfolder grouping ──────────────────────────────────────────────────────
+  /** Collapsed sub-folder groups (set of parent-dir paths) */
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (dir: string) =>
+    setCollapsedGroups((prev) => {
+      const s = new Set(prev);
+      if (s.has(dir)) s.delete(dir); else s.add(dir);
+      return s;
+    });
+
+  /**
+   * Build the grouped structure from `filtered`.
+   * A "group" exists when ≥2 filtered games share the same immediate-parent dir.
+   * Single-game dirs are flattened (rendered ungrouped).
+   */
+  type SidebarItem =
+    | { kind: "game"; game: Game }
+    | { kind: "group-header"; dir: string; label: string; count: number }
+    | { kind: "group-game"; game: Game; dir: string };
+
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     const activeCol = activeCollectionId ? collections.find((c) => c.id === activeCollectionId) : null;
@@ -1791,11 +2412,11 @@ export default function App() {
         if (!name.includes(q)) return false;
         if (activeCol && !activeCol.gamePaths.includes(g.path)) return false;
         const isHid = !!hiddenGames[g.path];
-        if (filterMode === "all")     { if (isHid && !search && !activeCol) return false; }
-        else if (filterMode === "favs")    return !!favGames[g.path];
-        else if (filterMode === "hidden")  return isHid;
-        else if (filterMode === "f95")     return metadata[g.path]?.source === "f95";
-        else if (filterMode === "dlsite")  return metadata[g.path]?.source === "dlsite";
+        if (filterMode === "all") { if (isHid && !search && !activeCol) return false; }
+        else if (filterMode === "favs") return !!favGames[g.path];
+        else if (filterMode === "hidden") return isHid;
+        else if (filterMode === "f95") return metadata[g.path]?.source === "f95";
+        else if (filterMode === "dlsite") return metadata[g.path]?.source === "dlsite";
         else if (filterMode === "unlinked") return !metadata[g.path];
         return true;
       })
@@ -1810,11 +2431,151 @@ export default function App() {
         const af = favGames[a.path] ? 0 : 1, bf = favGames[b.path] ? 0 : 1;
         if (af !== bf) return af - bf;
         return gameDisplayName(a).localeCompare(gameDisplayName(b));
+      })
+      // custom sort: re-sort by saved order (unknown paths go to the end)
+      .sort((a, b) => {
+        if (sortMode !== "custom") return 0; // already sorted above
+        const order = customOrder[orderKey] ?? [];
+        const ai = order.indexOf(a.path);
+        const bi = order.indexOf(b.path);
+        return (ai === -1 ? 9999 : ai) - (bi === -1 ? 9999 : bi);
       });
-  }, [games, search, hiddenGames, favGames, customizations, metadata, filterMode, sortMode, stats, collections, activeCollectionId]); // eslint-disable-line
+  }, [games, search, hiddenGames, favGames, customizations, metadata, filterMode, sortMode, stats, collections, activeCollectionId, customOrder, orderKey]); // eslint-disable-line
+
+  // When entering custom sort mode, seed the order from the current sorted list
+  // so the user's first drag starts from a sensible baseline.
+  useEffect(() => {
+    if (sortMode !== "custom") return;
+    setCustomOrder((prev) => {
+      if (prev[orderKey]) return prev; // already seeded
+      const seeded = { ...prev, [orderKey]: filtered.map((g) => g.path) };
+      saveCache(SK_ORDER, seeded);
+      return seeded;
+    });
+  }, [sortMode, orderKey]); // eslint-disable-line
+
+  const sidebarItems = useMemo<SidebarItem[]>(() => {
+    // Count games per parent dir
+    const dirCount = new Map<string, number>();
+    for (const g of filtered) {
+      const dir = g.path.replace(/[\\/][^\\/]+$/, "");
+      dirCount.set(dir, (dirCount.get(dir) ?? 0) + 1);
+    }
+    const items: SidebarItem[] = [];
+    const seenDirs = new Set<string>();
+    for (const g of filtered) {
+      const dir = g.path.replace(/[\\/][^\\/]+$/, "");
+      const count = dirCount.get(dir) ?? 1;
+      if (count < 2) {
+        items.push({ kind: "game", game: g });
+      } else {
+        if (!seenDirs.has(dir)) {
+          seenDirs.add(dir);
+          const label = dir.replace(/\\/g, "/").split("/").pop() ?? dir;
+          items.push({ kind: "group-header", dir, label, count });
+        }
+        items.push({ kind: "group-game", game: g, dir });
+      }
+    }
+    return items;
+  }, [filtered]);
+
+  // ── Virtual list for sidebar (handles 1000+ games smoothly) ──────────────
+  const sidebarListRef = useRef<HTMLDivElement>(null);
+  const getSidebarItemHeight = useCallback((item: SidebarItem) =>
+    item.kind === "group-header" ? 28 : 52
+    , []);
+  const { virtualItems: vItems, totalHeight: vTotalH } = useVirtualList(
+    sidebarItems,
+    getSidebarItemHeight,
+    sidebarListRef as { current: HTMLElement | null },
+    5,
+  );
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: "#1b2838", color: "#c6d4df", fontFamily: "'Arial', sans-serif" }}>
+
+      {/* ── Context menu (right-click on game) ── */}
+      {ctxMenu && (
+        <div ref={ctxMenuRef}
+          className="fixed z-[9999] rounded-lg py-1 shadow-2xl"
+          style={{
+            left: Math.min(ctxMenu.x, window.innerWidth - 200),
+            top: Math.min(ctxMenu.y, window.innerHeight - 180),
+            width: 192,
+            background: "#1e2d3d",
+            border: "1px solid #2a475e",
+          }}>
+          {/* game name header */}
+          <div className="px-3 py-2 border-b" style={{ borderColor: "#1b3a50" }}>
+            <p className="text-[10px] font-semibold truncate" style={{ color: "#8f98a0" }}>
+              {gameDisplayName(ctxMenu.game)}
+            </p>
+          </div>
+          {/* Open */}
+          <button className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
+            style={{ color: "#c6d4df" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            onClick={() => { setSelected(ctxMenu.game); setCtxMenu(null); }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
+            </svg>
+            Open
+          </button>
+          {/* Rescan folder */}
+          <button className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
+            style={{ color: "#c6d4df" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            onClick={() => rescanGameFolder(ctxMenu.game)}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21.5 2v6h-6" /><path d="M2.5 22v-6h6" />
+              <path d="M22 11.5A10 10 0 0 0 3.2 7.2M2 12.5a10 10 0 0 0 18.8 4.2" />
+            </svg>
+            Rescan folder
+          </button>
+          <div style={{ borderTop: "1px solid #1b3a50", margin: "4px 0" }} />
+          {/* Fav toggle */}
+          <button className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
+            style={{ color: favGames[ctxMenu.game.path] ? "#c8a951" : "#c6d4df" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            onClick={() => {
+              const next = { ...favGames };
+              if (next[ctxMenu.game.path]) delete next[ctxMenu.game.path];
+              else next[ctxMenu.game.path] = true;
+              setFavGames(next); saveCache(SK_FAVS, next);
+              setCtxMenu(null);
+            }}>
+            <svg width="12" height="12" viewBox="0 0 24 24"
+              fill={favGames[ctxMenu.game.path] ? "#c8a951" : "none"}
+              stroke="#c8a951" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
+            {favGames[ctxMenu.game.path] ? "Remove from favourites" : "Add to favourites"}
+          </button>
+          {/* Hide toggle */}
+          <button className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
+            style={{ color: "#c6d4df" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            onClick={() => {
+              const next = { ...hiddenGames };
+              if (next[ctxMenu.game.path]) delete next[ctxMenu.game.path];
+              else next[ctxMenu.game.path] = true;
+              setHiddenGames(next); saveCache(SK_HIDDEN, next);
+              setCtxMenu(null);
+            }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {hiddenGames[ctxMenu.game.path]
+                ? <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>
+                : <><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></>}
+            </svg>
+            {hiddenGames[ctxMenu.game.path] ? "Show game" : "Hide game"}
+          </button>
+        </div>
+      )}
 
       {/* ── Sidebar ── */}
       <aside className="flex flex-col flex-shrink-0 w-64 h-full" style={{ background: "#171a21", borderRight: "1px solid #0d1117" }}>
@@ -1846,45 +2607,49 @@ export default function App() {
           {/* Filter chips */}
           <div className="flex flex-wrap gap-1 mb-1.5">
             {([
-              ["all",     "All"],
-              ["favs",    "★ Favs"],
-              ["hidden",  "👁 Hidden"],
-              ["f95",     "F95"],
-              ["dlsite",  "DLsite"],
-              ["unlinked","Unlinked"],
+              ["all", "All"],
+              ["favs", "★ Favs"],
+              ["hidden", "👁 Hidden"],
+              ["f95", "F95"],
+              ["dlsite", "DLsite"],
+              ["unlinked", "Unlinked"],
             ] as [FilterMode, string][]).map(([mode, label]) => (
               <button key={mode} onClick={() => setFilterMode(mode)}
                 className="px-2 py-0.5 rounded text-[10px] font-semibold"
                 style={{
                   background: filterMode === mode ? "#2a6db5" : "#1b2d3d",
-                  color:      filterMode === mode ? "#fff"    : "#5a6a7a",
-                  border:     `1px solid ${filterMode === mode ? "#3d7dc8" : "#253545"}`,
+                  color: filterMode === mode ? "#fff" : "#5a6a7a",
+                  border: `1px solid ${filterMode === mode ? "#3d7dc8" : "#253545"}`,
                 }}>{label}</button>
             ))}
           </div>
           {/* Sort */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[10px] flex-shrink-0" style={{ color: "#4a5568" }}>Sort:</span>
             {([
               ["lastPlayed", "Recent"],
-              ["playtime",   "Time"],
-              ["name",       "Name"],
+              ["playtime", "Time"],
+              ["name", "Name"],
+              ["custom", "Custom"],
             ] as [SortMode, string][]).map(([mode, label]) => (
               <button key={mode} onClick={() => setSortMode(mode)}
                 className="px-2 py-0.5 rounded text-[10px]"
                 style={{
                   background: sortMode === mode ? "#2a3f54" : "transparent",
-                  color:      sortMode === mode ? "#c6d4df" : "#4a5568",
-                  border:     `1px solid ${sortMode === mode ? "#3d5a73" : "transparent"}`,
+                  color: sortMode === mode ? "#c6d4df" : "#4a5568",
+                  border: `1px solid ${sortMode === mode ? "#3d5a73" : "transparent"}`,
                 }}>{label}</button>
             ))}
+            {sortMode === "custom" && (
+              <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }} title="Drag rows to reorder">⠿ drag</span>
+            )}
           </div>
         </div>
         {/* ── Collections ── */}
         <div className="border-b" style={{ borderColor: "#0d1117" }}>
           <div className="flex items-center px-3 pt-2 pb-1 gap-1">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
             </svg>
             <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ color: "#4a5568" }}>Collections</span>
             {activeCollectionId && (
@@ -1977,74 +2742,134 @@ export default function App() {
             </div>
           )}
         </div>
-        <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+        <div
+          ref={sidebarListRef}
+          className="flex-1 overflow-y-auto"
+          style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}
+        >
           {syncState === "full-scan" ? (
             <div className="flex flex-col items-center justify-center h-32 gap-2">
               <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2" style={{ borderColor: "#66c0f4" }} />
               <span className="text-xs" style={{ color: "#8f98a0" }}>Scanning…</span>
             </div>
-          ) : filtered.length === 0 ? (
+          ) : sidebarItems.length === 0 ? (
             <p className="px-4 py-6 text-xs text-center" style={{ color: "#8f98a0" }}>
-              {games.length === 0 ? "Add a library folder" : "No games match"}
+              {games.length === 0 ? "Add a library folder to get started" : "No games match"}
             </p>
-          ) : filtered.map((game) => {
-            const isSelected = selected?.path === game.path;
-            const m   = metadata[game.path];
-            const cus = customizations[game.path];
-            const coverSrc = cus?.coverUrl ?? m?.cover_url;
-            const name = gameDisplayName(game);
-            const isFavItem = !!favGames[game.path];
-            const isHiddenItem = !!hiddenGames[game.path];
-            return (
-              <button key={game.path} onClick={() => setSelected(game)}
-                className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors"
-                style={{
-                  background: isSelected ? "#2a475e" : "transparent",
-                  borderLeft: `3px solid ${isSelected ? "#66c0f4" : isFavItem ? "#c8a951" : "transparent"}`,
-                  color: isSelected ? "#fff" : "#8f98a0",
-                  opacity: isHiddenItem ? 0.6 : 1,
-                }}>
-                <div className="w-9 h-9 rounded flex-shrink-0 overflow-hidden relative"
-                  style={{ background: heroGradient(game.name) }}>
-                  {coverSrc
-                    ? <img src={coverSrc} alt="" className="w-full h-full object-cover" />
-                    : <div className="w-full h-full flex items-center justify-center text-sm font-bold text-white">
-                        {name.charAt(0).toUpperCase()}
-                      </div>}
-                  {isFavItem && (
-                    <span className="absolute top-0 right-0 text-[8px] leading-none p-px"
-                      style={{ color: "#c8a951", textShadow: "0 0 3px #000" }}>★</span>
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1">
-                    <p className="text-xs font-medium truncate flex-1">{name}</p>
-                    {isHiddenItem && (
-                      <span className="text-[9px] px-1 rounded flex-shrink-0"
-                        style={{ background: "#2a3f54", color: "#4a5568" }}>hidden</span>
-                    )}
-                  </div>
-                  <p className="text-[10px] truncate" style={{ color: "#4a5568" }}>
-                    {stats[game.path]?.totalTime > 0 ? formatTime(stats[game.path].totalTime) : "Never played"}
-                  </p>
-                  {collections.some((c) => c.gamePaths.includes(game.path)) && (
-                    <div className="flex gap-0.5 mt-0.5">
-                      {collections.filter((c) => c.gamePaths.includes(game.path)).map((c) => (
-                        <span key={c.id} title={c.name} className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
-                      ))}
+          ) : (
+            <div style={{ position: "relative", height: `${vTotalH}px` }}>
+              {vItems.map(({ item, offsetTop }) => {
+                if (item.kind === "group-header") {
+                  const collapsed = collapsedGroups.has(item.dir);
+                  return (
+                    <button key={`hdr:${item.dir}`}
+                      onClick={() => toggleGroup(item.dir)}
+                      className="w-full flex items-center gap-1.5 px-2.5 py-1 text-left"
+                      style={{
+                        position: "absolute", top: offsetTop, left: 0, right: 0, height: 28,
+                        background: "#0d1117", borderBottom: "1px solid #1a2535"
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "#13202e")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "#0d1117")}>
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#4a5568"
+                        strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                        style={{ transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4a7a9b"
+                        strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                      </svg>
+                      <span className="flex-1 text-[10px] font-semibold truncate" style={{ color: "#8f98a0" }}>
+                        {item.label}
+                      </span>
+                      <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>{item.count}</span>
+                    </button>
+                  );
+                }
+
+                const game = item.kind === "group-game" ? item.game : (item as { kind: "game"; game: Game }).game;
+                const isGrouped = item.kind === "group-game";
+                if (isGrouped && collapsedGroups.has((item as { kind: "group-game"; dir: string; game: Game }).dir)) return null;
+
+                const isSelected = selected?.path === game.path;
+                const m = metadata[game.path];
+                const cus = customizations[game.path];
+                const coverSrc = cus?.coverUrl ?? m?.cover_url;
+                const name = gameDisplayName(game);
+                const isFavItem = !!favGames[game.path];
+                const isHiddenItem = !!hiddenGames[game.path];
+                return (
+                  <button key={game.path} onClick={() => setSelected(game)}
+                    onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, game }); }}
+                    draggable={sortMode === "custom"}
+                    onDragStart={(e) => {
+                      dragPath.current = game.path;
+                      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+                    }}
+                    onDragOver={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (dragPath.current && dragPath.current !== game.path) {
+                        applyDrop(dragPath.current, game.path);
+                      }
+                      dragPath.current = null;
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors"
+                    style={{
+                      position: "absolute", top: offsetTop, left: 0, right: 0, height: 52,
+                      background: isSelected ? "#2a475e" : "transparent",
+                      borderLeft: `3px solid ${isSelected ? "#66c0f4" : isFavItem ? "#c8a951" : "transparent"}`,
+                      color: isSelected ? "#fff" : "#8f98a0",
+                      opacity: isHiddenItem ? 0.6 : 1,
+                      paddingLeft: isGrouped ? "1.75rem" : undefined,
+                      cursor: sortMode === "custom" ? "grab" : undefined,
+                    }}>
+                    <div className="w-9 h-9 rounded flex-shrink-0 overflow-hidden relative"
+                      style={{ background: heroGradient(game.name) }}>
+                      {coverSrc
+                        ? <img src={coverSrc} alt="" className="w-full h-full object-cover" />
+                        : <div className="w-full h-full flex items-center justify-center text-sm font-bold text-white">
+                          {name.charAt(0).toUpperCase()}
+                        </div>}
+                      {isFavItem && (
+                        <span className="absolute top-0 right-0 text-[8px] leading-none p-px"
+                          style={{ color: "#c8a951", textShadow: "0 0 3px #000" }}>★</span>
+                      )}
                     </div>
-                  )}
-                  {collections.some((c) => c.gamePaths.includes(game.path)) && (
-                    <div className="flex gap-0.5 mt-0.5">
-                      {collections.filter((c) => c.gamePaths.includes(game.path)).map((c) => (
-                        <span key={c.id} title={c.name} className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
-                      ))}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1">
+                        {sortMode === "custom" && (
+                          <span className="text-[11px] flex-shrink-0 leading-none select-none"
+                            style={{ color: "#3a5068" }}>⠿</span>
+                        )}
+                        <p className="text-xs font-medium truncate flex-1">{name}</p>
+                        {isHiddenItem && (
+                          <span className="text-[9px] px-1 rounded flex-shrink-0"
+                            style={{ background: "#2a3f54", color: "#4a5568" }}>hidden</span>
+                        )}
+                      </div>
+                      <p className="text-[10px] truncate" style={{ color: "#4a5568" }}>
+                        {stats[game.path]?.totalTime > 0
+                          ? `${formatTime(stats[game.path].totalTime)}${(stats[game.path].launchCount ?? 0) > 0
+                            ? ` · ${stats[game.path].launchCount}×`
+                            : ""
+                          }`
+                          : "Never played"}
+                      </p>
+                      {collections.some((c) => c.gamePaths.includes(game.path)) && (
+                        <div className="flex gap-0.5 mt-0.5">
+                          {collections.filter((c) => c.gamePaths.includes(game.path)).map((c) => (
+                            <span key={c.id} title={c.name} className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              </button>
-            );
-          })}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div className="px-3 py-3 space-y-1.5 border-t" style={{ borderColor: "#0d1117" }}>
           {syncState === "syncing" && (
@@ -2053,8 +2878,39 @@ export default function App() {
               <span className="text-xs" style={{ color: "#66c0f4" }}>Checking changes…</span>
             </div>
           )}
+
+          {/* Library folders list */}
+          {libraryFolders.length > 0 && (
+            <div className="mb-1">
+              <p className="text-[9px] uppercase tracking-widest mb-1" style={{ color: "#4a5568" }}>Library folders</p>
+              {libraryFolders.map((f) => {
+                const label = f.path.replace(/\\/g, "/").split("/").pop() ?? f.path;
+                return (
+                  <div key={f.path} className="group flex items-center gap-1.5 px-1.5 py-1 rounded"
+                    style={{ background: "transparent" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#1b2838")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                    </svg>
+                    <span className="flex-1 text-[10px] truncate" style={{ color: "#8f98a0" }} title={f.path}>{label}</span>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 text-[11px] px-1"
+                      style={{ color: "#4a5568" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = "#e57373")}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = "#4a5568")}
+                      onClick={() => handleRemoveFolder(f.path)}
+                      title="Remove this folder from library">
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {f95LoggedIn ? (
-            <button onClick={async () => { await invoke("f95_logout").catch(() => {}); setF95LoggedIn(false); }}
+            <button onClick={async () => { await invoke("f95_logout").catch(() => { }); setF95LoggedIn(false); }}
               className="w-full py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
               style={{ background: "#2a1f00", color: "#c8a951", border: "1px solid #5a4200" }}>
               <span className="w-1.5 h-1.5 rounded-full bg-current" /> F95 Logged In — Sign out
@@ -2067,30 +2923,72 @@ export default function App() {
             </button>
           )}
           {appUpdate && (
-            <a
-              href={appUpdate.url}
-              target="_blank"
-              rel="noreferrer"
+            <button
+              onClick={() => setShowAppUpdateModal(true)}
               className="w-full py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1.5"
-              style={{ background: "#1a3a1a", color: "#6dbf6d", border: "1px solid #2a5a2a", animation: "pulse 2s infinite" }}
+              style={{ background: "#1a3a1a", color: "#6dbf6d", border: "1px solid #2a5a2a" }}
               onMouseEnter={(e) => (e.currentTarget.style.background = "#1e4a1e")}
               onMouseLeave={(e) => (e.currentTarget.style.background = "#1a3a1a")}
-              title={`v${appUpdate.version} is available — click to open release page`}>
+              title={`v${appUpdate.version} is available — click to install`}>
               ↑ v{appUpdate.version} available
-            </a>
+            </button>
           )}
-          <button onClick={handleSelectFolder}
-            className="w-full py-2 rounded text-xs font-semibold"
-            style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #1b3a50" }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "#3d6b8e")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "#2a475e")}>
-            + Add Library Folder
-          </button>
-          {scannedPath && (
-            <button onClick={() => runFullScan(scannedPath)} disabled={syncState !== "idle"}
+
+          {/* ── Add dropdown ── */}
+          <div ref={addMenuRef} className="relative">
+            <button
+              onClick={() => setShowAddMenu((p) => !p)}
+              className="w-full py-2 rounded text-xs font-semibold flex items-center justify-center gap-1.5"
+              style={{ background: showAddMenu ? "#3d6b8e" : "#2a475e", color: "#c6d4df", border: "1px solid #1b3a50" }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "#3d6b8e")}
+              onMouseLeave={(e) => { if (!showAddMenu) e.currentTarget.style.background = "#2a475e"; }}>
+              {/* plus icon */}
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+              Add…
+              {/* chevron */}
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                style={{ marginLeft: "auto", transform: showAddMenu ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            {showAddMenu && (
+              <div className="absolute bottom-full mb-1 left-0 right-0 rounded-lg py-1 shadow-2xl z-30"
+                style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+                <button
+                  onClick={handleAddFolder}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
+                  style={{ color: "#c6d4df" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  </svg>
+                  Add Library Folder
+                  <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }}>scan dir</span>
+                </button>
+                <button
+                  onClick={handleAddGameManually}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
+                  style={{ color: "#c6d4df" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#c8a951" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
+                  </svg>
+                  Add Game Manually
+                  <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }}>.exe / .sh</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {libraryFolders.length > 0 && (
+            <button onClick={() => runFullScanAll(libraryFolders)} disabled={syncState !== "idle"}
               className="w-full py-1.5 rounded text-xs disabled:opacity-40"
               style={{ background: "transparent", color: "#8f98a0", border: "1px solid #2a3f54" }}>
-              ↺ Force Rescan
+              ↺ Force Rescan All
             </button>
           )}
           {platform !== "windows" && (
@@ -2098,12 +2996,12 @@ export default function App() {
               className="w-full py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
               style={{
                 background: launchConfig.enabled ? "#2a1f3a" : "transparent",
-                color:      launchConfig.enabled ? "#b08ee8" : "#4a5568",
-                border:     `1px solid ${launchConfig.enabled ? "#5a3a8a" : "#2a3f54"}`,
+                color: launchConfig.enabled ? "#b08ee8" : "#4a5568",
+                border: `1px solid ${launchConfig.enabled ? "#5a3a8a" : "#2a3f54"}`,
               }}
-              onMouseEnter={(e) => { if (!launchConfig.enabled) { e.currentTarget.style.color="#8f98a0"; e.currentTarget.style.borderColor="#3d5a73"; }}}
-              onMouseLeave={(e) => { if (!launchConfig.enabled) { e.currentTarget.style.color="#4a5568"; e.currentTarget.style.borderColor="#2a3f54"; }}}>
-              🍷 {launchConfig.enabled ? `${launchConfig.runner.charAt(0).toUpperCase()+launchConfig.runner.slice(1)} active` : "Wine / Proton…"}
+              onMouseEnter={(e) => { if (!launchConfig.enabled) { e.currentTarget.style.color = "#8f98a0"; e.currentTarget.style.borderColor = "#3d5a73"; } }}
+              onMouseLeave={(e) => { if (!launchConfig.enabled) { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.borderColor = "#2a3f54"; } }}>
+              🍷 {launchConfig.enabled ? `${launchConfig.runner.charAt(0).toUpperCase() + launchConfig.runner.slice(1)} active` : "Wine / Proton…"}
             </button>
           )}
         </div>
@@ -2117,12 +3015,25 @@ export default function App() {
               <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.2 }}>
                 <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
               </svg>
-              <p className="text-base" style={{ opacity: 0.4 }}>Add a library folder to get started</p>
-              <button onClick={handleSelectFolder}
-                className="px-6 py-2.5 rounded font-semibold text-sm"
-                style={{ background: "#2a6db5", color: "#fff" }}>
-                Select Library Folder
-              </button>
+              <p className="text-base" style={{ opacity: 0.4 }}>Add a library folder or game to get started</p>
+              <div className="flex gap-3">
+                <button onClick={handleAddFolder}
+                  className="px-5 py-2.5 rounded font-semibold text-sm flex items-center gap-2"
+                  style={{ background: "#2a6db5", color: "#fff" }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  </svg>
+                  Add Library Folder
+                </button>
+                <button onClick={handleAddGameManually}
+                  className="px-5 py-2.5 rounded font-semibold text-sm flex items-center gap-2"
+                  style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d5a73" }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
+                  </svg>
+                  Add Game Manually
+                </button>
+              </div>
             </div>
           ) : (
             <HomeView
@@ -2151,7 +3062,7 @@ export default function App() {
             onPlay={() => launchGame(selected.path)}
             onStop={killGame}
             isRunning={runningGamePath === selected.path}
-            runnerLabel={launchConfig.enabled && platform !== "windows" ? launchConfig.runner.charAt(0).toUpperCase()+launchConfig.runner.slice(1) : undefined}
+            runnerLabel={launchConfig.enabled && platform !== "windows" ? launchConfig.runner.charAt(0).toUpperCase() + launchConfig.runner.slice(1) : undefined}
             onDelete={() => setDeleteTarget(selected)}
             onLinkPage={() => setShowLinkModal(true)}
             onOpenF95Login={() => setShowF95Login(true)}
@@ -2220,6 +3131,14 @@ export default function App() {
       )}
       {showUpdateModal && selected && (
         <UpdateModal game={selected} onClose={() => setShowUpdateModal(false)} />
+      )}
+      {showAppUpdateModal && appUpdate && (
+        <AppUpdateModal
+          version={appUpdate.version}
+          url={appUpdate.url}
+          downloadUrl={appUpdate.downloadUrl}
+          onClose={() => setShowAppUpdateModal(false)}
+        />
       )}
       {showLinkModal && selected && (
         <LinkPageModal

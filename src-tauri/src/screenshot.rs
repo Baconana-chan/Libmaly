@@ -163,6 +163,7 @@ pub fn take_screenshot_manual(state: tauri::State<ActiveGameState>) -> Result<Sc
 
 // ── Public capture entry-point (also used by hotkey thread) ───────────────
 
+#[allow(unused_variables)]
 pub fn capture_window_of(pid: u32, game_exe: &str) -> Result<Screenshot, String> {
     #[cfg(windows)]
     {

@@ -694,7 +694,7 @@ async fn apply_update(app: AppHandle, download_url: String) -> Result<(), String
     // 4. Save and extract the archive
     let archive_name = download_url
         .split('/')
-        .last()
+        .next_back()
         .unwrap_or("update.zip")
         .to_string();
     let archive_path = tmp_dir.join(&archive_name);

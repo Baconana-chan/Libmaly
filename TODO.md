@@ -35,12 +35,12 @@
 
 ## 📊 Stats & Tracking
 
-- [ ] **Play history log** — timestamped session log per game (date, duration); show as a timeline
-- [ ] **Milestones** — "10 hours played" badges, shown on the detail page
-- [ ] **Weekly / monthly chart** — bar chart of playtime over time (per game or total library)
-- [ ] **Most played this week** — widget on HomeView alongside recent games
-- [ ] **Import playtime from Steam** — read `localconfig.vdf` to pre-fill hours for recognised titles
-- [ ] **Session notes** — optional short note per play session ("finished chapter 3", "found secret ending")
+- [x] **Play history log** — timestamped session log per game (date, duration); shown as a timeline in the Game Detail view (max 50 entries per game, scrollable)
+- [x] **Milestones** — 1h / 5h / 10h / 25h / 50h / 100h badges with progress bar to next milestone; shown in detail right panel
+- [x] **Weekly chart** — 7-day SVG bar chart per game (in detail panel) and library-wide (in HomeView)
+- [x] **Most played this week** — widget on HomeView with progress-bar ranking (top 5 games by session seconds this week)
+- [x] **Import playtime from Steam** — reads `localconfig.vdf` from all userdata dirs, fuzzy-matches library games by name, applies playtime only if Steam value exceeds current tracked time
+- [x] **Session notes** — bottom-right toast after each session (≥30 s); editable inline from the Play History timeline
 
 ---
 

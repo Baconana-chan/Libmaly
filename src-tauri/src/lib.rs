@@ -12,7 +12,8 @@ use walkdir::WalkDir;
 
 mod metadata;
 use metadata::{
-    f95_is_logged_in, f95_login, f95_logout, fetch_dlsite_metadata, fetch_f95_metadata,
+    dlsite_is_logged_in, dlsite_login, dlsite_logout, f95_is_logged_in, f95_login, f95_logout,
+    fetch_dlsite_metadata, fetch_f95_metadata,
 };
 
 mod updater;
@@ -891,6 +892,169 @@ fn list_executables_in_folder(folder: String) -> Vec<String> {
     out
 }
 
+// ── Steam playtime import ──────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone)]
+struct SteamEntry {
+    app_id: String,
+    name: String,
+    /// Total playtime in minutes (from `playtime_forever`)
+    played_minutes: u64,
+}
+
+/// Reads Steam's `localconfig.vdf` for every user directory found under the
+/// default Steam path and returns playtime data for all apps.
+/// Falls back gracefully if Steam is not installed or the file is unreadable.
+#[tauri::command]
+fn import_steam_playtime() -> Vec<SteamEntry> {
+    let mut results: Vec<SteamEntry> = Vec::new();
+
+    // Determine the Steam root path per-platform
+    #[cfg(windows)]
+    let steam_roots: Vec<std::path::PathBuf> = {
+        // Default install path; also check HKCU but parsing registry is heavy
+        let p1 = std::path::PathBuf::from(r"C:\Program Files (x86)\Steam");
+        let p2 = std::path::PathBuf::from(r"C:\Program Files\Steam");
+        [p1, p2].iter().filter(|p| p.exists()).cloned().collect()
+    };
+    #[cfg(target_os = "linux")]
+    let steam_roots: Vec<std::path::PathBuf> = {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let p1 = std::path::PathBuf::from(&home).join(".steam/steam");
+        let p2 = std::path::PathBuf::from(&home).join(".local/share/Steam");
+        [p1, p2].iter().filter(|p| p.exists()).cloned().collect()
+    };
+    #[cfg(target_os = "macos")]
+    let steam_roots: Vec<std::path::PathBuf> = {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let p = std::path::PathBuf::from(&home).join("Library/Application Support/Steam");
+        if p.exists() {
+            vec![p]
+        } else {
+            vec![]
+        }
+    };
+
+    for root in &steam_roots {
+        let userdata = root.join("userdata");
+        let Ok(user_dirs) = std::fs::read_dir(&userdata) else {
+            continue;
+        };
+        for user_dir in user_dirs.filter_map(|e| e.ok()) {
+            let cfg = user_dir.path().join("config").join("localconfig.vdf");
+            let Ok(content) = std::fs::read_to_string(&cfg) else {
+                continue;
+            };
+            // Simple line-based VDF parser (not full KV spec but covers localconfig)
+            parse_localconfig_vdf(&content, &mut results);
+        }
+    }
+
+    // Deduplicate by app_id, keeping the highest played time
+    results.sort_by(|a, b| a.app_id.cmp(&b.app_id));
+    results.dedup_by(|a, b| {
+        if a.app_id == b.app_id {
+            b.played_minutes = b.played_minutes.max(a.played_minutes);
+            true
+        } else {
+            false
+        }
+    });
+    // Sort by playtime descending for convenience
+    results.sort_by(|a, b| b.played_minutes.cmp(&a.played_minutes));
+    results
+}
+
+/// Minimal VDF parser: extracts appid -> {name, playtime_forever} from localconfig.
+fn parse_localconfig_vdf(src: &str, out: &mut Vec<SteamEntry>) {
+    // We look for blocks like:
+    //   "1234567"
+    //   {
+    //       "name"  "Game Name"
+    //       "playtime_forever"  "120"
+    //   }
+    let mut lines = src.lines().peekable();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        // An app block starts with a quoted numeric key
+        let Some(app_id) = quoted_value(trimmed) else {
+            continue;
+        };
+        if !app_id.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        // Next non-whitespace line should be "{"
+        let Some(brace) = lines.peek() else {
+            break;
+        };
+        if brace.trim() != "{" {
+            continue;
+        }
+        lines.next(); // consume "{"
+
+        let mut name = String::new();
+        let mut playtime: u64 = 0;
+        let mut depth = 1usize;
+        for inner in lines.by_ref() {
+            let t = inner.trim();
+            if t == "{" {
+                depth += 1;
+                continue;
+            }
+            if t == "}" {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                continue;
+            }
+            if depth == 1 {
+                if let Some((k, v)) = kv_pair(t) {
+                    match k.to_lowercase().as_str() {
+                        "name" => {
+                            if name.is_empty() {
+                                name = v.to_string();
+                            }
+                        }
+                        "playtime_forever" => {
+                            playtime = v.parse().unwrap_or(0);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if playtime > 0 {
+            out.push(SteamEntry {
+                app_id: app_id.to_string(),
+                name,
+                played_minutes: playtime,
+            });
+        }
+    }
+}
+
+fn quoted_value(s: &str) -> Option<&str> {
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        Some(&s[1..s.len() - 1])
+    } else {
+        None
+    }
+}
+
+fn kv_pair(line: &str) -> Option<(&str, &str)> {
+    // Format: "key"  "value"  OR  "key"\t"value"
+    let s = line.trim();
+    if !s.starts_with('"') {
+        return None;
+    }
+    let end_key = s[1..].find('"')? + 2; // index of closing quote in original
+    let key = &s[1..end_key - 1];
+    let rest = s[end_key..].trim();
+    let val = quoted_value(rest)?;
+    Some((key, val))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -915,11 +1079,15 @@ pub fn run() {
             f95_login,
             f95_logout,
             f95_is_logged_in,
+            dlsite_login,
+            dlsite_logout,
+            dlsite_is_logged_in,
             update_game,
             preview_update,
             get_screenshots,
             open_screenshots_folder,
             take_screenshot_manual,
+            import_steam_playtime,
         ])
         .setup(|app| {
             // ── System tray ───────────────────────────────────────────────

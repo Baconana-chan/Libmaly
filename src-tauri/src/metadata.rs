@@ -70,7 +70,7 @@ pub fn http() -> Client {
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct GameMetadata {
-    pub source: String,       // "f95" | "dlsite"
+    pub source: String, // "f95" | "dlsite"
     pub source_url: String,
     pub title: Option<String>,
     pub version: Option<String>,
@@ -193,6 +193,170 @@ pub async fn f95_is_logged_in() -> Result<bool, String> {
     Ok(body.contains("data-logged-in=\"true\""))
 }
 
+// ── DLsite auth ──────────────────────────────────────────────────────────────
+// DLsite uses a separate viviON ID SPA at login.dlsite.com.
+// The login flow:
+//   1. GET  login.dlsite.com/login  → sets XSRF-TOKEN cookie
+//   2. POST login.dlsite.com/api/login  JSON {login_id, password},
+//          header X-XSRF-TOKEN: <token>
+//   3. Verify via  www.dlsite.com/home/mypage  (redirects to /home/  if not logged in)
+
+static DLSITE_STORE: Mutex<Option<Arc<CookieStoreMutex>>> = Mutex::new(None);
+
+fn dlsite_cookies_path() -> PathBuf {
+    let base = std::env::var("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    base.join("libmaly").join("dlsite_cookies.json")
+}
+
+fn dlsite_load_or_new_store() -> Arc<CookieStoreMutex> {
+    let path = dlsite_cookies_path();
+    if path.exists() {
+        if let Ok(f) = std::fs::File::open(&path) {
+            #[allow(deprecated)]
+            if let Ok(store) = CookieStore::load_json(BufReader::new(f)) {
+                return Arc::new(CookieStoreMutex::new(store));
+            }
+        }
+    }
+    Arc::new(CookieStoreMutex::new(CookieStore::new(None)))
+}
+
+fn dlsite_save_cookies(store: &CookieStoreMutex) {
+    let path = dlsite_cookies_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::File::create(&path) {
+        let locked = store.lock().unwrap();
+        #[allow(deprecated)]
+        let _ = locked.save_json(&mut f);
+    }
+}
+
+fn dlsite_ensure_store() -> Arc<CookieStoreMutex> {
+    let mut guard = DLSITE_STORE.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(dlsite_load_or_new_store());
+    }
+    guard.as_ref().unwrap().clone()
+}
+
+pub fn dlsite_http() -> Client {
+    make_client(dlsite_ensure_store())
+}
+
+#[tauri::command]
+pub async fn dlsite_login(login_id: String, password: String) -> Result<bool, String> {
+    // Step 1: GET login page to obtain XSRF-TOKEN cookie
+    let _ = dlsite_http()
+        .get("https://login.dlsite.com/login")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to reach DLsite login page: {}", e))?;
+
+    // Extract XSRF-TOKEN from cookie store
+    let xsrf_token = {
+        let store = dlsite_ensure_store();
+        let locked = store.lock().unwrap();
+        let token_val: Option<String> = locked
+            .iter_unexpired()
+            .find(|c| c.name() == "XSRF-TOKEN")
+            .map(|c| c.value().to_string());
+        drop(locked);
+        token_val.map(|v| percent_decode(&v)).unwrap_or_default()
+    };
+
+    // Step 2: POST JSON credentials
+    let body = serde_json::json!({
+        "login_id": login_id,
+        "password": password,
+    });
+
+    let resp = dlsite_http()
+        .post("https://login.dlsite.com/api/login")
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("X-XSRF-TOKEN", &xsrf_token)
+        .header("X-Requested-With", "XMLHttpRequest")
+        .header("Referer", "https://login.dlsite.com/login")
+        .header("Origin", "https://login.dlsite.com")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Login request failed: {}", e))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Login failed (HTTP {}): {}", status, text));
+    }
+
+    // Step 3: Verify by hitting mypage
+    let check = dlsite_http()
+        .get("https://www.dlsite.com/home/mypage/")
+        .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // If redirected away from /home/mypage, not truly logged in
+    let final_url = check.url().to_string();
+    let logged_in = final_url.contains("/home/mypage") || final_url.contains("/maniax/mypage");
+
+    if logged_in {
+        dlsite_save_cookies(&dlsite_ensure_store());
+    }
+
+    Ok(logged_in)
+}
+
+#[tauri::command]
+pub async fn dlsite_logout() -> Result<(), String> {
+    *DLSITE_STORE.lock().unwrap() = Some(Arc::new(CookieStoreMutex::new(CookieStore::new(None))));
+    let _ = std::fs::remove_file(dlsite_cookies_path());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn dlsite_is_logged_in() -> Result<bool, String> {
+    let resp = dlsite_http()
+        .get("https://www.dlsite.com/home/mypage/")
+        .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let final_url = resp.url().to_string();
+    Ok(final_url.contains("/home/mypage") || final_url.contains("/maniax/mypage"))
+}
+
+/// Simple URL-percent-decoder for cookie values (handles %3D → =, %3B → ; etc.)
+fn percent_decode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(s) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(b) = u8::from_str_radix(s, 16) {
+                    out.push(b as char);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
 fn sel(s: &str) -> Selector {
     Selector::parse(s).unwrap_or_else(|_| Selector::parse("__never__").unwrap())
 }
@@ -211,13 +375,20 @@ fn extract_field(html_text: &str, label: &str) -> Option<String> {
     let idx = html_text.find(&needle)?;
     let after = &html_text[idx + needle.len()..];
     // Take until the next <br>, <b> or end of excerpt
-    let end = after.find("<br>").or_else(|| after.find("<b>")).unwrap_or(200.min(after.len()));
+    let end = after
+        .find("<br>")
+        .or_else(|| after.find("<b>"))
+        .unwrap_or(200.min(after.len()));
     let raw = &after[..end];
     // Strip all HTML tags
     let doc = Html::parse_fragment(raw);
     let text = doc.root_element().text().collect::<String>();
     let cleaned = text.trim().to_string();
-    if cleaned.is_empty() { None } else { Some(cleaned) }
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
 }
 
 #[tauri::command]
@@ -284,11 +455,13 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
     // ── Cover image ──────────────────────────────────────────────────
     // First real attachment image in the first post
     let cover_url = {
-        let img_sel = sel(".message-body .bbWrapper .lbContainer img, .message-body .bbWrapper .bbImage");
+        let img_sel =
+            sel(".message-body .bbWrapper .lbContainer img, .message-body .bbWrapper .bbImage");
         doc.select(&img_sel)
             .next()
             .and_then(|el| {
-                el.value().attr("src")
+                el.value()
+                    .attr("src")
                     .or_else(|| el.value().attr("data-src"))
             })
             .map(|s| s.to_string())
@@ -311,14 +484,21 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
                 .as_ref()
                 .map(|c| from_links.first() == Some(c))
                 .unwrap_or(false);
-            from_links.into_iter().skip(if skip { 1 } else { 0 }).take(8).collect()
+            from_links
+                .into_iter()
+                .skip(if skip { 1 } else { 0 })
+                .take(8)
+                .collect()
         } else {
             // Fallback: bbImage src, deduped, skip cover, convert thumb -> full
             let img_sel = sel(".message-body .bbWrapper .bbImage");
             doc.select(&img_sel)
                 .skip(1)
                 .filter_map(|el| {
-                    let src = el.value().attr("src").or_else(|| el.value().attr("data-src"))?;
+                    let src = el
+                        .value()
+                        .attr("src")
+                        .or_else(|| el.value().attr("data-src"))?;
                     Some(src.replace("/thumb/", "/"))
                 })
                 .take(8)
@@ -329,19 +509,23 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
     // ── Overview text ────────────────────────────────────────────────
     // Extract HTML between Overview header and the next <b>Field</b>: block
     let (overview, overview_html_f95) = {
-        let idx = post_html.find("<b>Overview</b>").or_else(|| post_html.find("<b>Overview:</b>"));
+        let idx = post_html
+            .find("<b>Overview</b>")
+            .or_else(|| post_html.find("<b>Overview:</b>"));
         if let Some(i) = idx {
             let after = &post_html[i..];
             // cut off at the next <b>Something</b>: pattern
             let end = {
                 let search = &after[15..]; // skip past the <b>Overview</b> itself
-                search.find("<b>")
+                search
+                    .find("<b>")
                     .map(|e| e + 15)
                     .unwrap_or(after.len().min(4000))
             };
             let fragment_html = after[..end].to_string();
             let d = Html::parse_fragment(&fragment_html);
-            let plain: String = d.root_element()
+            let plain: String = d
+                .root_element()
                 .text()
                 .collect::<String>()
                 .lines()
@@ -357,12 +541,12 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
     };
 
     // ── Metadata fields via <b>Label</b>: pattern ────────────────────
-    let version      = extract_field(&post_html, "Version");
-    let developer    = extract_field(&post_html, "Developer");
-    let censored     = extract_field(&post_html, "Censored");
-    let os           = extract_field(&post_html, "OS");
-    let language     = extract_field(&post_html, "Language");
-    let engine       = extract_field(&post_html, "Engine");
+    let version = extract_field(&post_html, "Version");
+    let developer = extract_field(&post_html, "Developer");
+    let censored = extract_field(&post_html, "Censored");
+    let os = extract_field(&post_html, "OS");
+    let language = extract_field(&post_html, "Language");
+    let engine = extract_field(&post_html, "Engine");
     let release_date = extract_field(&post_html, "Release Date");
     let last_updated = extract_field(&post_html, "Thread Updated");
 
@@ -381,24 +565,25 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
         } else {
             // fallback: parse the genre spoiler
             let genre_idx = post_html.find("<b>Genre</b>");
-            genre_idx.map(|i| {
-                let after = &post_html[i..];
-                let end = after.find("</div>").unwrap_or(2000.min(after.len()));
-                let frag = Html::parse_fragment(&after[..end]);
-                frag.root_element()
-                    .text()
-                    .collect::<String>()
-                    .split(',')
-                    .map(|t| t.trim().to_string())
-                    .filter(|t| !t.is_empty() && t != "Genre")
-                    .collect()
-            }).unwrap_or_default()
+            genre_idx
+                .map(|i| {
+                    let after = &post_html[i..];
+                    let end = after.find("</div>").unwrap_or(2000.min(after.len()));
+                    let frag = Html::parse_fragment(&after[..end]);
+                    frag.root_element()
+                        .text()
+                        .collect::<String>()
+                        .split(',')
+                        .map(|t| t.trim().to_string())
+                        .filter(|t| !t.is_empty() && t != "Genre")
+                        .collect()
+                })
+                .unwrap_or_default()
         }
     };
 
     // ── Rating ───────────────────────────────────────────────────────
-    let rating = text_of(&doc, ".bratr-vote-content")
-        .map(|s| s.trim().to_string());
+    let rating = text_of(&doc, ".bratr-vote-content").map(|s| s.trim().to_string());
 
     Ok(GameMetadata {
         source: "f95".into(),
@@ -436,9 +621,9 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
 
 #[tauri::command]
 pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> {
-    let resp = http()
+    let resp = dlsite_http()
         .get(&url)
-        .header("Accept-Language", "en-US,en;q=0.9")
+        .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
         .send()
         .await
         .map_err(|e| format!("Network error: {}", e))?;
@@ -457,15 +642,24 @@ pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> 
 
     // ── Cover ────────────────────────────────────────────────────────
     let cover_url = {
-        let sel_list = ["#work_img_main img", ".work_thumb img", ".slider_item img", "#mainVisual img"];
+        let sel_list = [
+            "#work_img_main img",
+            ".work_thumb img",
+            ".slider_item img",
+            "#mainVisual img",
+        ];
         sel_list.iter().find_map(|s| {
             let sel = sel(s);
             doc.select(&sel).next().and_then(|el| {
-                el.value().attr("src")
+                el.value()
+                    .attr("src")
                     .or_else(|| el.value().attr("data-src"))
                     .map(|u| {
-                        if u.starts_with("//") { format!("https:{}", u) }
-                        else { u.to_string() }
+                        if u.starts_with("//") {
+                            format!("https:{}", u)
+                        } else {
+                            u.to_string()
+                        }
                     })
             })
         })
@@ -485,25 +679,44 @@ pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> 
         for s in &selectors {
             let img_sel = sel(s);
             for el in doc.select(&img_sel) {
-                let src = el.value().attr("data-src")
+                let src = el
+                    .value()
+                    .attr("data-src")
                     .or_else(|| el.value().attr("src"))
                     .or_else(|| el.value().attr("data-lazy-src"))
                     .unwrap_or("");
-                if src.is_empty() { continue; }
-                let full = if src.starts_with("//") { format!("https:{}", src) } else { src.to_string() };
+                if src.is_empty() {
+                    continue;
+                }
+                let full = if src.starts_with("//") {
+                    format!("https:{}", src)
+                } else {
+                    src.to_string()
+                };
                 // skip tiny icons and main cover (already in cover_url)
-                if full.contains("dlsite") && !full.contains("_img_sam") && !full.contains("no_image") {
+                if full.contains("dlsite")
+                    && !full.contains("_img_sam")
+                    && !full.contains("no_image")
+                {
                     urls.push(full);
                 }
             }
-            if !urls.is_empty() { break; }
+            if !urls.is_empty() {
+                break;
+            }
         }
         // Fallback: look in raw HTML for img.dlsite.jp URLs in a slider context
         if urls.is_empty() {
             let slider_re: Vec<_> = body
                 .split('"')
                 .filter(|s| s.contains("img.dlsite.jp") && s.contains("work"))
-                .map(|s| if s.starts_with("//") { format!("https:{}", s) } else { s.to_string() })
+                .map(|s| {
+                    if s.starts_with("//") {
+                        format!("https:{}", s)
+                    } else {
+                        s.to_string()
+                    }
+                })
                 .filter(|s| !s.is_empty())
                 .collect::<std::collections::HashSet<_>>()
                 .into_iter()
@@ -516,7 +729,13 @@ pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> 
 
     // ── Description (HTML with potential inline images) ────────────────
     let (overview, overview_html) = {
-        let selectors = ["#work_parts_area", ".work_parts_container", ".work_intro", "#work_description", ".work_parts"];
+        let selectors = [
+            "#work_parts_area",
+            ".work_parts_container",
+            ".work_intro",
+            "#work_description",
+            ".work_parts",
+        ];
         let mut plain = None;
         let mut html_frag = None;
         for s in &selectors {
@@ -547,7 +766,9 @@ pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> 
             let td_sel = sel("td");
             if let (Some(th), Some(td)) = (row.select(&th_sel).next(), row.select(&td_sel).next()) {
                 let key = th.text().collect::<String>().trim().to_string();
-                let val = td.text().collect::<String>()
+                let val = td
+                    .text()
+                    .collect::<String>()
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ")
@@ -560,25 +781,24 @@ pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> 
         }
     }
 
-    let get_table = |keys: &[&str]| -> Option<String> {
-        keys.iter().find_map(|k| table_map.get(*k).cloned())
-    };
+    let get_table =
+        |keys: &[&str]| -> Option<String> { keys.iter().find_map(|k| table_map.get(*k).cloned()) };
 
-    let developer    = get_table(&["Maker", "Circle", "メーカー", "サークル"])
+    let developer = get_table(&["Maker", "Circle", "メーカー", "サークル"])
         .or_else(|| text_of(&doc, "span.maker_name"));
-    let circle       = get_table(&["Circle", "サークル", "Maker", "メーカー"]);
+    let circle = get_table(&["Circle", "サークル", "Maker", "メーカー"]);
     let release_date = get_table(&["Release date", "Sale date", "販売日", "リリース日"]);
     let last_updated = get_table(&["Update information", "更新情報"]);
-    let series       = get_table(&["Series name", "シリーズ名"]);
-    let author       = get_table(&["Author", "作者", "著者"]);
+    let series = get_table(&["Series name", "シリーズ名"]);
+    let author = get_table(&["Author", "作者", "著者"]);
     let illustration = get_table(&["Illustration", "イラスト"]);
-    let voice_actor  = get_table(&["Voice Actor", "声優"]);
-    let music        = get_table(&["Music", "音楽"]);
-    let age_rating   = get_table(&["Age", "年齢指定", "対象年齢"]);
+    let voice_actor = get_table(&["Voice Actor", "声優"]);
+    let music = get_table(&["Music", "音楽"]);
+    let age_rating = get_table(&["Age", "年齢指定", "対象年齢"]);
     let product_format = get_table(&["Product format", "作品形式"]);
-    let file_format  = get_table(&["File format", "ファイル形式"]);
-    let file_size    = get_table(&["File size", "ファイル容量"]);
-    let language_dl  = get_table(&["Supported languages", "対応言語"]);
+    let file_format = get_table(&["File format", "ファイル形式"]);
+    let file_size = get_table(&["File size", "ファイル容量"]);
+    let language_dl = get_table(&["Supported languages", "対応言語"]);
 
     // ── Genres / Tags ────────────────────────────────────────────────
     let tags: Vec<String> = {
@@ -606,19 +826,26 @@ pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> 
     // DLsite renders the rating client-side via Vue.js, so CSS selectors may
     // return the raw template literal "{{ product.rate_average_2dp }}".
     // Extract the real value directly from the JSON data block in the HTML.
-    let rating_from_json = body
-        .find("\"rate_average_2dp\":")
-        .and_then(|pos| {
-            let rest = &body[pos + "\"rate_average_2dp\":".len()..];
-            let end = rest.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(rest.len());
-            let val = rest[..end].trim().to_string();
-            if val.is_empty() || val == "0" || val == "0.0" { None } else { Some(val) }
-        });
+    let rating_from_json = body.find("\"rate_average_2dp\":").and_then(|pos| {
+        let rest = &body[pos + "\"rate_average_2dp\":".len()..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit() && c != '.')
+            .unwrap_or(rest.len());
+        let val = rest[..end].trim().to_string();
+        if val.is_empty() || val == "0" || val == "0.0" {
+            None
+        } else {
+            Some(val)
+        }
+    });
 
-    let rating = text_of(&doc, ".star_rating .rate_average_star, .average_count, .work_rating .average")
-        .filter(|r| !r.contains("{"))
-        .or(rating_from_json)
-        .or_else(|| text_of(&doc, ".work_review_site_rating").filter(|r| !r.contains("{")));
+    let rating = text_of(
+        &doc,
+        ".star_rating .rate_average_star, .average_count, .work_rating .average",
+    )
+    .filter(|r| !r.contains("{"))
+    .or(rating_from_json)
+    .or_else(|| text_of(&doc, ".work_review_site_rating").filter(|r| !r.contains("{")));
 
     Ok(GameMetadata {
         source: "dlsite".into(),

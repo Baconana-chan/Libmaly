@@ -79,6 +79,15 @@ function useVirtualList<T>(
 interface Game { name: string; path: string; }
 interface DirMtime { path: string; mtime: number; }
 interface GameStats { totalTime: number; lastPlayed: number; lastSession: number; launchCount: number; }
+/** One recorded play session */
+interface SessionEntry {
+  id: string;        // unique: timestamp string
+  path: string;      // game path (key into other maps)
+  startedAt: number; // Unix ms — when the session began
+  duration: number;  // seconds
+  note: string;      // optional session note, empty string if none
+}
+interface SteamEntry { app_id: string; name: string; played_minutes: number; }
 interface GameMetadata {
   source: string;
   source_url: string;
@@ -183,7 +192,8 @@ const SK_NOTES = "game-notes-v1";
 const SK_COLLECTIONS = "collections-v1";
 const SK_LAUNCH = "launch-config-v1";
 const SK_RECENT = "recent-games-v1";
-const SK_ORDER = "custom-order-v1"; // custom sort: { [contextKey]: string[] }
+const SK_ORDER = "custom-order-v1";
+const SK_SESSION_LOG = "session-log-v1";
 
 /** A library root directory that's been added by the user. */
 interface LibraryFolder { path: string; }
@@ -312,6 +322,74 @@ function F95LoginModal({ onClose, onSuccess }: { onClose: () => void; onSuccess:
           <button onClick={doLogin} disabled={loading || !user || !pass}
             className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
             style={{ background: "#c8a951", color: "#1a1a1a" }}>
+            {loading && <span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />}
+            Sign In
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── DLsite Login Modal ────────────────────────────────────────────────────────
+function DLsiteLoginModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const [loginId, setLoginId] = useState("");
+  const [pass, setPass] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const doLogin = async () => {
+    if (!loginId || !pass) return;
+    setLoading(true); setError("");
+    try {
+      const ok = await invoke<boolean>("dlsite_login", { loginId, password: pass });
+      if (ok) { onSuccess(); onClose(); }
+      else setError("Login failed — check your Login ID and password.");
+    } catch (e) { setError(String(e)); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.8)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-8 h-8 rounded flex items-center justify-center font-bold text-[11px]"
+            style={{ background: "#e0534a", color: "#fff" }}>DL</div>
+          <h2 className="text-lg font-bold" style={{ color: "#fff" }}>Sign in to DLsite</h2>
+        </div>
+        <p className="text-xs mb-1" style={{ color: "#8f98a0" }}>
+          Logging in unlocks age-gated product pages, so metadata can be fetched without the age-gate redirect.
+        </p>
+        <p className="text-xs mb-4" style={{ color: "#4a5568" }}>
+          Your credentials are sent directly to DLsite (login.dlsite.com) and are never stored by LIBMALY.
+        </p>
+        <div className="space-y-3">
+          <div>
+            <label className="text-[10px] uppercase tracking-widest block mb-1" style={{ color: "#4a5568" }}>Login ID (email or username)</label>
+            <input type="text" placeholder="Login ID" value={loginId}
+              onInput={(e) => setLoginId((e.target as HTMLInputElement).value)}
+              className="w-full px-3 py-2 rounded text-sm outline-none"
+              style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-widest block mb-1" style={{ color: "#4a5568" }}>Password</label>
+            <input type="password" placeholder="Password" value={pass}
+              onInput={(e) => setPass((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => e.key === "Enter" && doLogin()}
+              className="w-full px-3 py-2 rounded text-sm outline-none"
+              style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+          </div>
+        </div>
+        {error && <p className="mt-2 text-xs" style={{ color: "#e57373" }}>{error}</p>}
+        <div className="flex gap-3 justify-end mt-5">
+          <button onClick={onClose}
+            className="px-4 py-2 rounded text-sm"
+            style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Cancel</button>
+          <button onClick={doLogin} disabled={loading || !loginId || !pass}
+            className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
+            style={{ background: "#e0534a", color: "#fff" }}>
             {loading && <span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />}
             Sign In
           </button>
@@ -1379,10 +1457,570 @@ function ManageCollectionsModal({ gamePath, displayTitle, collections, onToggle,
   );
 }
 
+// ─── Stats helpers ────────────────────────────────────────────────────────────
+
+/** Returns sessions grouped by calendar day (last N days) for charting. */
+function sessionsPerDay(sessions: SessionEntry[], gamePath: string | null, days = 7): { label: string; secs: number }[] {
+  const now = new Date();
+  return Array.from({ length: days }, (_, i) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() - (days - 1 - i));
+    const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const dayEnd = dayStart + 86_400_000;
+    const secs = sessions
+      .filter(s => (!gamePath || s.path === gamePath) && s.startedAt >= dayStart && s.startedAt < dayEnd)
+      .reduce((acc, s) => acc + s.duration, 0);
+    const label = d.toLocaleDateString("en", { weekday: "short" });
+    return { label, secs };
+  });
+}
+
+const MILESTONES = [
+  { hours: 1, label: "1h", color: "#66c0f4" },
+  { hours: 5, label: "5h", color: "#4e9bd0" },
+  { hours: 10, label: "10h", color: "#c8a951" },
+  { hours: 25, label: "25h", color: "#e8904a" },
+  { hours: 50, label: "50h", color: "#e05050" },
+  { hours: 100, label: "100h", color: "#a060d8" },
+];
+
+// ─── PlayChart ────────────────────────────────────────────────────────────────
+function PlayChart({ sessions, gamePath, days = 7 }: { sessions: SessionEntry[]; gamePath: string | null; days?: number }) {
+  const data = sessionsPerDay(sessions, gamePath, days);
+  const maxSecs = Math.max(...data.map(d => d.secs), 1);
+  const W = 260, H = 80, barW = Math.floor((W - (days - 1) * 4) / days);
+
+  return (
+    <div>
+      <svg width={W} height={H + 20} style={{ overflow: "visible" }}>
+        {data.map((d, i) => {
+          const barH = Math.max(d.secs > 0 ? 4 : 0, Math.round((d.secs / maxSecs) * H));
+          const x = i * (barW + 4);
+          const y = H - barH;
+          return (
+            <g key={i}>
+              <rect x={x} y={y} width={barW} height={barH}
+                rx="2"
+                fill={d.secs > 0 ? "#2a6db5" : "#1a2d3d"}
+                style={{ transition: "height 0.3s" }}>
+                {d.secs > 0 && <title>{formatTime(d.secs)}</title>}
+              </rect>
+              <text x={x + barW / 2} y={H + 14} textAnchor="middle"
+                fontSize="9" fill="#4a5568">{d.label}</text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+// ─── Milestones ───────────────────────────────────────────────────────────────
+function Milestones({ totalSecs }: { totalSecs: number }) {
+  const totalH = totalSecs / 3600;
+  const achieved = MILESTONES.filter(m => totalH >= m.hours);
+  const next = MILESTONES.find(m => totalH < m.hours);
+  if (achieved.length === 0 && !next) return null;
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Milestones</p>
+      <div className="flex flex-wrap gap-1.5 mb-1">
+        {achieved.map(m => (
+          <span key={m.label}
+            className="px-2 py-0.5 rounded-full text-[10px] font-bold"
+            style={{ background: m.color + "22", color: m.color, border: `1px solid ${m.color}55` }}
+            title={`${m.hours}h played`}>
+            ★ {m.label}
+          </span>
+        ))}
+      </div>
+      {next && (
+        <div className="mt-1">
+          <div className="flex justify-between text-[9px] mb-0.5" style={{ color: "#4a5568" }}>
+            <span>Next: {next.label}</span>
+            <span>{Math.round((totalH / next.hours) * 100)}%</span>
+          </div>
+          <div className="h-1 rounded-full overflow-hidden" style={{ background: "#1a2d3d" }}>
+            <div className="h-full rounded-full" style={{
+              width: `${Math.min(100, (totalH / next.hours) * 100)}%`,
+              background: next.color,
+              transition: "width 0.4s",
+            }} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── SessionTimeline ──────────────────────────────────────────────────────────
+function SessionTimeline({ sessions, gamePath, onEditNote }: {
+  sessions: SessionEntry[];
+  gamePath: string;
+  onEditNote: (entry: SessionEntry) => void;
+}) {
+  const entries = useMemo(() =>
+    sessions.filter(s => s.path === gamePath).sort((a, b) => b.startedAt - a.startedAt).slice(0, 50),
+    [sessions, gamePath]
+  );
+
+  if (entries.length === 0) {
+    return (
+      <div className="rounded px-3 py-4 text-center text-xs" style={{ background: "#0f1923", color: "#4a5568" }}>
+        No sessions recorded yet — play the game to see history here.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1"
+      style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+      {entries.map((s) => {
+        const d = new Date(s.startedAt);
+        const dateStr = d.toLocaleDateString("en", { month: "short", day: "numeric" });
+        const timeStr = d.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" });
+        return (
+          <div key={s.id} className="flex items-start gap-2 rounded px-2.5 py-2 group"
+            style={{ background: "#0f1923" }}>
+            {/* Timeline dot */}
+            <div className="flex flex-col items-center flex-shrink-0 mt-0.5">
+              <div className="w-1.5 h-1.5 rounded-full" style={{ background: "#2a6db5" }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px]" style={{ color: "#66c0f4" }}>{dateStr} {timeStr}</span>
+                <span className="text-[10px] font-semibold" style={{ color: "#c6d4df" }}>{formatTime(s.duration)}</span>
+              </div>
+              {s.note && (
+                <p className="text-xs mt-0.5 italic" style={{ color: "#8f98a0" }}>"{s.note}"</p>
+              )}
+            </div>
+            <button
+              onClick={() => onEditNote(s)}
+              className="text-[9px] flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded"
+              style={{ color: "#66c0f4", background: "#1a2d3d" }}
+              title={s.note ? "Edit note" : "Add note"}>
+              {s.note ? "✎" : "+ note"}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── SessionNoteModal ─────────────────────────────────────────────────────────
+/** Shown right after a session ends (or when editing a session note). */
+function SessionNoteModal({ session, gameName, onSave, onDismiss }: {
+  session: SessionEntry;
+  gameName: string;
+  onSave: (note: string) => void;
+  onDismiss: () => void;
+}) {
+  const [note, setNote] = useState(session.note);
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-end justify-end p-6"
+      style={{ pointerEvents: "none" }}>
+      <div className="rounded-xl shadow-2xl w-80"
+        style={{
+          background: "#1e2d3d", border: "1px solid #2a475e",
+          pointerEvents: "all",
+          animation: "slideInUp 0.25s ease-out",
+        }}>
+        <div className="flex items-start gap-3 px-4 pt-4 pb-3 border-b" style={{ borderColor: "#1b3a50" }}>
+          <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0"
+            style={{ background: "#0f1923" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-semibold" style={{ color: "#fff" }}>Session complete</p>
+            <p className="text-[10px]" style={{ color: "#8f98a0" }}>
+              {gameName} · {formatTime(session.duration)}
+            </p>
+          </div>
+          <button onClick={onDismiss} style={{ color: "#4a5568" }} className="text-sm">✕</button>
+        </div>
+        <div className="px-4 py-3">
+          <p className="text-[10px] mb-1.5" style={{ color: "#8f98a0" }}>Add a session note (optional)</p>
+          <textarea
+            value={note}
+            onInput={(e) => setNote((e.target as HTMLTextAreaElement).value)}
+            placeholder="e.g. finished chapter 3, found secret ending…"
+            rows={2}
+            className="w-full rounded px-2 py-1.5 text-xs resize-none"
+            style={{
+              background: "#0f1923", border: "1px solid #2a475e", color: "#c6d4df",
+              outline: "none", fontFamily: "inherit",
+            }}
+          />
+          <div className="flex gap-2 justify-end mt-2">
+            <button onClick={onDismiss} className="px-3 py-1 rounded text-xs"
+              style={{ background: "transparent", color: "#4a5568" }}>Skip</button>
+            <button onClick={() => onSave(note.trim())}
+              className="px-4 py-1 rounded text-xs font-semibold"
+              style={{ background: "#2a6db5", color: "#fff" }}>Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SteamImportModal ─────────────────────────────────────────────────────────
+function SteamImportModal({ games, metadata, customizations, onImport, onClose }: {
+  games: Game[];
+  metadata: Record<string, GameMetadata>;
+  customizations: Record<string, GameCustomization>;
+  onImport: (matched: { path: string; addSecs: number }[]) => void;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [steamEntries, setSteamEntries] = useState<SteamEntry[]>([]);
+  const [error, setError] = useState("");
+  const [matched, setMatched] = useState<{ path: string; name: string; steamName: string; addSecs: number; checked: boolean }[]>([]);
+
+  useEffect(() => {
+    invoke<SteamEntry[]>("import_steam_playtime")
+      .then((entries) => {
+        setSteamEntries(entries);
+        // Try to fuzzy-match by name
+        const hits: typeof matched = [];
+        for (const e of entries) {
+          const steamLower = e.name.toLowerCase();
+          for (const g of games) {
+            const gName = (customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name).toLowerCase();
+            if (gName === steamLower || steamLower.includes(gName) || gName.includes(steamLower)) {
+              hits.push({
+                path: g.path,
+                name: customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name,
+                steamName: e.name,
+                addSecs: e.played_minutes * 60,
+                checked: true,
+              });
+              break;
+            }
+          }
+        }
+        setMatched(hits);
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const toggle = (path: string) =>
+    setMatched(prev => prev.map(m => m.path === path ? { ...m, checked: !m.checked } : m));
+
+  const handleApply = () => {
+    onImport(matched.filter(m => m.checked).map(m => ({ path: m.path, addSecs: m.addSecs })));
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.82)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="rounded-xl shadow-2xl w-[480px] max-h-[80vh] flex flex-col"
+        style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+        {/* Header */}
+        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b flex-shrink-0" style={{ borderColor: "#1b3a50" }}>
+          <div className="w-9 h-9 rounded flex items-center justify-center" style={{ background: "#171a21" }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="#66c0f4">
+              <path d="M12 2C6.48 2 2 6.48 2 12l5.84 2.41c.53-.32 1.14-.51 1.8-.51.07 0 .14 0 .21.01L12 10.5V10.42c0-2.52 2.04-4.58 4.56-4.58 2.52 0 4.56 2.04 4.56 4.58 0 2.52-2.04 4.56-4.56 4.56h-.1l-3.5 2.53c0 .06.01.12.01.18 0 1.89-1.53 3.42-3.42 3.42-1.67 0-3.07-1.2-3.36-2.79L2.17 14C3.14 18.55 7.15 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2z" />
+            </svg>
+          </div>
+          <div>
+            <h2 className="font-bold text-base" style={{ color: "#fff" }}>Import from Steam</h2>
+            <p className="text-xs" style={{ color: "#8f98a0" }}>Pre-fill playtime from localconfig.vdf</p>
+          </div>
+          <button onClick={onClose} className="ml-auto text-xl" style={{ color: "#4a5568" }}>✕</button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-4"
+          style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+          {loading && (
+            <div className="flex items-center justify-center h-24 gap-3">
+              <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: "#66c0f4" }} />
+              <span className="text-sm" style={{ color: "#8f98a0" }}>Reading Steam data…</span>
+            </div>
+          )}
+          {error && <p className="text-sm" style={{ color: "#e57373" }}>{error}</p>}
+          {!loading && !error && steamEntries.length === 0 && (
+            <p className="text-sm text-center py-8" style={{ color: "#8f98a0" }}>
+              No Steam data found. Make sure Steam is installed and you've launched at least one game.
+            </p>
+          )}
+          {!loading && !error && matched.length > 0 && (
+            <div>
+              <p className="text-xs mb-3" style={{ color: "#8f98a0" }}>
+                Found {matched.length} matching game{matched.length !== 1 ? "s" : ""}. Select which to import:
+              </p>
+              <div className="space-y-2">
+                {matched.map(m => (
+                  <label key={m.path} className="flex items-center gap-3 rounded-lg px-3 py-2 cursor-pointer"
+                    style={{ background: "#152232" }}>
+                    <input type="checkbox" checked={m.checked} onChange={() => toggle(m.path)}
+                      className="rounded" style={{ accentColor: "#66c0f4" }} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm truncate" style={{ color: "#c6d4df" }}>{m.name}</p>
+                      <p className="text-[10px]" style={{ color: "#4a5568" }}>
+                        Steam: "{m.steamName}" · {formatTime(m.addSecs)}
+                      </p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+          {!loading && !error && steamEntries.length > 0 && matched.length === 0 && (
+            <p className="text-sm text-center py-4" style={{ color: "#8f98a0" }}>
+              Found {steamEntries.length} Steam entries but none match your library by name.
+            </p>
+          )}
+        </div>
+
+        {/* Footer */}
+        {!loading && matched.length > 0 && (
+          <div className="flex gap-3 justify-end px-6 py-4 border-t flex-shrink-0" style={{ borderColor: "#1b3a50" }}>
+            <button onClick={onClose} className="px-4 py-2 rounded text-sm"
+              style={{ background: "transparent", color: "#8f98a0", border: "1px solid #2a475e" }}>Cancel</button>
+            <button onClick={handleApply}
+              className="px-5 py-2 rounded text-sm font-semibold"
+              style={{ background: "#2a6db5", color: "#fff" }}>
+              Apply {matched.filter(m => m.checked).length} import{matched.filter(m => m.checked).length !== 1 ? "s" : ""}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Settings Modal ────────────────────────────────────────────────────────────
+function SettingsModal({
+  f95LoggedIn, dlsiteLoggedIn, libraryFolders, syncState, platform, launchConfig,
+  appUpdate,
+  onF95Login, onF95Logout, onDLsiteLogin, onDLsiteLogout, onRemoveFolder,
+  onRescanAll, onWineSettings, onSteamImport, onAppUpdate, onClose,
+}: {
+  f95LoggedIn: boolean; dlsiteLoggedIn: boolean; libraryFolders: { path: string }[]; syncState: string;
+  platform: string; launchConfig: { enabled: boolean; runner: string };
+  appUpdate: { version: string } | null;
+  onF95Login: () => void; onF95Logout: () => void;
+  onDLsiteLogin: () => void; onDLsiteLogout: () => void;
+  onRemoveFolder: (p: string) => void;
+  onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void;
+  onAppUpdate: () => void; onClose: () => void;
+}) {
+  const [tab, setTab] = useState<"general" | "scanner" | "import" | "wine">("general");
+  const tabs: { id: typeof tab; label: string }[] = [
+    { id: "general", label: "General" },
+    { id: "scanner", label: "Scanner" },
+    { id: "import", label: "Import" },
+    ...(platform !== "windows" ? [{ id: "wine" as const, label: "Wine / Proton" }] : []),
+  ];
+  return (
+    <div className="fixed inset-0 z-[9990] flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.75)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        style={{ width: 480, maxHeight: "80vh", background: "#1b2838", border: "1px solid #2a475e" }}>
+
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: "#1e3a50" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+          <h2 className="font-bold text-base flex-1" style={{ color: "#fff" }}>Settings</h2>
+          <button onClick={onClose} style={{ color: "#4a5568", fontSize: 18, lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* Tab bar */}
+        <div className="flex gap-0.5 px-4 pt-3 flex-shrink-0">
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              className="px-3 py-1.5 rounded-t text-xs font-medium"
+              style={{
+                background: tab === t.id ? "#16202d" : "transparent",
+                color: tab === t.id ? "#66c0f4" : "#4a5568",
+                borderBottom: tab === t.id ? "2px solid #66c0f4" : "2px solid transparent",
+              }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4"
+          style={{ background: "#16202d", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+
+          {tab === "general" && (
+            <>
+              <section className="space-y-2">
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>F95zone</h3>
+                {f95LoggedIn ? (
+                  <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
+                    style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full" style={{ background: "#c8a951" }} />
+                      <span className="text-sm" style={{ color: "#c8a951" }}>Logged in</span>
+                    </div>
+                    <button onClick={onF95Logout}
+                      className="text-xs px-3 py-1 rounded"
+                      style={{ background: "#3a2a00", color: "#c8a951", border: "1px solid #5a4200" }}>
+                      Sign out
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={() => { onClose(); onF95Login(); }}
+                    className="w-full py-2 rounded-lg text-sm text-left px-3 flex items-center gap-2"
+                    style={{ background: "#1e2d3d", color: "#8f98a0", border: "1px solid #2a475e" }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /><polyline points="10 17 15 12 10 7" /><line x1="15" y1="12" x2="3" y2="12" />
+                    </svg>
+                    Sign in to F95zone
+                  </button>
+                )}
+              </section>
+
+              {/* DLsite */}
+              <section className="space-y-2">
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>DLsite</h3>
+                {dlsiteLoggedIn ? (
+                  <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
+                    style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full" style={{ background: "#e0534a" }} />
+                      <span className="text-sm" style={{ color: "#e0534a" }}>Logged in</span>
+                    </div>
+                    <button onClick={onDLsiteLogout}
+                      className="text-xs px-3 py-1 rounded"
+                      style={{ background: "#3a1010", color: "#e0534a", border: "1px solid #6a2020" }}>
+                      Sign out
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={() => { onClose(); onDLsiteLogin(); }}
+                    className="w-full py-2 rounded-lg text-sm text-left px-3 flex items-center gap-2"
+                    style={{ background: "#1e2d3d", color: "#8f98a0", border: "1px solid #2a475e" }}>
+                    <div className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0"
+                      style={{ background: "#e0534a", color: "#fff" }}>DL</div>
+                    Sign in to DLsite
+                    <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }}>age-gate bypass</span>
+                  </button>
+                )}
+              </section>
+
+              <section className="space-y-2">
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Library Folders</h3>
+                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid #2a475e" }}>
+                  {libraryFolders.length === 0 ? (
+                    <p className="px-3 py-3 text-xs" style={{ color: "#4a5568" }}>No folders added yet.</p>
+                  ) : (
+                    libraryFolders.map((f) => {
+                      const label = f.path.replace(/\\/g, "/").split("/").pop() ?? f.path;
+                      return (
+                        <div key={f.path} className="flex items-center gap-2 px-3 py-2 border-b last:border-0"
+                          style={{ borderColor: "#1e3a50" }}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                          </svg>
+                          <span className="flex-1 text-xs truncate" style={{ color: "#8f98a0" }} title={f.path}>{label}</span>
+                          <button onClick={() => onRemoveFolder(f.path)}
+                            className="text-[11px] px-1.5 rounded"
+                            style={{ color: "#4a5568" }}
+                            onMouseEnter={(e) => (e.currentTarget.style.color = "#e57373")}
+                            onMouseLeave={(e) => (e.currentTarget.style.color = "#4a5568")}>×</button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </section>
+
+              {appUpdate && (
+                <section className="space-y-2">
+                  <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Updates</h3>
+                  <button onClick={() => { onClose(); onAppUpdate(); }}
+                    className="w-full py-2 rounded-lg text-sm px-3 flex items-center gap-2 font-semibold"
+                    style={{ background: "#1a3a1a", color: "#6dbf6d", border: "1px solid #2a5a2a" }}>
+                    ↑ v{appUpdate.version} available — click to install
+                  </button>
+                </section>
+              )}
+            </>
+          )}
+
+
+          {tab === "scanner" && (
+            <section className="space-y-3">
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Library Scanner</h3>
+              <p className="text-xs leading-relaxed" style={{ color: "#8f98a0" }}>
+                Force a full re-scan of all library folders. Use this if new games were added to the folders outside of LIBMALY, or if some entries are missing.
+              </p>
+              <button onClick={() => { onRescanAll(); onClose(); }}
+                disabled={syncState !== "idle"}
+                className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
+                style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d7a9b" }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                </svg>
+                Force Rescan All Folders
+              </button>
+            </section>
+          )}
+
+          {tab === "import" && (
+            <section className="space-y-3">
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Steam Playtime Import</h3>
+              <p className="text-xs leading-relaxed" style={{ color: "#8f98a0" }}>
+                Read playtime data from Steam's <code style={{ color: "#f88379" }}>localconfig.vdf</code> and pre-fill hours for games that match titles in your library. Only overrides your tracked time if Steam's value is higher.
+              </p>
+              <button onClick={() => { onSteamImport(); onClose(); }}
+                className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
+                style={{ background: "#1a3050", color: "#66c0f4", border: "1px solid #2a5080" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#1e3a60")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "#1a3050")}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2C6.48 2 2 6.48 2 12l5.84 2.41c.53-.32 1.14-.51 1.8-.51.07 0 .14 0 .21.01L12 10.5V10.42c0-2.52 2.04-4.58 4.56-4.58 2.52 0 4.56 2.04 4.56 4.58 0 2.52-2.04 4.56-4.56 4.56h-.1l-3.5 2.53c0 .06.01.12.01.18 0 1.89-1.53 3.42-3.42 3.42-1.67 0-3.07-1.2-3.36-2.79L2.17 14C3.14 18.55 7.15 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2z" />
+                </svg>
+                Import from Steam…
+              </button>
+            </section>
+          )}
+
+          {tab === "wine" && platform !== "windows" && (
+            <section className="space-y-3">
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Wine / Proton</h3>
+              <p className="text-xs leading-relaxed" style={{ color: "#8f98a0" }}>
+                Configure the Wine or Proton runtime used to launch Windows games on Linux or macOS.
+              </p>
+              <button onClick={() => { onWineSettings(); onClose(); }}
+                className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
+                style={{
+                  background: launchConfig.enabled ? "#2a1f3a" : "#1e2d3d",
+                  color: launchConfig.enabled ? "#b08ee8" : "#8f98a0",
+                  border: `1px solid ${launchConfig.enabled ? "#5a3a8a" : "#2a475e"}`,
+                }}>
+                🍷 {launchConfig.enabled ? `${launchConfig.runner.charAt(0).toUpperCase() + launchConfig.runner.slice(1)} active — Change…` : "Configure Wine / Proton…"}
+              </button>
+            </section>
+          )}
+        </div>
+      </div>
+    </div >
+  );
+}
+
 // ─── Game Detail ──────────────────────────────────────────────────────────────
 function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots, isHidden, isFav,
   onPlay, onStop, isRunning, runnerLabel, onDelete, onLinkPage, onOpenF95Login, onClearMeta, onUpdate,
-  onTakeScreenshot, onOpenScreenshotsFolder, onToggleHide, onToggleFav, onOpenCustomize, onOpenNotes, hasNotes, onManageCollections }: {
+  onTakeScreenshot, onOpenScreenshotsFolder, onToggleHide, onToggleFav, onOpenCustomize, onOpenNotes, hasNotes, onManageCollections,
+  sessions, onEditSessionNote }: {
     game: Game; stat: GameStats; meta?: GameMetadata;
     customization: GameCustomization; f95LoggedIn: boolean;
     screenshots: Screenshot[]; isHidden: boolean; isFav: boolean;
@@ -1392,6 +2030,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
     onTakeScreenshot: () => void; onOpenScreenshotsFolder: () => void;
     onToggleHide: () => void; onToggleFav: () => void; onOpenCustomize: () => void;
     onOpenNotes: () => void; hasNotes: boolean; onManageCollections: () => void;
+    sessions: SessionEntry[]; onEditSessionNote: (entry: SessionEntry) => void;
   }) {
   const [activeShot, setActiveShot] = useState(0);
   const cover = customization.coverUrl ?? meta?.cover_url;
@@ -1594,6 +2233,11 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
               onTake={onTakeScreenshot}
               onOpenFolder={onOpenScreenshotsFolder}
             />
+            {/* Play History */}
+            <section>
+              <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Play History</h2>
+              <SessionTimeline sessions={sessions} gamePath={game.path} onEditNote={onEditSessionNote} />
+            </section>
           </div>
 
           {/* Right: stats + info */}
@@ -1624,7 +2268,20 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
                   </p>
                 </div>
               )}
+              {/* 7-day playtime chart */}
+              {sessions.some(s => s.path === game.path) && (
+                <div>
+                  <p className="text-xs mb-2" style={{ color: "#8f98a0" }}>This week</p>
+                  <PlayChart sessions={sessions} gamePath={game.path} />
+                </div>
+              )}
             </div>
+            {/* Milestones */}
+            {stat.totalTime > 0 && (
+              <div className="rounded-lg p-4" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
+                <Milestones totalSecs={stat.totalTime} />
+              </div>
+            )}
             {meta && (
               <div className="rounded-lg p-4 space-y-2" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
                 <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "#8f98a0" }}>Game Info</h2>
@@ -1691,9 +2348,10 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
 }
 
 // ─── Home View ────────────────────────────────────────────────────────────────
-function HomeView({ games, stats, metadata, customizations, favGames, notes, runningGamePath, onSelect, onPlay, onStop }: {
+function HomeView({ games, stats, sessions, metadata, customizations, favGames, notes, runningGamePath, onSelect, onPlay, onStop }: {
   games: Game[];
   stats: Record<string, GameStats>;
+  sessions: SessionEntry[];
   metadata: Record<string, GameMetadata>;
   customizations: Record<string, GameCustomization>;
   favGames: Record<string, boolean>;
@@ -1717,6 +2375,22 @@ function HomeView({ games, stats, metadata, customizations, favGames, notes, run
     Object.values(stats).reduce((s, v) => s + v.totalTime, 0),
     [stats]
   );
+
+  // Most played this week — top 5 by session seconds in the last 7 days
+  const weekAgo = Date.now() - 7 * 86_400_000;
+  const mostPlayedThisWeek = useMemo(() => {
+    const byPath: Record<string, number> = {};
+    for (const s of sessions) {
+      if (s.startedAt >= weekAgo) {
+        byPath[s.path] = (byPath[s.path] ?? 0) + s.duration;
+      }
+    }
+    return Object.entries(byPath)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([path, secs]) => ({ game: games.find(g => g.path === path), secs, path }))
+      .filter(e => e.game != null) as { game: Game; secs: number; path: string }[];
+  }, [sessions, games]);
 
   const displayName = (g: Game) =>
     customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name;
@@ -1824,6 +2498,56 @@ function HomeView({ games, stats, metadata, customizations, favGames, notes, run
           </div>
         )}
       </section>
+
+      {/* Most Played This Week */}
+      {mostPlayedThisWeek.length > 0 && (
+        <section className="mt-8">
+          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "#8f98a0" }}>
+            Most Played This Week
+          </h2>
+          <div className="rounded-xl p-4 space-y-3" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
+            {mostPlayedThisWeek.map(({ game, secs, path }) => {
+              const maxSecs = mostPlayedThisWeek[0].secs;
+              const cover = coverSrc(game);
+              const name = displayName(game);
+              return (
+                <div key={path} className="flex items-center gap-3 cursor-pointer"
+                  onClick={() => onSelect(game)}>
+                  <div className="w-8 h-8 rounded overflow-hidden flex-shrink-0"
+                    style={{ background: heroGradient(game.name) }}>
+                    {cover && <img src={cover} alt="" className="w-full h-full object-cover" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-0.5">
+                      <p className="text-xs truncate font-medium" style={{ color: "#c6d4df" }}>{name}</p>
+                      <span className="text-[10px] ml-2 flex-shrink-0" style={{ color: "#66c0f4" }}>{formatTime(secs)}</span>
+                    </div>
+                    <div className="h-1 rounded-full" style={{ background: "#1a2d3d" }}>
+                      <div className="h-full rounded-full" style={{
+                        width: `${(secs / maxSecs) * 100}%`,
+                        background: "linear-gradient(90deg, #2a6db5, #66c0f4)",
+                        transition: "width 0.4s",
+                      }} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Library-wide 7-day playtime chart */}
+      {sessions.length > 0 && (
+        <section className="mt-8">
+          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "#8f98a0" }}>
+            Library Activity — Last 7 Days
+          </h2>
+          <div className="rounded-xl p-4" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
+            <PlayChart sessions={sessions} gamePath={null} days={7} />
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -1998,6 +2722,8 @@ export default function App() {
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [showF95Login, setShowF95Login] = useState(false);
   const [f95LoggedIn, setF95LoggedIn] = useState(false);
+  const [showDLsiteLogin, setShowDLsiteLogin] = useState(false);
+  const [dlsiteLoggedIn, setDlsiteLoggedIn] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [screenshots, setScreenshots] = useState<Record<string, Screenshot[]>>({});
   const [hiddenGames, setHiddenGames] = useState<Record<string, boolean>>(() => loadCache(SK_HIDDEN, {}));
@@ -2056,11 +2782,20 @@ export default function App() {
   const [showAddMenu, setShowAddMenu] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const isSyncing = useRef(false);
+  /** ms timestamp of when the currently-running game was started */
+  const sessionStartRef = useRef<number>(0);
+  /** Accumulated play sessions log */
+  const [sessionLog, setSessionLog] = useState<SessionEntry[]>(() => loadCache(SK_SESSION_LOG, []));
+  /** Session waiting for a note after finishing */
+  const [pendingNoteSession, setPendingNoteSession] = useState<SessionEntry | null>(null);
+  /** Show the Steam import modal */
+  const [showSteamImport, setShowSteamImport] = useState(false);
 
   // No auto-select: show HomeView when nothing is selected
 
   useEffect(() => {
     invoke<boolean>("f95_is_logged_in").then(setF95LoggedIn).catch(() => { });
+    invoke<boolean>("dlsite_is_logged_in").then(setDlsiteLoggedIn).catch(() => { });
     invoke<string>("get_platform").then(setPlatform).catch(() => { });
     // Check for a newer release on GitHub (once per startup, never again)
     invoke<{ version: string; url: string; download_url: string } | null>("check_app_update")
@@ -2083,6 +2818,7 @@ export default function App() {
     });
     const unlistenStarted = listen<string>("game-started", (ev) => {
       setRunningGamePath(ev.payload);
+      sessionStartRef.current = Date.now();
     });
     const unlistenShot = listen<{ game_exe: string; screenshot: Screenshot }>("screenshot-taken", (ev) => {
       const { game_exe, screenshot } = ev.payload;
@@ -2117,6 +2853,21 @@ export default function App() {
   }, [selected?.path]);
 
   const updateStats = (path: string, dur: number) => {
+    const startedAt = sessionStartRef.current || (Date.now() - dur * 1000);
+    const entry: SessionEntry = {
+      id: String(startedAt),
+      path,
+      startedAt,
+      duration: dur,
+      note: "",
+    };
+    setSessionLog((prev) => {
+      const next = [entry, ...prev];
+      saveCache(SK_SESSION_LOG, next);
+      return next;
+    });
+    // Show session note modal for sessions longer than 30 seconds
+    if (dur >= 30) setPendingNoteSession(entry);
     setStats((prev) => {
       const cur = prev[path] || { totalTime: 0, lastPlayed: 0, lastSession: 0, launchCount: 0 };
       const next = {
@@ -2131,6 +2882,40 @@ export default function App() {
       saveCache(SK_STATS, next); return next;
     });
   };
+
+  /** Save or dismiss the note for the pending session */
+  const handleSaveSessionNote = (note: string) => {
+    if (!pendingNoteSession) return;
+    const updated = { ...pendingNoteSession, note };
+    setSessionLog((prev) => {
+      const next = prev.map(s => s.id === updated.id ? updated : s);
+      saveCache(SK_SESSION_LOG, next);
+      return next;
+    });
+    setPendingNoteSession(null);
+  };
+
+  /** Edit a note for an existing session entry (inline from timeline) */
+  const handleEditSessionNote = (entry: SessionEntry) => {
+    setPendingNoteSession(entry);
+  };
+
+  /** Apply Steam playtime to matching library games */
+  const handleSteamImport = (matches: { path: string; addSecs: number }[]) => {
+    setStats((prev) => {
+      const next = { ...prev };
+      for (const m of matches) {
+        const cur = next[m.path] || { totalTime: 0, lastPlayed: 0, lastSession: 0, launchCount: 0 };
+        // Only add if steam time is MORE than what we already have
+        if (m.addSecs > cur.totalTime) {
+          next[m.path] = { ...cur, totalTime: m.addSecs };
+        }
+      }
+      saveCache(SK_STATS, next);
+      return next;
+    });
+  };
+
 
   // ── Persist helpers ─────────────────────────────────────────────────────────
   /** Merge scanned results from one folder into the global game list. */
@@ -2481,16 +3266,32 @@ export default function App() {
   }, [filtered]);
 
   // ── Virtual list for sidebar (handles 1000+ games smoothly) ──────────────
+  /** Items actually visible (excludes group-game rows whose group is collapsed) */
+  const visibleSidebarItems = useMemo(() =>
+    sidebarItems.filter((item) => {
+      if (item.kind === "group-game") return !collapsedGroups.has(item.dir);
+      return true;
+    }),
+    [sidebarItems, collapsedGroups]
+  );
+
   const sidebarListRef = useRef<HTMLDivElement>(null);
   const getSidebarItemHeight = useCallback((item: SidebarItem) =>
     item.kind === "group-header" ? 28 : 52
     , []);
   const { virtualItems: vItems, totalHeight: vTotalH } = useVirtualList(
-    sidebarItems,
+    visibleSidebarItems,
     getSidebarItemHeight,
     sidebarListRef as { current: HTMLElement | null },
     5,
   );
+
+  /** path that is currently a drop target (for highlight) */
+  const dragOverPath = useRef<string | null>(null);
+  const [dragOverPathState, setDragOverPathState] = useState<string | null>(null);
+
+  /** Settings modal */
+  const [showSettings, setShowSettings] = useState(false);
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: "#1b2838", color: "#c6d4df", fontFamily: "'Arial', sans-serif" }}>
@@ -2788,11 +3589,14 @@ export default function App() {
                   );
                 }
 
+                // ── Game row ──
                 const game = item.kind === "group-game" ? item.game : (item as { kind: "game"; game: Game }).game;
                 const isGrouped = item.kind === "group-game";
+                // visibleSidebarItems already excludes collapsed group items, but keep the guard
                 if (isGrouped && collapsedGroups.has((item as { kind: "group-game"; dir: string; game: Game }).dir)) return null;
 
                 const isSelected = selected?.path === game.path;
+                const isDragOver = dragOverPathState === game.path;
                 const m = metadata[game.path];
                 const cus = customizations[game.path];
                 const coverSrc = cus?.coverUrl ?? m?.cover_url;
@@ -2807,19 +3611,38 @@ export default function App() {
                       dragPath.current = game.path;
                       if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
                     }}
-                    onDragOver={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; }}
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      if (dragPath.current && dragPath.current !== game.path) {
+                        dragOverPath.current = game.path;
+                        setDragOverPathState(game.path);
+                      }
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                    }}
+                    onDragLeave={() => {
+                      if (dragOverPath.current === game.path) {
+                        dragOverPath.current = null;
+                        setDragOverPathState(null);
+                      }
+                    }}
                     onDrop={(e) => {
                       e.preventDefault();
                       if (dragPath.current && dragPath.current !== game.path) {
                         applyDrop(dragPath.current, game.path);
                       }
                       dragPath.current = null;
+                      dragOverPath.current = null;
+                      setDragOverPathState(null);
                     }}
                     className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors"
                     style={{
                       position: "absolute", top: offsetTop, left: 0, right: 0, height: 52,
-                      background: isSelected ? "#2a475e" : "transparent",
-                      borderLeft: `3px solid ${isSelected ? "#66c0f4" : isFavItem ? "#c8a951" : "transparent"}`,
+                      background: isSelected ? "#2a475e" : isDragOver ? "#1e3a52" : "transparent",
+                      borderLeft: `3px solid ${isSelected ? "#66c0f4" : isDragOver ? "#4a8ab5" : isFavItem ? "#c8a951" : "transparent"}`,
+                      borderTop: isDragOver ? "1px solid #4a8ab5" : undefined,
                       color: isSelected ? "#fff" : "#8f98a0",
                       opacity: isHiddenItem ? 0.6 : 1,
                       paddingLeft: isGrouped ? "1.75rem" : undefined,
@@ -2879,61 +3702,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Library folders list */}
-          {libraryFolders.length > 0 && (
-            <div className="mb-1">
-              <p className="text-[9px] uppercase tracking-widest mb-1" style={{ color: "#4a5568" }}>Library folders</p>
-              {libraryFolders.map((f) => {
-                const label = f.path.replace(/\\/g, "/").split("/").pop() ?? f.path;
-                return (
-                  <div key={f.path} className="group flex items-center gap-1.5 px-1.5 py-1 rounded"
-                    style={{ background: "transparent" }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "#1b2838")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                    </svg>
-                    <span className="flex-1 text-[10px] truncate" style={{ color: "#8f98a0" }} title={f.path}>{label}</span>
-                    <button
-                      className="opacity-0 group-hover:opacity-100 text-[11px] px-1"
-                      style={{ color: "#4a5568" }}
-                      onMouseEnter={(e) => (e.currentTarget.style.color = "#e57373")}
-                      onMouseLeave={(e) => (e.currentTarget.style.color = "#4a5568")}
-                      onClick={() => handleRemoveFolder(f.path)}
-                      title="Remove this folder from library">
-                      ×
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {f95LoggedIn ? (
-            <button onClick={async () => { await invoke("f95_logout").catch(() => { }); setF95LoggedIn(false); }}
-              className="w-full py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
-              style={{ background: "#2a1f00", color: "#c8a951", border: "1px solid #5a4200" }}>
-              <span className="w-1.5 h-1.5 rounded-full bg-current" /> F95 Logged In — Sign out
-            </button>
-          ) : (
-            <button onClick={() => setShowF95Login(true)}
-              className="w-full py-1.5 rounded text-xs"
-              style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #2a475e" }}>
-              Sign in to F95zone
-            </button>
-          )}
-          {appUpdate && (
-            <button
-              onClick={() => setShowAppUpdateModal(true)}
-              className="w-full py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1.5"
-              style={{ background: "#1a3a1a", color: "#6dbf6d", border: "1px solid #2a5a2a" }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "#1e4a1e")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "#1a3a1a")}
-              title={`v${appUpdate.version} is available — click to install`}>
-              ↑ v{appUpdate.version} available
-            </button>
-          )}
-
           {/* ── Add dropdown ── */}
           <div ref={addMenuRef} className="relative">
             <button
@@ -2984,26 +3752,31 @@ export default function App() {
             )}
           </div>
 
-          {libraryFolders.length > 0 && (
-            <button onClick={() => runFullScanAll(libraryFolders)} disabled={syncState !== "idle"}
-              className="w-full py-1.5 rounded text-xs disabled:opacity-40"
-              style={{ background: "transparent", color: "#8f98a0", border: "1px solid #2a3f54" }}>
-              ↺ Force Rescan All
+          {/* Settings + app update */}
+          <div className="flex gap-1.5">
+            <button onClick={() => setShowSettings(true)}
+              className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
+              style={{ background: "transparent", color: "#4a5568", border: "1px solid #2a3f54" }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = "#8f98a0"; e.currentTarget.style.borderColor = "#3d5a73"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.borderColor = "#2a3f54"; }}
+              title="Settings">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+              Settings
             </button>
-          )}
-          {platform !== "windows" && (
-            <button onClick={() => setShowWineSettings(true)}
-              className="w-full py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
-              style={{
-                background: launchConfig.enabled ? "#2a1f3a" : "transparent",
-                color: launchConfig.enabled ? "#b08ee8" : "#4a5568",
-                border: `1px solid ${launchConfig.enabled ? "#5a3a8a" : "#2a3f54"}`,
-              }}
-              onMouseEnter={(e) => { if (!launchConfig.enabled) { e.currentTarget.style.color = "#8f98a0"; e.currentTarget.style.borderColor = "#3d5a73"; } }}
-              onMouseLeave={(e) => { if (!launchConfig.enabled) { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.borderColor = "#2a3f54"; } }}>
-              🍷 {launchConfig.enabled ? `${launchConfig.runner.charAt(0).toUpperCase() + launchConfig.runner.slice(1)} active` : "Wine / Proton…"}
-            </button>
-          )}
+            {appUpdate && (
+              <button onClick={() => setShowAppUpdateModal(true)}
+                className="flex-1 py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1"
+                style={{ background: "#1a3a1a", color: "#6dbf6d", border: "1px solid #2a5a2a" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#1e4a1e")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "#1a3a1a")}
+                title={`v${appUpdate.version} is available — click to install`}>
+                ↑ v{appUpdate.version}
+              </button>
+            )}
+          </div>
         </div>
       </aside>
 
@@ -3039,6 +3812,7 @@ export default function App() {
             <HomeView
               games={games}
               stats={stats}
+              sessions={sessionLog}
               metadata={metadata}
               customizations={customizations}
               favGames={favGames}
@@ -3090,11 +3864,34 @@ export default function App() {
                 alert("Could not open folder: " + e)
               )
             }
+            sessions={sessionLog}
+            onEditSessionNote={handleEditSessionNote}
           />
         )}
       </main>
 
       {/* ── Modals ── */}
+      {showSettings && (
+        <SettingsModal
+          f95LoggedIn={f95LoggedIn}
+          dlsiteLoggedIn={dlsiteLoggedIn}
+          libraryFolders={libraryFolders}
+          syncState={syncState}
+          platform={platform}
+          launchConfig={launchConfig}
+          appUpdate={appUpdate}
+          onF95Login={() => setShowF95Login(true)}
+          onF95Logout={async () => { await invoke("f95_logout").catch(() => { }); setF95LoggedIn(false); }}
+          onDLsiteLogin={() => setShowDLsiteLogin(true)}
+          onDLsiteLogout={async () => { await invoke("dlsite_logout").catch(() => { }); setDlsiteLoggedIn(false); }}
+          onRemoveFolder={handleRemoveFolder}
+          onRescanAll={() => runFullScanAll(libraryFolders)}
+          onWineSettings={() => setShowWineSettings(true)}
+          onSteamImport={() => setShowSteamImport(true)}
+          onAppUpdate={() => setShowAppUpdateModal(true)}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
       {showWineSettings && (
         <WineSettingsModal
           config={launchConfig}
@@ -3155,6 +3952,12 @@ export default function App() {
           onSuccess={() => setF95LoggedIn(true)}
         />
       )}
+      {showDLsiteLogin && (
+        <DLsiteLoginModal
+          onClose={() => setShowDLsiteLogin(false)}
+          onSuccess={() => setDlsiteLoggedIn(true)}
+        />
+      )}
       {deleteTarget && (
         <div className="fixed inset-0 flex items-center justify-center z-50"
           style={{ background: "rgba(0,0,0,0.75)" }}
@@ -3179,6 +3982,28 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      {/* Session note prompt */}
+      {pendingNoteSession && (() => {
+        const g = games.find(gm => gm.path === pendingNoteSession!.path);
+        const name = g ? (customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name) : "Game";
+        return (
+          <SessionNoteModal
+            session={pendingNoteSession}
+            gameName={name}
+            onSave={handleSaveSessionNote}
+            onDismiss={() => setPendingNoteSession(null)}
+          />
+        );
+      })()}
+      {showSteamImport && (
+        <SteamImportModal
+          games={games}
+          metadata={metadata}
+          customizations={customizations}
+          onImport={handleSteamImport}
+          onClose={() => setShowSteamImport(false)}
+        />
       )}
     </div>
   );

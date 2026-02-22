@@ -60,3 +60,9 @@ html, body, #root {
 }
 .markdown-body strong { color: #e8edf3; }
 .markdown-body em { color: #a0aab4; font-style: italic; }
+
+/* Session note toast animation */
+@keyframes slideInUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}

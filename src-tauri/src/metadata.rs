@@ -249,8 +249,8 @@ pub fn dlsite_http() -> Client {
 
 #[tauri::command]
 pub async fn dlsite_login(login_id: String, password: String) -> Result<bool, String> {
-    // Step 1: GET login page to obtain XSRF-TOKEN cookie
-    let _ = dlsite_http()
+    // Step 1: GET login page to obtain the _token hidden field and initial cookies
+    let page_resp = dlsite_http()
         .get("https://login.dlsite.com/login")
         .header(
             "Accept",
@@ -261,41 +261,48 @@ pub async fn dlsite_login(login_id: String, password: String) -> Result<bool, St
         .await
         .map_err(|e| format!("Failed to reach DLsite login page: {}", e))?;
 
-    // Extract XSRF-TOKEN from cookie store
-    let xsrf_token = {
-        let store = dlsite_ensure_store();
-        let locked = store.lock().unwrap();
-        let token_val: Option<String> = locked
-            .iter_unexpired()
-            .find(|c| c.name() == "XSRF-TOKEN")
-            .map(|c| c.value().to_string());
-        drop(locked);
-        token_val.map(|v| percent_decode(&v)).unwrap_or_default()
+    let body = page_resp.text().await.map_err(|e| e.to_string())?;
+
+    // Extract CSRF _token from the HTML form
+    let token = {
+        let doc = Html::parse_document(&body);
+        let sel = Selector::parse("input[name=_token]").unwrap();
+        doc.select(&sel)
+            .next()
+            .and_then(|el| el.value().attr("value"))
+            .unwrap_or("")
+            .to_string()
     };
 
-    // Step 2: POST JSON credentials
-    let body = serde_json::json!({
-        "login_id": login_id,
-        "password": password,
-    });
+    if token.is_empty() {
+        return Err("Failed to extract CSRF token from DLsite login page.".into());
+    }
+
+    // Step 2: POST form-encoded credentials
+    let params = [
+        ("_token", token.as_str()),
+        ("login_id", login_id.as_str()),
+        ("password", password.as_str()),
+    ];
 
     let resp = dlsite_http()
-        .post("https://login.dlsite.com/api/login")
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json")
-        .header("X-XSRF-TOKEN", &xsrf_token)
-        .header("X-Requested-With", "XMLHttpRequest")
+        .post("https://login.dlsite.com/login")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .header("Referer", "https://login.dlsite.com/login")
         .header("Origin", "https://login.dlsite.com")
-        .json(&body)
+        .form(&params)
         .send()
         .await
         .map_err(|e| format!("Login request failed: {}", e))?;
 
+    // On success, DLsite typically redirects to a dashboard or mypage (302)
+    // Reqwest follows redirects by default, so we check if the final response is successful.
     let status = resp.status();
     if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Login failed (HTTP {}): {}", status, text));
+        return Err(format!("Login failed (HTTP {})", status));
     }
 
     // Step 3: Verify by hitting mypage
@@ -334,27 +341,6 @@ pub async fn dlsite_is_logged_in() -> Result<bool, String> {
         .map_err(|e| e.to_string())?;
     let final_url = resp.url().to_string();
     Ok(final_url.contains("/home/mypage") || final_url.contains("/maniax/mypage"))
-}
-
-/// Simple URL-percent-decoder for cookie values (handles %3D → =, %3B → ; etc.)
-fn percent_decode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(s) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
-                if let Ok(b) = u8::from_str_radix(s, 16) {
-                    out.push(b as char);
-                    i += 3;
-                    continue;
-                }
-            }
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
 }
 
 fn sel(s: &str) -> Selector {

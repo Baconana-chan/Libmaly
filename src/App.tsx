@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "preact/hooks"
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { marked } from "marked";
 import "./App.css";
 
@@ -28,7 +30,7 @@ function useVirtualList<T>(
     return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
   }, [containerRef.current]); // eslint-disable-line
 
-  return useMemo(() => {
+  const state = useMemo(() => {
     if (items.length === 0) return { virtualItems: [], totalHeight: 0, offsetTop: 0 };
 
     // Build cumulative offsets
@@ -72,7 +74,27 @@ function useVirtualList<T>(
       offsetTop: offsets[start],
     };
   }, [items, getHeight, scrollTop, containerH, overscan]); // eslint-disable-line
+
+  const scrollToIndex = useCallback((index: number) => {
+    if (!containerRef.current || index < 0 || index >= items.length) return;
+    // We recreate the offsets here (cheap enough)
+    const offsets = new Array<number>(items.length + 1);
+    offsets[0] = 0;
+    for (let i = 0; i < items.length; i++) offsets[i + 1] = offsets[i] + getHeight(items[i]);
+
+    const top = offsets[index];
+    const bottom = offsets[index + 1];
+    const el = containerRef.current;
+    if (top < el.scrollTop) {
+      el.scrollTop = top;
+    } else if (bottom > el.scrollTop + el.clientHeight) {
+      el.scrollTop = bottom - el.clientHeight;
+    }
+  }, [items, getHeight, containerRef]);
+
+  return { ...state, scrollToIndex };
 }
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -149,6 +171,10 @@ interface GameCustomization {
   backgroundUrl?: string;
   /** Alternate executable to launch instead of the scanned game.path */
   exeOverride?: string;
+  /** Command-line arguments for the primary or override executable */
+  launchArgs?: string;
+  /** Additional pinned executables to show in the UI for this game */
+  pinnedExes?: { name: string; path: string }[];
 }
 
 // ─── Generic exe-name detection ──────────────────────────────────────────────
@@ -209,6 +235,52 @@ interface LaunchConfig {
 
 const DEFAULT_LAUNCH_CONFIG: LaunchConfig = { enabled: false, runner: "wine", runnerPath: "", prefixPath: "" };
 
+const SK_SETTINGS = "libmaly_app_settings-v1";
+interface AppSettings {
+  updateCheckerEnabled: boolean;
+  sessionToastEnabled: boolean;
+  trayTooltipEnabled: boolean;
+  startupWithWindows: boolean;
+  blurNsfwContent: boolean;
+}
+const DEFAULT_SETTINGS: AppSettings = {
+  updateCheckerEnabled: false,
+  sessionToastEnabled: false,
+  trayTooltipEnabled: false,
+  startupWithWindows: false,
+  blurNsfwContent: true,
+};
+
+function isGameAdult(meta?: GameMetadata): boolean {
+  if (!meta) return false;
+  if (meta.source === "f95" || meta.source === "dlsite") return true;
+  if (meta.age_rating && meta.age_rating.toLowerCase().includes("18")) return true;
+  return meta.tags?.some(t => ["adult", "nsfw", "18+", "18", "eroge"].includes(t.toLowerCase())) ?? false;
+}
+
+function NsfwOverlay({
+  gamePath, meta, appSettings, revealed, onReveal, small
+}: {
+  gamePath: string; meta?: GameMetadata; appSettings: AppSettings;
+  revealed: Record<string, boolean>; onReveal: (path: string) => void;
+  small?: boolean;
+}) {
+  if (!appSettings.blurNsfwContent || !isGameAdult(meta) || revealed[gamePath]) return null;
+  return (
+    <div className={`absolute inset-0 z-10 flex flex-col items-center justify-center cursor-pointer ${small ? "backdrop-blur-sm bg-black/20" : "backdrop-blur-xl bg-black/40"}`}
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onReveal(gamePath); }}>
+      {!small && (
+        <>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-70 mb-1">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /><line x1="1" y1="1" x2="23" y2="23" />
+          </svg>
+          <span className="text-[10px] uppercase font-bold text-white opacity-80 px-2 py-0.5 rounded shadow-sm" style={{ background: "rgba(0,0,0,0.6)" }}>18+ Content</span>
+        </>
+      )}
+    </div>
+  );
+}
+
 const COLLECTION_COLORS = ["#66c0f4", "#c8a951", "#a170c8", "#e8734a", "#5ba85b", "#d45252", "#4a8ee8", "#e85480"];
 
 interface Collection {
@@ -250,6 +322,97 @@ function heroGradient(name: string) {
 }
 function isF95Url(url: string) { return url.includes("f95zone.to"); }
 function isDLsiteUrl(url: string) { return url.includes("dlsite.com"); }
+
+// ─── Command Palette ────────────────────────────────────────────────────────
+function CommandPalette({
+  isOpen, onClose, games, metadata, notes, onSelect
+}: {
+  isOpen: boolean; onClose: () => void; games: Game[]; metadata: Record<string, GameMetadata>; notes: Record<string, string>; onSelect: (g: Game) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setQuery("");
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [isOpen]);
+
+  const results = useMemo(() => {
+    if (!query.trim()) return [];
+    const q = query.toLowerCase();
+    return games.filter(g => {
+      if (g.name.toLowerCase().includes(q)) return true;
+      const meta = metadata[g.path];
+      if (meta) {
+        if (meta.developer?.toLowerCase().includes(q)) return true;
+        if (meta.tags?.some(t => t.toLowerCase().includes(q))) return true;
+      }
+      if (notes[g.path]?.toLowerCase().includes(q)) return true;
+      return false;
+    }).slice(0, 15);
+  }, [games, metadata, notes, query]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[10000] flex items-start justify-center pt-[15vh]"
+      style={{ background: "rgba(0,0,0,0.8)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-[600px] rounded-lg shadow-2xl overflow-hidden flex flex-col" style={{ background: "#1b2838", border: "1px solid #2a475e" }}>
+        <div className="flex items-center px-4 py-3 border-b" style={{ borderColor: "#1e3a50" }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+          </svg>
+          <input
+            ref={inputRef}
+            type="text"
+            className="flex-1 bg-transparent px-3 text-[15px] outline-none"
+            style={{ color: "#fff" }}
+            placeholder="Search games, tags, developers, notes... (Ctrl+K)"
+            value={query}
+            onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") onClose();
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                // Simple version: doesn't include list navigation for the sake of brevity
+              }
+              if (e.key === "Enter" && results.length > 0) {
+                onSelect(results[0]);
+                onClose();
+              }
+            }}
+          />
+        </div>
+        {results.length > 0 && (
+          <div className="py-2 max-h-[400px] overflow-y-auto" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+            {results.map(g => (
+              <button key={g.path}
+                className="w-full flex items-center gap-3 px-4 py-2 hover:bg-[#2a475e] text-left transition-colors"
+                onClick={() => { onSelect(g); onClose(); }}>
+                <div className="w-8 h-8 rounded shrink-0 bg-[#0d1b2a] border border-[#1e3a50] overflow-hidden flex items-center justify-center font-bold text-xs" style={{ color: "#fff" }}>
+                  {metadata[g.path]?.cover_url ? <img src={metadata[g.path].cover_url} className="w-full h-full object-cover" alt="" /> : g.name.charAt(0).toUpperCase()}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold truncate" style={{ color: "#c6d4df" }}>{metadata[g.path]?.title ?? g.name}</p>
+                  <p className="text-[10px] truncate" style={{ color: "#8f98a0" }}>
+                    {metadata[g.path]?.developer || "Unknown Developer"}
+                    {metadata[g.path]?.tags?.length ? ` · ${metadata[g.path].tags.slice(0, 3).join(", ")}` : ""}
+                  </p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+        {query.trim() && results.length === 0 && (
+          <div className="py-8 text-center text-sm" style={{ color: "#8f98a0" }}>No results found for "{query}"</div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ─── TagBadge ─────────────────────────────────────────────────────────────────
 function TagBadge({ text }: { text: string }) {
@@ -868,6 +1031,8 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
   const [coverUrl, setCoverUrl] = useState(custom.coverUrl ?? "");
   const [bgUrl, setBgUrl] = useState(custom.backgroundUrl ?? "");
   const [exeOverride, setExeOverride] = useState(custom.exeOverride ?? "");
+  const [launchArgs, setLaunchArgs] = useState(custom.launchArgs ?? "");
+  const [pinnedExes, setPinnedExes] = useState<{ name: string; path: string }[]>(custom.pinnedExes ?? []);
   const [siblingExes, setSiblingExes] = useState<string[]>([]);
   const [detectingExes, setDetectingExes] = useState(false);
 
@@ -913,6 +1078,8 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
       coverUrl: coverUrl.trim() || undefined,
       backgroundUrl: bgUrl.trim() || undefined,
       exeOverride: exeOverride.trim() && exeOverride.trim() !== game.path ? exeOverride.trim() : undefined,
+      launchArgs: launchArgs.trim() || undefined,
+      pinnedExes: pinnedExes.length > 0 ? pinnedExes : undefined,
     });
     onClose();
   };
@@ -1063,6 +1230,50 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
                 By default the game launches the scanned .exe above. Use this to pick a different launcher in the same folder.
               </p>
             )}
+
+            <div className="mt-4">
+              <label className="block text-xs font-semibold mb-1" style={{ color: "#8f98a0" }}>
+                Launch Arguments
+              </label>
+              <input type="text" placeholder="e.g. -fullscreen -w 1920" value={launchArgs}
+                onInput={(e) => setLaunchArgs((e.target as HTMLInputElement).value)}
+                className="w-full px-3 py-2 rounded text-sm outline-none font-mono"
+                style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+            </div>
+
+            <div className="mt-4">
+              <label className="block text-xs font-semibold mb-1" style={{ color: "#8f98a0" }}>
+                Pinned Executables <span style={{ fontWeight: "normal", color: "#4a5568" }}>(e.g. Server, Config)</span>
+              </label>
+              <div className="space-y-2">
+                {pinnedExes.map((pe, i) => (
+                  <div key={i} className="flex gap-2">
+                    <input type="text" placeholder="Label" value={pe.name}
+                      onInput={(e) => {
+                        const next = [...pinnedExes];
+                        next[i].name = (e.target as HTMLInputElement).value;
+                        setPinnedExes(next);
+                      }}
+                      className="w-1/3 px-2 py-1.5 rounded text-xs outline-none bg-[#152232] border border-[#2a475e] text-[#c6d4df]" />
+                    <input type="text" placeholder="Exe path" value={pe.path} readOnly
+                      className="flex-1 px-2 py-1.5 rounded text-[10px] outline-none bg-[#0d1b2a] border border-[#1e3a50] text-[#8f98a0] font-mono break-all" />
+                    <button onClick={() => setPinnedExes(pinnedExes.filter((_, idx) => idx !== i))}
+                      className="px-2 rounded text-xs text-[#e57373] hover:bg-[#3a1010]" title="Remove pin">✕</button>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={async () => {
+                  const sel = await open({ multiple: false, directory: false, defaultPath: gameFolder, filters: [{ name: "Executable", extensions: ["exe", "bat", "sh"] }] }).catch(() => null);
+                  if (sel && typeof sel === "string") {
+                    const fname = sel.replace(/\\/g, "/").split("/").pop() ?? "New Pin";
+                    setPinnedExes([...pinnedExes, { name: fname, path: sel }]);
+                  }
+                }}
+                className="mt-2 px-3 py-1.5 rounded text-xs" style={{ background: "#2a3f54", color: "#66c0f4", border: "1px dashed #3d5a73" }}>
+                + Add pinned executable
+              </button>
+            </div>
           </div>
 
           {/* Cover image */}
@@ -1801,18 +2012,18 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
 // ─── Settings Modal ────────────────────────────────────────────────────────────
 function SettingsModal({
   f95LoggedIn, dlsiteLoggedIn, libraryFolders, syncState, platform, launchConfig,
-  appUpdate,
+  appUpdate, appSettings,
   onF95Login, onF95Logout, onDLsiteLogin, onDLsiteLogout, onRemoveFolder,
-  onRescanAll, onWineSettings, onSteamImport, onAppUpdate, onClose,
+  onRescanAll, onWineSettings, onSteamImport, onAppUpdate, onSaveSettings, onClose,
 }: {
   f95LoggedIn: boolean; dlsiteLoggedIn: boolean; libraryFolders: { path: string }[]; syncState: string;
   platform: string; launchConfig: { enabled: boolean; runner: string };
-  appUpdate: { version: string } | null;
+  appUpdate: { version: string } | null; appSettings: AppSettings;
   onF95Login: () => void; onF95Logout: () => void;
   onDLsiteLogin: () => void; onDLsiteLogout: () => void;
   onRemoveFolder: (p: string) => void;
   onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void;
-  onAppUpdate: () => void; onClose: () => void;
+  onAppUpdate: () => void; onSaveSettings: (s: AppSettings) => void; onClose: () => void;
 }) {
   const [tab, setTab] = useState<"general" | "scanner" | "import" | "wine">("general");
   const tabs: { id: typeof tab; label: string }[] = [
@@ -1914,7 +2125,36 @@ function SettingsModal({
                 )}
               </section>
 
-              <section className="space-y-2">
+              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>System & Notifications</h3>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }}>
+                  <input type="checkbox" checked={appSettings.startupWithWindows}
+                    onChange={(e) => onSaveSettings({ ...appSettings, startupWithWindows: e.currentTarget.checked })} />
+                  Start minimized in tray with Windows
+                </label>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }}>
+                  <input type="checkbox" checked={appSettings.updateCheckerEnabled}
+                    onChange={(e) => onSaveSettings({ ...appSettings, updateCheckerEnabled: e.currentTarget.checked })} />
+                  Check for game updates (F95/DLsite)
+                </label>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }}>
+                  <input type="checkbox" checked={appSettings.sessionToastEnabled}
+                    onChange={(e) => onSaveSettings({ ...appSettings, sessionToastEnabled: e.currentTarget.checked })} />
+                  Show system notification on session end
+                </label>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }}>
+                  <input type="checkbox" checked={appSettings.trayTooltipEnabled}
+                    onChange={(e) => onSaveSettings({ ...appSettings, trayTooltipEnabled: e.currentTarget.checked })} />
+                  Live session duration in tray tooltip
+                </label>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }}>
+                  <input type="checkbox" checked={appSettings.blurNsfwContent}
+                    onChange={(e) => onSaveSettings({ ...appSettings, blurNsfwContent: e.currentTarget.checked })} />
+                  Blur adult/NSFW covers (Click to reveal)
+                </label>
+              </section>
+
+              <section className="space-y-2 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
                 <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Library Folders</h3>
                 <div className="rounded-lg overflow-hidden" style={{ border: "1px solid #2a475e" }}>
                   {libraryFolders.length === 0 ? (
@@ -2020,17 +2260,18 @@ function SettingsModal({
 function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots, isHidden, isFav,
   onPlay, onStop, isRunning, runnerLabel, onDelete, onLinkPage, onOpenF95Login, onClearMeta, onUpdate,
   onTakeScreenshot, onOpenScreenshotsFolder, onToggleHide, onToggleFav, onOpenCustomize, onOpenNotes, hasNotes, onManageCollections,
-  sessions, onEditSessionNote }: {
+  sessions, onEditSessionNote, appSettings, revealedNsfw, onRevealNsfw }: {
     game: Game; stat: GameStats; meta?: GameMetadata;
     customization: GameCustomization; f95LoggedIn: boolean;
     screenshots: Screenshot[]; isHidden: boolean; isFav: boolean;
-    onPlay: () => void; onStop: () => void; isRunning: boolean; runnerLabel?: string;
+    onPlay: (overridePath?: string, overrideArgs?: string) => void; onStop: () => void; isRunning: boolean; runnerLabel?: string;
     onDelete: () => void; onLinkPage: () => void;
     onOpenF95Login: () => void; onClearMeta: () => void; onUpdate: () => void;
     onTakeScreenshot: () => void; onOpenScreenshotsFolder: () => void;
     onToggleHide: () => void; onToggleFav: () => void; onOpenCustomize: () => void;
     onOpenNotes: () => void; hasNotes: boolean; onManageCollections: () => void;
     sessions: SessionEntry[]; onEditSessionNote: (entry: SessionEntry) => void;
+    appSettings: AppSettings; revealedNsfw: Record<string, boolean>; onRevealNsfw: (path: string) => void;
   }) {
   const [activeShot, setActiveShot] = useState(0);
   const cover = customization.coverUrl ?? meta?.cover_url;
@@ -2047,17 +2288,31 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
           ? <img src={heroBg} alt={displayTitle} className="absolute inset-0 w-full h-full object-cover"
             style={{ filter: "brightness(0.5)" }} />
           : <div className="absolute inset-0" style={{ background: heroGradient(game.name) }} />}
+
+        <NsfwOverlay gamePath={game.path} meta={meta} appSettings={appSettings} revealed={revealedNsfw} onReveal={onRevealNsfw} />
         <div className="absolute inset-0"
           style={{ background: "linear-gradient(to top,#1b2838 0%,rgba(27,40,56,0.15) 60%,transparent 100%)" }} />
         <div className="absolute bottom-0 left-0 right-0 px-8 pb-5">
           <div className="flex items-end justify-between">
             <div>
-              {meta?.source && (
-                <span className="inline-block text-xs px-2 py-0.5 rounded mb-1.5 font-semibold"
-                  style={{ background: meta.source === "f95" ? "#c8a951" : "#e0534a", color: meta.source === "f95" ? "#1a1a1a" : "#fff" }}>
-                  {meta.source === "f95" ? "F95zone" : "DLsite"}
-                </span>
-              )}
+              <div className="flex gap-2 mb-1.5">
+                {meta?.source && (
+                  <span className="inline-block text-xs px-2 py-0.5 rounded font-semibold"
+                    style={{ background: meta.source === "f95" ? "#c8a951" : "#e0534a", color: meta.source === "f95" ? "#1a1a1a" : "#fff" }}>
+                    {meta.source === "f95" ? "F95zone" : "DLsite"}
+                  </span>
+                )}
+                {isHidden && (
+                  <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-semibold"
+                    style={{ background: "rgba(0,0,0,0.6)", color: "#8f98a0", border: "1px solid #3d5a73" }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
+                      <line x1="1" y1="1" x2="23" y2="23" />
+                    </svg>
+                    Hidden
+                  </span>
+                )}
+              </div>
               <h1 className="text-3xl font-bold" style={{ color: "#fff", textShadow: "0 2px 8px rgba(0,0,0,.9)" }}>{displayTitle}</h1>
               {meta?.version && <span className="text-sm mt-0.5 block" style={{ color: "#8cb4d5" }}>{meta.version}</span>}
             </div>
@@ -2074,7 +2329,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
       {/* Action bar */}
       <div className="flex items-center gap-2 px-8 py-3 flex-shrink-0"
         style={{ background: "#16202d", borderBottom: "1px solid #0d1117" }}>
-        <button onClick={isRunning ? onStop : onPlay}
+        <button onClick={isRunning ? onStop : () => onPlay()}
           className="flex items-center gap-2 px-7 py-2 rounded font-bold text-sm uppercase tracking-wider"
           style={{ background: isRunning ? "#6b2222" : "#4c6b22", color: isRunning ? "#e88585" : "#d2e885" }}
           onMouseEnter={(e) => (e.currentTarget.style.background = isRunning ? "#8a1e1e" : "#5c8a1e")}
@@ -2085,6 +2340,16 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
               Play{runnerLabel && <span className="ml-1 text-[10px] font-normal normal-case opacity-80">via {runnerLabel}</span>}</>
           }
         </button>
+        {customization?.pinnedExes?.map((ex, i) => (
+          <button key={i} onClick={() => onPlay(ex.path, undefined)} disabled={isRunning}
+            className="flex items-center gap-1.5 px-3 py-2 rounded text-sm disabled:opacity-50"
+            style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
+            onMouseEnter={(e) => { if (!isRunning) { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; } }}
+            onMouseLeave={(e) => { if (!isRunning) { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#c6d4df"; } }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+            {ex.name}
+          </button>
+        ))}
         <button onClick={onLinkPage}
           className="flex items-center gap-1.5 px-3 py-2 rounded text-sm"
           style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3d5a73" }}
@@ -2725,6 +2990,10 @@ export default function App() {
   const [showDLsiteLogin, setShowDLsiteLogin] = useState(false);
   const [dlsiteLoggedIn, setDlsiteLoggedIn] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "compact" | "grid">(() => loadCache("libmaly_view_mode", "list"));
+
+  useEffect(() => saveCache("libmaly_view_mode", viewMode), [viewMode]);
+
   const [screenshots, setScreenshots] = useState<Record<string, Screenshot[]>>({});
   const [hiddenGames, setHiddenGames] = useState<Record<string, boolean>>(() => loadCache(SK_HIDDEN, {}));
   const [favGames, setFavGames] = useState<Record<string, boolean>>(() => loadCache(SK_FAVS, {}));
@@ -2749,6 +3018,36 @@ export default function App() {
   /** path currently being dragged in the sidebar */
   const dragPath = useRef<string | null>(null);
 
+  // ── UI states ──
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadCache("libmaly_sidebar_w", 256));
+  const isDraggingSidebar = useRef(false);
+  const sbWidthRef = useRef(sidebarWidth);
+  useEffect(() => { sbWidthRef.current = sidebarWidth; }, [sidebarWidth]);
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDraggingSidebar.current) return;
+      document.body.style.cursor = "col-resize";
+      let newW = e.clientX;
+      if (newW < 200) newW = 200;
+      if (newW > 600) newW = 600;
+      setSidebarWidth(newW);
+    };
+    const onMouseUp = () => {
+      if (isDraggingSidebar.current) {
+        isDraggingSidebar.current = false;
+        document.body.style.cursor = "";
+        saveCache("libmaly_sidebar_w", sbWidthRef.current);
+      }
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
   /**
    * Key that identifies the current "view context" for custom ordering.
    * Global view  ->  "global"
@@ -2771,13 +3070,29 @@ export default function App() {
       return updated;
     });
   };
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => loadCache(SK_SETTINGS, DEFAULT_SETTINGS));
+  const appSettingsRef = useRef(appSettings);
+  useEffect(() => { appSettingsRef.current = appSettings; }, [appSettings]);
+
+  const [revealedNsfw, setRevealedNsfw] = useState<Record<string, boolean>>({});
+  const revealNsfwPath = useCallback((path: string) => setRevealedNsfw(p => ({ ...p, [path]: true })), []);
+
+  const gamesRef = useRef(games);
+  useEffect(() => { gamesRef.current = games; }, [games]);
+  const metadataRef = useRef(metadata);
+  useEffect(() => { metadataRef.current = metadata; }, [metadata]);
+  const customizationsRef = useRef(customizations);
+  useEffect(() => { customizationsRef.current = customizations; }, [customizations]);
+
   const [runningGamePath, setRunningGamePath] = useState<string | null>(null);
   const [platform, setPlatform] = useState<string>("windows");
   const [launchConfig, setLaunchConfig] = useState<LaunchConfig>(() => loadCache(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG));
   const [, setRecentGames] = useState<RecentGame[]>(() => loadCache(SK_RECENT, []));
+  const [availableGameUpdates, setAvailableGameUpdates] = useState<Record<string, string>>({});
   const [showWineSettings, setShowWineSettings] = useState(false);
   const [appUpdate, setAppUpdate] = useState<{ version: string; url: string; downloadUrl: string } | null>(null);
   const [showAppUpdateModal, setShowAppUpdateModal] = useState(false);
+  const [showCmdPalette, setShowCmdPalette] = useState(false);
   /** Controls the "+ Add" dropdown in the sidebar */
   const [showAddMenu, setShowAddMenu] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -2815,6 +3130,20 @@ export default function App() {
       const p = ev.payload as { path: string; duration_secs: number };
       updateStats(p.path, p.duration_secs);
       setRunningGamePath(null);
+      if (appSettingsRef.current.sessionToastEnabled) {
+        isPermissionGranted().then(granted => {
+          if (!granted) return requestPermission().then(r => r === "granted" || r === "default" ? true : false);
+          return true;
+        }).then(granted => {
+          if (granted) {
+            const title = customizationsRef.current[p.path]?.displayName ?? metadataRef.current[p.path]?.title ?? gamesRef.current.find(g => g.path === p.path)?.name ?? "Game";
+            sendNotification({ title: "Session Ended", body: `Played ${title} for ${formatTime(p.duration_secs)}` });
+          }
+        });
+      }
+      if (appSettingsRef.current.trayTooltipEnabled) {
+        invoke("set_tray_tooltip", { tooltip: "LIBMALY" }).catch(() => null);
+      }
     });
     const unlistenStarted = listen<string>("game-started", (ev) => {
       setRunningGamePath(ev.payload);
@@ -2833,6 +3162,56 @@ export default function App() {
       unlistenShot.then((f) => f());
     };
   }, []);
+
+  // Synchronise autostart plugin state
+  useEffect(() => {
+    isAutostartEnabled().then(enabled => {
+      if (enabled !== appSettings.startupWithWindows) {
+        if (appSettings.startupWithWindows) enableAutostart().catch(() => null);
+        else disableAutostart().catch(() => null);
+      }
+    }).catch(() => null);
+  }, [appSettings.startupWithWindows]);
+
+  // Live tray tooltip update loop
+  useEffect(() => {
+    if (!appSettings.trayTooltipEnabled || !runningGamePath) return;
+    const updateTooltip = () => {
+      const elapsed = Math.floor((Date.now() - sessionStartRef.current) / 1000);
+      const title = customizations[runningGamePath]?.displayName ?? metadata[runningGamePath]?.title ?? games.find(g => g.path === runningGamePath)?.name ?? "Game";
+      invoke("set_tray_tooltip", { tooltip: `${title} - ${formatTime(elapsed)}` }).catch(() => null);
+    };
+    updateTooltip(); // initial
+    const iv = setInterval(updateTooltip, 60000); // 1 minute
+    return () => clearInterval(iv);
+  }, [appSettings.trayTooltipEnabled, runningGamePath, games, metadata, customizations]);
+
+  // Background game update checker
+  useEffect(() => {
+    if (!appSettings.updateCheckerEnabled || games.length === 0) return;
+    const checkUpdates = async () => {
+      for (const g of games) {
+        const m = metadata[g.path];
+        if (m && m.source_url) {
+          try {
+            const res = await invoke<GameMetadata | null>(
+              m.source === "f95" ? "fetch_f95_metadata" : "fetch_dlsite_metadata",
+              { url: m.source_url }
+            );
+            if (res && res.version && m.version && res.version !== m.version) {
+              setAvailableGameUpdates(prev => ({ ...prev, [g.path]: res.version! }));
+            }
+          } catch { }
+          // delay 2 seconds between requests to avoid rate limits
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    };
+    // Debounce initial run so it doesn't block startup
+    const timer = setTimeout(checkUpdates, 5000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line
+  }, [appSettings.updateCheckerEnabled]);
 
   // Close the Add dropdown when clicking outside
   useEffect(() => {
@@ -3024,14 +3403,15 @@ export default function App() {
     });
   };
 
-  const launchGame = async (path: string) => {
+  const launchGame = async (path: string, overridePath?: string, overrideArgs?: string) => {
     const useRunner = launchConfig.enabled && platform !== "windows";
     const runner = useRunner ? (launchConfig.runnerPath || (launchConfig.runner !== "custom" ? launchConfig.runner : null)) : null;
     const prefix = useRunner && launchConfig.prefixPath ? launchConfig.prefixPath : null;
     // Honour per-game executable override (keeps original `path` as the cache key)
-    const actualPath = customizations[path]?.exeOverride ?? path;
+    const actualPath = overridePath ?? customizations[path]?.exeOverride ?? path;
+    const args = overrideArgs !== undefined ? overrideArgs : (customizations[path]?.launchArgs ?? null);
     try {
-      await invoke("launch_game", { path: actualPath, runner, prefix });
+      await invoke("launch_game", { path: actualPath, runner, prefix, args: args || null });
       // ── Track recent games (last 5, deduplicated) ────────────────────────
       const game = games.find((g) => g.path === path);
       if (game) {
@@ -3277,14 +3657,64 @@ export default function App() {
 
   const sidebarListRef = useRef<HTMLDivElement>(null);
   const getSidebarItemHeight = useCallback((item: SidebarItem) =>
-    item.kind === "group-header" ? 28 : 52
-    , []);
-  const { virtualItems: vItems, totalHeight: vTotalH } = useVirtualList(
+    item.kind === "group-header" ? 28 : (viewMode === "compact" ? 28 : 52)
+    , [viewMode]);
+  const { virtualItems: vItems, totalHeight: vTotalH, scrollToIndex } = useVirtualList(
     visibleSidebarItems,
     getSidebarItemHeight,
     sidebarListRef as { current: HTMLElement | null },
     5,
   );
+
+  // ── Keyboard Navigation & Scroll-to-selected ──
+  useEffect(() => {
+    if (!selected) return;
+    const idx = visibleSidebarItems.findIndex(
+      (item) => (item.kind === "game" || item.kind === "group-game") && item.game.path === selected.path
+    );
+    if (idx !== -1) scrollToIndex(idx);
+  }, [selected, visibleSidebarItems, scrollToIndex]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Toggle Command Palette with Ctrl+K
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        setShowCmdPalette(prev => !prev);
+        return;
+      }
+
+      // Close popups on Escape
+      if (e.key === "Escape") {
+        setShowCmdPalette(false);
+      }
+
+      if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") return;
+
+      const actionable = visibleSidebarItems.filter(i => i.kind === "game" || i.kind === "group-game").map(i => (i as any).game as Game);
+      if (actionable.length === 0) return;
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        let idx = selected ? actionable.findIndex(g => g.path === selected.path) : -1;
+
+        if (e.key === "ArrowDown") {
+          const next = idx === -1 ? 0 : Math.min(idx + 1, actionable.length - 1);
+          setSelected(actionable[next]);
+        } else {
+          const prev = idx === -1 ? actionable.length - 1 : Math.max(idx - 1, 0);
+          setSelected(actionable[prev]);
+        }
+      } else if (e.key === " ") {
+        if (selected && !runningGamePath && syncState !== "syncing") {
+          e.preventDefault();
+          launchGame(selected.path);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [visibleSidebarItems, selected]);
 
   /** path that is currently a drop target (for highlight) */
   const dragOverPath = useRef<string | null>(null);
@@ -3379,7 +3809,12 @@ export default function App() {
       )}
 
       {/* ── Sidebar ── */}
-      <aside className="flex flex-col flex-shrink-0 w-64 h-full" style={{ background: "#171a21", borderRight: "1px solid #0d1117" }}>
+      <aside className="flex flex-col flex-shrink-0 h-full relative" style={{ width: sidebarWidth, background: "#171a21", borderRight: "1px solid #0d1117" }}>
+        <div
+          className="absolute top-0 bottom-0 right-0 w-1 cursor-col-resize hover:bg-[#3d7dc8] transition-colors z-[100]"
+          style={{ transform: "translateX(50%)" }}
+          onMouseDown={() => { isDraggingSidebar.current = true; }}
+        />
         <button
           onClick={() => setSelected(null)}
           title="Library Home"
@@ -3410,7 +3845,7 @@ export default function App() {
             {([
               ["all", "All"],
               ["favs", "★ Favs"],
-              ["hidden", "👁 Hidden"],
+              ["hidden", `👁 Hidden (${Object.keys(hiddenGames).length})`],
               ["f95", "F95"],
               ["dlsite", "DLsite"],
               ["unlinked", "Unlinked"],
@@ -3442,8 +3877,20 @@ export default function App() {
                 }}>{label}</button>
             ))}
             {sortMode === "custom" && (
-              <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }} title="Drag rows to reorder">⠿ drag</span>
+              <span className="text-[9px]" style={{ color: "#4a5568" }} title="Drag rows to reorder">⠿ drag</span>
             )}
+            <div className="flex-1" />
+            <div className="flex bg-[#1b2d3d] rounded shrink-0 items-center" style={{ padding: "2px" }}>
+              <button title="List View" onClick={() => setViewMode("list")} className="p-1 rounded" style={{ background: viewMode === "list" ? "#2a475e" : "transparent" }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "list" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+              </button>
+              <button title="Compact List" onClick={() => setViewMode("compact")} className="p-1 rounded" style={{ background: viewMode === "compact" ? "#2a475e" : "transparent" }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "compact" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="18" x2="20" y2="18"></line></svg>
+              </button>
+              <button title="Grid View" onClick={() => setViewMode("grid")} className="p-1 rounded" style={{ background: viewMode === "grid" ? "#2a475e" : "transparent" }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "grid" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+              </button>
+            </div>
           </div>
         </div>
         {/* ── Collections ── */}
@@ -3639,7 +4086,7 @@ export default function App() {
                     }}
                     className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors"
                     style={{
-                      position: "absolute", top: offsetTop, left: 0, right: 0, height: 52,
+                      position: "absolute", top: offsetTop, left: 0, right: 0, height: viewMode === "compact" ? 28 : 52,
                       background: isSelected ? "#2a475e" : isDragOver ? "#1e3a52" : "transparent",
                       borderLeft: `3px solid ${isSelected ? "#66c0f4" : isDragOver ? "#4a8ab5" : isFavItem ? "#c8a951" : "transparent"}`,
                       borderTop: isDragOver ? "1px solid #4a8ab5" : undefined,
@@ -3648,18 +4095,32 @@ export default function App() {
                       paddingLeft: isGrouped ? "1.75rem" : undefined,
                       cursor: sortMode === "custom" ? "grab" : undefined,
                     }}>
-                    <div className="w-9 h-9 rounded flex-shrink-0 overflow-hidden relative"
-                      style={{ background: heroGradient(game.name) }}>
-                      {coverSrc
-                        ? <img src={coverSrc} alt="" className="w-full h-full object-cover" />
-                        : <div className="w-full h-full flex items-center justify-center text-sm font-bold text-white">
-                          {name.charAt(0).toUpperCase()}
-                        </div>}
-                      {isFavItem && (
-                        <span className="absolute top-0 right-0 text-[8px] leading-none p-px"
-                          style={{ color: "#c8a951", textShadow: "0 0 3px #000" }}>★</span>
-                      )}
-                    </div>
+                    {availableGameUpdates[game.path] && (
+                      <span className="absolute top-[4px] right-[4px] w-1.5 h-1.5 rounded-full z-10 animate-pulse bg-green-500"
+                        style={{ boxShadow: "0 0 5px #10b981" }} title="New update available!" />
+                    )}
+                    {viewMode === "compact" ? (
+                      <div className="w-5 h-5 rounded flex-shrink-0 overflow-hidden relative" style={{ background: heroGradient(game.name) }}>
+                        {coverSrc ? <img src={coverSrc} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-white" style={{ fontSize: "9px" }}>{name.charAt(0).toUpperCase()}</div>}
+                        <NsfwOverlay gamePath={game.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
+                      </div>
+                    ) : (
+                      <div className="w-9 h-9 rounded flex-shrink-0 overflow-hidden relative"
+                        style={{ background: (!coverSrc && syncState === "syncing") ? "#1e3a50" : heroGradient(game.name) }}>
+                        {coverSrc
+                          ? <img src={coverSrc} alt="" className="w-full h-full object-cover" />
+                          : syncState === "syncing"
+                            ? <div className="w-full h-full animate-pulse bg-[#2a475e]" />
+                            : <div className="w-full h-full flex items-center justify-center text-sm font-bold text-white">
+                              {name.charAt(0).toUpperCase()}
+                            </div>}
+                        {isFavItem && (
+                          <span className="absolute top-0 right-0 text-[8px] leading-none p-px"
+                            style={{ color: "#c8a951", textShadow: "0 0 3px #000", zIndex: 11 }}>★</span>
+                        )}
+                        <NsfwOverlay gamePath={game.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
+                      </div>
+                    )}
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1">
                         {sortMode === "custom" && (
@@ -3672,20 +4133,24 @@ export default function App() {
                             style={{ background: "#2a3f54", color: "#4a5568" }}>hidden</span>
                         )}
                       </div>
-                      <p className="text-[10px] truncate" style={{ color: "#4a5568" }}>
-                        {stats[game.path]?.totalTime > 0
-                          ? `${formatTime(stats[game.path].totalTime)}${(stats[game.path].launchCount ?? 0) > 0
-                            ? ` · ${stats[game.path].launchCount}×`
-                            : ""
-                          }`
-                          : "Never played"}
-                      </p>
-                      {collections.some((c) => c.gamePaths.includes(game.path)) && (
-                        <div className="flex gap-0.5 mt-0.5">
-                          {collections.filter((c) => c.gamePaths.includes(game.path)).map((c) => (
-                            <span key={c.id} title={c.name} className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
-                          ))}
-                        </div>
+                      {viewMode !== "compact" && (
+                        <>
+                          <p className="text-[10px] truncate" style={{ color: "#4a5568" }}>
+                            {stats[game.path]?.totalTime > 0
+                              ? `${formatTime(stats[game.path].totalTime)}${(stats[game.path].launchCount ?? 0) > 0
+                                ? ` · ${stats[game.path].launchCount}×`
+                                : ""
+                              }`
+                              : "Never played"}
+                          </p>
+                          {collections.some((c) => c.gamePaths.includes(game.path)) && (
+                            <div className="flex gap-0.5 mt-0.5">
+                              {collections.filter((c) => c.gamePaths.includes(game.path)).map((c) => (
+                                <span key={c.id} title={c.name} className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
+                              ))}
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                   </button>
@@ -3781,8 +4246,39 @@ export default function App() {
       </aside>
 
       {/* ── Main ── */}
-      <main className="flex-1 flex flex-col h-full overflow-hidden">
-        {!selected ? (
+      <main className="flex-1 flex flex-col h-full overflow-hidden relative">
+        {viewMode === "grid" && !selected ? (
+          <div className="flex-1 overflow-y-auto px-6 py-6" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+            <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
+              {filtered.map(game => {
+                const isFavItem = !!favGames[game.path];
+                const cover = customizations[game.path]?.coverUrl ?? metadata[game.path]?.cover_url;
+                return (
+                  <button key={game.path} onClick={() => setSelected(game)} className="flex flex-col gap-2 group text-left relative transition-transform hover:scale-105">
+                    <div className="aspect-[2/3] w-full bg-[#1e2d3d] rounded-lg overflow-hidden border border-[#2a475e] group-hover:border-[#66c0f4] relative shadow-lg">
+                      {cover ? (
+                        <img src={cover} className="w-full h-full object-cover" alt="" />
+                      ) : syncState === "syncing" ? (
+                        <div className="w-full h-full animate-pulse bg-[#2a475e]" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center p-4 text-center text-sm font-bold text-white" style={{ background: heroGradient(game.name) }}>
+                          {gameDisplayName(game)}
+                        </div>
+                      )}
+                      {isFavItem && (
+                        <span className="absolute top-2 right-2 text-sm leading-none" style={{ color: "#c8a951", textShadow: "0 0 3px #000", zIndex: 11 }}>★</span>
+                      )}
+
+                      <NsfwOverlay gamePath={game.path} meta={metadata[game.path]} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} />
+                    </div>
+                    <p className="text-xs font-semibold text-[#c6d4df] truncate px-1">{gameDisplayName(game)}</p>
+                  </button>
+                )
+              })}
+            </div>
+            {filtered.length === 0 && <div className="text-center py-12 text-[#8f98a0]">No games match the current filters</div>}
+          </div>
+        ) : !selected ? (
           games.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-4" style={{ color: "#8f98a0" }}>
               <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.2 }}>
@@ -3833,7 +4329,7 @@ export default function App() {
             screenshots={screenshots[selected.path] ?? []}
             isHidden={!!hiddenGames[selected.path]}
             isFav={!!favGames[selected.path]}
-            onPlay={() => launchGame(selected.path)}
+            onPlay={(...args) => launchGame(selected.path, ...args)}
             onStop={killGame}
             isRunning={runningGamePath === selected.path}
             runnerLabel={launchConfig.enabled && platform !== "windows" ? launchConfig.runner.charAt(0).toUpperCase() + launchConfig.runner.slice(1) : undefined}
@@ -3848,6 +4344,9 @@ export default function App() {
             onOpenNotes={() => setShowNotesModal(true)}
             hasNotes={!!(notes[selected.path]?.trim())}
             onManageCollections={() => setShowManageCollections(true)}
+            appSettings={appSettings}
+            revealedNsfw={revealedNsfw}
+            onRevealNsfw={revealNsfwPath}
             onTakeScreenshot={async () => {
               try {
                 const shot = await invoke<Screenshot>("take_screenshot_manual");
@@ -3889,6 +4388,8 @@ export default function App() {
           onWineSettings={() => setShowWineSettings(true)}
           onSteamImport={() => setShowSteamImport(true)}
           onAppUpdate={() => setShowAppUpdateModal(true)}
+          appSettings={appSettings}
+          onSaveSettings={(s) => { setAppSettings(s); saveCache(SK_SETTINGS, s); }}
           onClose={() => setShowSettings(false)}
         />
       )}
@@ -4005,6 +4506,16 @@ export default function App() {
           onClose={() => setShowSteamImport(false)}
         />
       )}
+
+      <CommandPalette
+        isOpen={showCmdPalette}
+        onClose={() => setShowCmdPalette(false)}
+        games={games}
+        metadata={metadata}
+        notes={notes}
+        onSelect={(g) => setSelected(g)}
+      />
     </div>
   );
+
 }

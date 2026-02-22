@@ -14,9 +14,11 @@ Designed for managing local game collections — with metadata from F95zone & DL
 ### 📚 Library
 - Scan a local folder — finds all game executables recursively, filters out installers and crash handlers automatically
 - **Incremental sync** — only re-checks directories whose modification time changed, so large libraries resync in milliseconds
-- Search, filter (All / Favourites / Hidden / F95 / DLsite / Unlinked) and sort (Name / Last Played / Playtime)
+- Search, filter (All / Favourites / Hidden / F95 / DLsite / Unlinked) and sort (Name / Last Played / Playtime / **Custom drag-and-drop**)
 - **Collections** — Steam-style named groups with custom colours; games can belong to multiple collections
 - Hide / favourite / customise display name and artwork per game
+- **Age / content warning gate** — optional NSFW blur overlay with click-to-reveal for adult/18+ content
+- Clear visual indicator badges for hidden games
 
 ### 🌐 Metadata
 - Link any game to an **F95zone** thread or **DLsite** product page to fetch cover art, hero background, description, tags, developer, version, rating, release date and more
@@ -38,16 +40,21 @@ Designed for managing local game collections — with metadata from F95zone & DL
 ### 🔄 Game Updater
 - Point at a new `.zip` archive or folder — LIBMALY diffs the contents, preserves detected save directories, backs them up, then applies the update in-place
 
-### 🖥 System Tray
+### � Notifications & System Tray
 - Closing the window minimises to tray instead of quitting
+- **Startup with Windows** — option to launch minimised to the tray automatically on login
 - Tray menu shows the **5 most recently launched games** for quick-launch without opening the UI
+- **Live Tray Tooltip** — hover the tray icon to see the currently-running game and live session duration
+- **Session End Toast** — native system notification showing total playtime when a game exits
+- **Background Update Checker** — quietly checks linked F95/DLsite pages for updates and shows a pulsing green badge in the sidebar
 - Left-click tray icon toggles window visibility
 - Playtime timer continues counting while the app is hidden
 
-### 🍷 Wine / Proton (Linux & macOS)
-- Auto-detects system Wine and all Steam Proton installations
-- Global Wine/Proton settings with runner type (Wine / Proton / custom path), WINEPREFIX and `STEAM_COMPAT_DATA_PATH` support
-- Play button shows "Play via Wine" badge when a runner is active
+### 🚀 Launch & Compatibility
+- **Launch Arguments** — configure custom command-line flags to pass to any game's executable
+- **Multiple Executables** — pin alternative launch targets (e.g., `config.exe` or mod managers) directly to the game's page
+- **Wine / Proton (Linux & macOS)** — auto-detects system Wine and Steam Proton installations
+- Global Wine/Proton settings (runner type, WINEPREFIX, `STEAM_COMPAT_DATA_PATH`) and a dynamic "Play via Wine" badge when active
 
 ---
 

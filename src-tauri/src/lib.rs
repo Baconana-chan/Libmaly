@@ -347,11 +347,44 @@ fn detect_wine_runners() -> Vec<WineRunner> {
     runners
 }
 #[tauri::command]
+fn split_args(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes: Option<char> = None;
+
+    for c in s.chars() {
+        match c {
+            '"' | '\'' => {
+                if in_quotes == Some(c) {
+                    in_quotes = None;
+                } else if in_quotes.is_none() {
+                    in_quotes = Some(c);
+                } else {
+                    current.push(c);
+                }
+            }
+            ' ' | '\t' if in_quotes.is_none() => {
+                if !current.is_empty() {
+                    args.push(current.clone());
+                    current.clear();
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
+#[tauri::command]
 fn launch_game(
     app: AppHandle,
     path: String,
     runner: Option<String>,
     prefix: Option<String>,
+    args: Option<String>,
 ) -> Result<(), String> {
     let path_clone = path.clone();
     thread::spawn(move || {
@@ -411,6 +444,10 @@ fn launch_game(
                 }
             }
         };
+
+        if let Some(arg_str) = args {
+            command.args(split_args(&arg_str));
+        }
 
         match command.spawn() {
             Ok(mut child) => {
@@ -1055,11 +1092,23 @@ fn kv_pair(line: &str) -> Option<(&str, &str)> {
     Some((key, val))
 }
 
+#[tauri::command]
+fn set_tray_tooltip(app: tauri::AppHandle, tooltip: String) {
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_tooltip(Some(tooltip));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
+        .plugin(tauri_plugin_notification::init())
         .manage(screenshot::ActiveGameState(std::sync::Mutex::new(None)))
         .manage(RecentGamesState(std::sync::Mutex::new(Vec::new())))
         .invoke_handler(tauri::generate_handler![
@@ -1088,6 +1137,7 @@ pub fn run() {
             open_screenshots_folder,
             take_screenshot_manual,
             import_steam_playtime,
+            set_tray_tooltip,
         ])
         .setup(|app| {
             // ── System tray ───────────────────────────────────────────────
@@ -1116,7 +1166,7 @@ pub fn run() {
                                     let path = game.path.clone();
                                     let app2 = app.clone();
                                     thread::spawn(move || {
-                                        let _ = launch_game(app2, path, None, None);
+                                        let _ = launch_game(app2, path, None, None, None);
                                     });
                                 }
                             }

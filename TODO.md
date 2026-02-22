@@ -10,10 +10,10 @@
 - [x] **Rescan selected folder** — right-click a game → "Rescan folder" to pick up new files without re-scanning the whole library
 
 ### Game Detail
-- [ ] **Age / content warning gate** — optional blur + click-to-reveal for games tagged as adult content
+- [x] **Age / content warning gate** — optional blur + click-to-reveal for games tagged as adult content
 - [x] **Custom sort order** — drag-and-drop reordering of games in the sidebar (saved per collection too)
-- [ ] **Multiple executables per game** — let the user pin 2–3 launch targets (e.g. game.exe + config.exe)
-- [ ] **Launch arguments** — text field per game for command-line flags passed to the executable
+- [x] **Multiple executables per game** — let the user pin 2–3 launch targets (e.g. game.exe + config.exe)
+- [x] **Launch arguments** — text field per game for command-line flags passed to the executable
 - [x] **Launch count** — track number of sessions (not just total time); show "played 42 times"
 
 ---
@@ -21,14 +21,14 @@
 ## 🎨 UI / UX
 
 - [ ] **Themes** — Dark (current), Light, OLED-black; accent colour picker
-- [ ] **Sidebar width** — resizable via drag handle
-- [ ] **Grid view** — toggle between list (current) and a cover-art grid (Steam-style)
-- [ ] **Compact list mode** — denser rows with tiny thumbnail, for large libraries
-- [ ] **Keyboard navigation** — arrow keys to move through game list, Enter to select, Space to launch
-- [ ] **Global search** — Ctrl+K command palette; search by name, tag, developer, notes content
-- [ ] **Sidebar badge** — show total hidden count next to "Hidden" filter chip
-- [ ] **Animated cover placeholder** — shimmer skeleton while metadata is loading
-- [ ] **Scroll-to-selected** — sidebar scrolls to keep the selected game visible
+- [x] **Sidebar width** — resizable via drag handle
+- [x] **Grid view** — toggle between list (current) and a cover-art grid (Steam-style)
+- [x] **Compact list mode** — denser rows with tiny thumbnail, for large libraries
+- [x] **Keyboard navigation** — arrow keys to move through game list (auto-selects), Space to launch
+- [x] **Global search** — Ctrl+K command palette; search by name, tag, developer, notes content
+- [x] **Sidebar badge** — show total hidden count next to "Hidden" filter chip
+- [x] **Animated cover placeholder** — shimmer skeleton while metadata is loading
+- [x] **Scroll-to-selected** — sidebar scrolls to keep the selected game visible
 - [ ] **Back / Forward navigation** — browser-style history for jumping between views
 
 ---
@@ -68,11 +68,11 @@
 
 ## 🔔 Notifications & Tray
 
-- [ ] **Update checker** — optional notification when a linked F95/DLsite game has a new version posted
-- [ ] **New version badge** — show a "!" indicator in sidebar next to games with available updates
-- [ ] **Session end toast** — system notification when a game exits: "Played Foo for 1h 23m"
-- [ ] **Tray tooltip** — show currently-running game name + live session duration in tray tooltip
-- [ ] **Startup with Windows** — option to launch minimized to tray on Windows login
+- [x] **Update checker** — optional notification when a linked F95/DLsite game has a new version posted
+- [x] **New version badge** — show a "!" indicator in sidebar next to games with available updates
+- [x] **Session end toast** — system notification when a game exits: "Played Foo for 1h 23m"
+- [x] **Tray tooltip** — show currently-running game name + live session duration in tray tooltip
+- [x] **Startup with Windows** — option to launch minimized to tray on Windows login
 
 ---
 
@@ -122,7 +122,7 @@
 ## 🐛 Known Limitations to Address
 
 - [/] Screenshot support on Linux/macOS (Manual capture works; global hotkey pending)
-- [ ] DLsite pages behind age-gate require manual cookies / session (no login flow yet)
+- [x] DLsite pages behind age-gate require manual cookies / session (no login flow yet)
 - [x] Very large libraries (1000+ games) may cause slow initial renders — virtualise the sidebar list
 - [x] `kill_game` on Linux/macOS sends SIGTERM first with a timeout fallback
 - [ ] Tray icon on macOS requires `NSStatusItem` — test and fix if needed after macOS build is set up

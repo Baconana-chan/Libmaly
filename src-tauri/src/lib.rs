@@ -1099,6 +1099,23 @@ fn set_tray_tooltip(app: tauri::AppHandle, tooltip: String) {
     }
 }
 
+#[tauri::command]
+async fn fetch_rss(url: String) -> Result<String, String> {
+    reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_string_to_file(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1138,6 +1155,8 @@ pub fn run() {
             take_screenshot_manual,
             import_steam_playtime,
             set_tray_tooltip,
+            fetch_rss,
+            save_string_to_file,
         ])
         .setup(|app| {
             // ── System tray ───────────────────────────────────────────────

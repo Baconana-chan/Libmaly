@@ -17,7 +17,8 @@ Designed for managing local game collections — with metadata from F95zone & DL
 - Search, filter (All / Favourites / Hidden / F95 / DLsite / Unlinked) and sort (Name / Last Played / Playtime / **Custom drag-and-drop**)
 - **Collections** — Steam-style named groups with custom colours; games can belong to multiple collections
 - Hide / favourite / customise display name and artwork per game
-- **Age / content warning gate** — optional NSFW blur overlay with click-to-reveal for adult/18+ content
+- **Age / content warning gate** — optional blur + click-to-reveal for games tagged as adult content
+- **RSS Feeds & News** — configurable RSS feed reader built-in, preconfigured with F95zone latest games
 - Clear visual indicator badges for hidden games
 
 ### 🌐 Metadata
@@ -40,13 +41,14 @@ Designed for managing local game collections — with metadata from F95zone & DL
 ### 🔄 Game Updater
 - Point at a new `.zip` archive or folder — LIBMALY diffs the contents, preserves detected save directories, backs them up, then applies the update in-place
 
-### � Notifications & System Tray
+### 🔔 Notifications & System Tray
 - Closing the window minimises to tray instead of quitting
 - **Startup with Windows** — option to launch minimised to the tray automatically on login
 - Tray menu shows the **5 most recently launched games** for quick-launch without opening the UI
 - **Live Tray Tooltip** — hover the tray icon to see the currently-running game and live session duration
 - **Session End Toast** — native system notification showing total playtime when a game exits
 - **Background Update Checker** — quietly checks linked F95/DLsite pages for updates and shows a pulsing green badge in the sidebar
+- **Built-in RSS Feed** — configurable "News & Updates" tab to keep track of new releases (pre-configured to F95zone Latest Alpha games)
 - Left-click tray icon toggles window visibility
 - Playtime timer continues counting while the app is hidden
 

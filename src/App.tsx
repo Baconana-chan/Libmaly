@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "preact/hooks";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -13,22 +14,21 @@ import "./App.css";
 function useVirtualList<T>(
   items: T[],
   getHeight: (item: T) => number,
-  containerRef: { current: HTMLElement | null },
   overscan = 5,
 ) {
   const [scrollTop, setScrollTop] = useState(0);
   const [containerH, setContainerH] = useState(600);
+  const [containerEl, setContainerEl] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const onScroll = () => setScrollTop(el.scrollTop);
-    const ro = new ResizeObserver(() => setContainerH(el.clientHeight));
-    el.addEventListener("scroll", onScroll, { passive: true });
-    ro.observe(el);
-    setContainerH(el.clientHeight);
-    return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
-  }, [containerRef.current]); // eslint-disable-line
+    if (!containerEl) return;
+    const onScroll = () => setScrollTop(containerEl.scrollTop);
+    const ro = new ResizeObserver(() => setContainerH(containerEl.clientHeight));
+    containerEl.addEventListener("scroll", onScroll, { passive: true });
+    ro.observe(containerEl);
+    setContainerH(containerEl.clientHeight);
+    return () => { containerEl.removeEventListener("scroll", onScroll); ro.disconnect(); };
+  }, [containerEl]);
 
   const state = useMemo(() => {
     if (items.length === 0) return { virtualItems: [], totalHeight: 0, offsetTop: 0 };
@@ -76,7 +76,7 @@ function useVirtualList<T>(
   }, [items, getHeight, scrollTop, containerH, overscan]); // eslint-disable-line
 
   const scrollToIndex = useCallback((index: number) => {
-    if (!containerRef.current || index < 0 || index >= items.length) return;
+    if (!containerEl || index < 0 || index >= items.length) return;
     // We recreate the offsets here (cheap enough)
     const offsets = new Array<number>(items.length + 1);
     offsets[0] = 0;
@@ -84,21 +84,20 @@ function useVirtualList<T>(
 
     const top = offsets[index];
     const bottom = offsets[index + 1];
-    const el = containerRef.current;
-    if (top < el.scrollTop) {
-      el.scrollTop = top;
-    } else if (bottom > el.scrollTop + el.clientHeight) {
-      el.scrollTop = bottom - el.clientHeight;
+    if (top < containerEl.scrollTop) {
+      containerEl.scrollTop = top;
+    } else if (bottom > containerEl.scrollTop + containerEl.clientHeight) {
+      containerEl.scrollTop = bottom - containerEl.clientHeight;
     }
-  }, [items, getHeight, containerRef]);
+  }, [items, getHeight, containerEl]);
 
-  return { ...state, scrollToIndex };
+  return { ...state, scrollToIndex, containerRef: setContainerEl };
 }
 
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface Game { name: string; path: string; }
+interface Game { name: string; path: string; uninstalled?: boolean; }
 interface DirMtime { path: string; mtime: number; }
 interface GameStats { totalTime: number; lastPlayed: number; lastSession: number; launchCount: number; }
 /** One recorded play session */
@@ -175,6 +174,10 @@ interface GameCustomization {
   launchArgs?: string;
   /** Additional pinned executables to show in the UI for this game */
   pinnedExes?: { name: string; path: string }[];
+  /** Game completion status */
+  status?: "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play";
+  /** Daily/session time budget in minutes */
+  timeLimitMins?: number;
 }
 
 // ─── Generic exe-name detection ──────────────────────────────────────────────
@@ -220,6 +223,15 @@ const SK_LAUNCH = "launch-config-v1";
 const SK_RECENT = "recent-games-v1";
 const SK_ORDER = "custom-order-v1";
 const SK_SESSION_LOG = "session-log-v1";
+const SK_WISHLIST = "wishlist-v1";
+
+interface WishlistItem {
+  id: string; // usually a URL
+  title: string;
+  source: string;
+  releaseStatus: string;
+  addedAt: number;
+}
 
 /** A library root directory that's been added by the user. */
 interface LibraryFolder { path: string; }
@@ -242,6 +254,7 @@ interface AppSettings {
   trayTooltipEnabled: boolean;
   startupWithWindows: boolean;
   blurNsfwContent: boolean;
+  rssFeeds: { url: string; name: string }[];
 }
 const DEFAULT_SETTINGS: AppSettings = {
   updateCheckerEnabled: false,
@@ -249,6 +262,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   trayTooltipEnabled: false,
   startupWithWindows: false,
   blurNsfwContent: true,
+  rssFeeds: [
+    { url: "https://f95zone.to/sam/latest_alpha/latest_data.php?cmd=rss&cat=games", name: "F95zone Latest" }
+  ],
 };
 
 function isGameAdult(meta?: GameMetadata): boolean {
@@ -291,7 +307,7 @@ interface Collection {
 }
 
 type SortMode = "name" | "lastPlayed" | "playtime" | "custom";
-type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "unlinked";
+type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "unlinked" | "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play";
 
 function loadCache<T>(key: string, fallback: T): T {
   try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : fallback; }
@@ -2015,6 +2031,7 @@ function SettingsModal({
   appUpdate, appSettings,
   onF95Login, onF95Logout, onDLsiteLogin, onDLsiteLogout, onRemoveFolder,
   onRescanAll, onWineSettings, onSteamImport, onAppUpdate, onSaveSettings, onClose,
+  onExportCSV, onExportHTML
 }: {
   f95LoggedIn: boolean; dlsiteLoggedIn: boolean; libraryFolders: { path: string }[]; syncState: string;
   platform: string; launchConfig: { enabled: boolean; runner: string };
@@ -2024,12 +2041,14 @@ function SettingsModal({
   onRemoveFolder: (p: string) => void;
   onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void;
   onAppUpdate: () => void; onSaveSettings: (s: AppSettings) => void; onClose: () => void;
+  onExportCSV: () => void; onExportHTML: () => void;
 }) {
-  const [tab, setTab] = useState<"general" | "scanner" | "import" | "wine">("general");
+  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "wine">("general");
   const tabs: { id: typeof tab; label: string }[] = [
     { id: "general", label: "General" },
     { id: "scanner", label: "Scanner" },
     { id: "import", label: "Import" },
+    { id: "rss", label: "RSS Feeds" },
     ...(platform !== "windows" ? [{ id: "wine" as const, label: "Wine / Proton" }] : []),
   ];
   return (
@@ -2154,6 +2173,14 @@ function SettingsModal({
                 </label>
               </section>
 
+              <section className="space-y-4 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Export Library</h3>
+                <div className="flex gap-2">
+                  <button onClick={onExportCSV} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "#2a3f54", color: "#c6d4df" }}>CSV Spreadsheet</button>
+                  <button onClick={onExportHTML} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "#2a3f54", color: "#c6d4df" }}>HTML Webpage</button>
+                </div>
+              </section>
+
               <section className="space-y-2 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
                 <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Library Folders</h3>
                 <div className="rounded-lg overflow-hidden" style={{ border: "1px solid #2a475e" }}>
@@ -2194,6 +2221,49 @@ function SettingsModal({
             </>
           )}
 
+          {tab === "rss" && (
+            <section className="space-y-4">
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>RSS Feeds</h3>
+              <p className="text-xs" style={{ color: "#8f98a0" }}>Track game updates and discovering new releases.</p>
+
+              <div className="space-y-2">
+                {(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds).map((feed, idx) => (
+                  <div key={idx} className="flex gap-2 p-3 rounded" style={{ background: "#1b2d3d", border: "1px solid #2a475e" }}>
+                    <div className="flex-1 space-y-2">
+                      <input type="text" value={feed.name} placeholder="Feed Name"
+                        className="w-full bg-transparent text-sm font-semibold outline-none" style={{ color: "#c6d4df" }}
+                        onChange={(e) => {
+                          const nextFeeds = [...(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds)];
+                          nextFeeds[idx] = { ...feed, name: (e.target as HTMLInputElement).value };
+                          onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
+                        }} />
+                      <input type="text" value={feed.url} placeholder="Feed URL"
+                        className="w-full bg-transparent text-xs w-full outline-none" style={{ color: "#8f98a0" }}
+                        onChange={(e) => {
+                          const nextFeeds = [...(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds)];
+                          nextFeeds[idx] = { ...feed, url: (e.target as HTMLInputElement).value };
+                          onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
+                        }} />
+                    </div>
+                    <button onClick={() => {
+                      const nextFeeds = (appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds).filter((_, i) => i !== idx);
+                      onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
+                    }}
+                      className="text-[#e57373] hover:text-white mt-1" style={{ width: 24, height: 24 }}>✕</button>
+                  </div>
+                ))}
+
+                <button onClick={() => {
+                  const nextFeeds = [...(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds), { name: "New Feed", url: "" }];
+                  onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
+                }}
+                  className="w-full py-2 flex items-center justify-center gap-2 rounded text-sm text-[#c6d4df] hover:text-white"
+                  style={{ border: "1px dashed #2a475e" }}>
+                  + Add RSS Feed
+                </button>
+              </div>
+            </section>
+          )}
 
           {tab === "scanner" && (
             <section className="space-y-3">
@@ -2259,7 +2329,7 @@ function SettingsModal({
 // ─── Game Detail ──────────────────────────────────────────────────────────────
 function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots, isHidden, isFav,
   onPlay, onStop, isRunning, runnerLabel, onDelete, onLinkPage, onOpenF95Login, onClearMeta, onUpdate,
-  onTakeScreenshot, onOpenScreenshotsFolder, onToggleHide, onToggleFav, onOpenCustomize, onOpenNotes, hasNotes, onManageCollections,
+  onTakeScreenshot, onOpenScreenshotsFolder, onToggleHide, onToggleFav, onOpenCustomize, onSaveCustomization, onOpenNotes, hasNotes, onManageCollections,
   sessions, onEditSessionNote, appSettings, revealedNsfw, onRevealNsfw }: {
     game: Game; stat: GameStats; meta?: GameMetadata;
     customization: GameCustomization; f95LoggedIn: boolean;
@@ -2269,6 +2339,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
     onOpenF95Login: () => void; onClearMeta: () => void; onUpdate: () => void;
     onTakeScreenshot: () => void; onOpenScreenshotsFolder: () => void;
     onToggleHide: () => void; onToggleFav: () => void; onOpenCustomize: () => void;
+    onSaveCustomization: (changes: Partial<GameCustomization>) => void;
     onOpenNotes: () => void; hasNotes: boolean; onManageCollections: () => void;
     sessions: SessionEntry[]; onEditSessionNote: (entry: SessionEntry) => void;
     appSettings: AppSettings; revealedNsfw: Record<string, boolean>; onRevealNsfw: (path: string) => void;
@@ -2329,12 +2400,14 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
       {/* Action bar */}
       <div className="flex items-center gap-2 px-8 py-3 flex-shrink-0"
         style={{ background: "#16202d", borderBottom: "1px solid #0d1117" }}>
-        <button onClick={isRunning ? onStop : () => onPlay()}
-          className="flex items-center gap-2 px-7 py-2 rounded font-bold text-sm uppercase tracking-wider"
-          style={{ background: isRunning ? "#6b2222" : "#4c6b22", color: isRunning ? "#e88585" : "#d2e885" }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = isRunning ? "#8a1e1e" : "#5c8a1e")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = isRunning ? "#6b2222" : "#4c6b22")}>
-          {isRunning
+        <button onClick={game.uninstalled ? undefined : (isRunning ? onStop : () => onPlay())}
+          disabled={game.uninstalled}
+          title={game.uninstalled ? "Reinstall the game or check folder to play" : ""}
+          className="flex items-center gap-2 px-7 py-2 rounded font-bold text-sm uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: game.uninstalled ? "#3a3a3a" : (isRunning ? "#6b2222" : "#4c6b22"), color: game.uninstalled ? "#8f98a0" : (isRunning ? "#e88585" : "#d2e885") }}
+          onMouseEnter={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "#8a1e1e" : "#5c8a1e" }}
+          onMouseLeave={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "#6b2222" : "#4c6b22" }}>
+          {game.uninstalled ? "Folder missing" : isRunning
             ? <><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" /></svg>Stop</>
             : <><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
               Play{runnerLabel && <span className="ml-1 text-[10px] font-normal normal-case opacity-80">via {runnerLabel}</span>}</>
@@ -2541,6 +2614,37 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
                 </div>
               )}
             </div>
+            {/* Status & Budget */}
+            <div className="rounded-lg p-4 space-y-4" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
+              <div>
+                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "#8f98a0" }}>Completion Status</label>
+                <select
+                  value={customization.status || ""}
+                  onChange={(e) => onSaveCustomization({ status: ((e.target as HTMLSelectElement).value || undefined) as any })}
+                  className="w-full bg-[#1b2838] border border-[#2a475e] rounded px-2 py-1.5 text-xs outline-none text-[#c6d4df] cursor-pointer"
+                  style={{ backgroundImage: "none" }}>
+                  <option value="">- Not Set -</option>
+                  <option value="Playing">▶ Playing</option>
+                  <option value="Completed">✓ Completed</option>
+                  <option value="On Hold">⏸ On Hold</option>
+                  <option value="Dropped">⏹ Dropped</option>
+                  <option value="Plan to Play">📅 Plan to Play</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "#8f98a0" }} title="Show a toast warning when you exceed this time in a single launch">Time Budget (mins)</label>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="No limit"
+                  value={customization.timeLimitMins || ""}
+                  onChange={(e) => {
+                    const el = e.target as HTMLInputElement;
+                    onSaveCustomization({ timeLimitMins: el.value ? parseInt(el.value) : undefined });
+                  }}
+                  className="w-full bg-[#1b2838] border border-[#2a475e] rounded px-2 py-1.5 text-xs outline-none text-[#c6d4df]" />
+              </div>
+            </div>
             {/* Milestones */}
             {stat.totalTime > 0 && (
               <div className="rounded-lg p-4" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
@@ -2606,6 +2710,169 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div >
+  );
+}
+
+interface RssItem {
+  id: string;
+  sourceName: string;
+  title: string;
+  link: string;
+  pubDate: number;
+  description: string;
+}
+
+function FeedView({ appSettings, wishlist, onToggleWishlist }: {
+  appSettings: AppSettings;
+  wishlist: WishlistItem[];
+  onToggleWishlist: (item: Omit<WishlistItem, 'addedAt'>) => void;
+}) {
+  const [items, setItems] = useState<RssItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    const fetchAll = async () => {
+      setLoading(true);
+      const allItems: RssItem[] = [];
+      const feeds = appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds;
+
+      for (const feed of feeds) {
+        if (!feed.url.trim()) continue;
+        try {
+          const xmlText = await invoke<string>("fetch_rss", { url: feed.url });
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(xmlText, "text/xml");
+          const itemNodes = doc.querySelectorAll("item");
+          for (const node of itemNodes) {
+            const title = node.querySelector("title")?.textContent || "No Title";
+            const link = node.querySelector("link")?.textContent || "";
+            const desc = node.querySelector("description")?.textContent || "";
+            const pubDateStr = node.querySelector("pubDate")?.textContent;
+            const pubDate = pubDateStr ? new Date(pubDateStr).getTime() : 0;
+            const guid = node.querySelector("guid")?.textContent || link || title;
+            allItems.push({
+              sourceName: feed.name || "Unknown Source",
+              title, link, description: desc, pubDate, id: guid
+            });
+          }
+        } catch (e) {
+          console.error("Failed to fetch RSS for", feed.name, e);
+        }
+      }
+      if (!active) return;
+      allItems.sort((a, b) => b.pubDate - a.pubDate);
+      setItems(allItems);
+      setLoading(false);
+    };
+    fetchAll();
+    return () => { active = false; };
+  }, [appSettings.rssFeeds]);
+
+  return (
+    <div className="flex-1 overflow-y-auto px-10 py-8" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+      <div className="max-w-3xl mx-auto space-y-6">
+        <h1 className="text-3xl font-bold mb-8" style={{ color: "#fff", textShadow: "0 2px 8px rgba(0,0,0,.9)" }}>News & Updates</h1>
+        {loading ? (
+          <div className="flex justify-center p-12">
+            <div className="w-8 h-8 rounded-full border-2 border-[#66c0f4] border-t-transparent animate-spin" />
+          </div>
+        ) : items.length === 0 ? (
+          <p className="text-center py-12" style={{ color: "#8f98a0" }}>No updates found in your configured feeds.</p>
+        ) : (
+          items.map(item => (
+            <div key={item.id} className="p-5 rounded-lg text-left" style={{ background: "#1b2838", border: "1px solid #2a475e" }}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded" style={{ background: "#2a475e", color: "#66c0f4" }}>{item.sourceName}</span>
+                <span className="text-[11px]" style={{ color: "#8f98a0" }}>{item.pubDate > 0 ? new Date(item.pubDate).toLocaleString() : ""}</span>
+              </div>
+              <h2 className="text-lg font-bold mb-2 leading-tight flex items-start justify-between gap-4">
+                <a href={item.link} target="_blank" rel="noreferrer" className="hover:underline flex-1" style={{ color: "#c6d4df" }}>{item.title}</a>
+                <button
+                  onClick={() => {
+                    const statusMatch = item.title.match(/\[(Completed|Abandoned|On Hold|WIP|Alpha|Beta|Demo|Early Access)[^\]]*\]/i);
+                    const releaseStatus = statusMatch ? statusMatch[1] : "Unknown";
+                    onToggleWishlist({ id: item.link || item.id, title: item.title, source: item.sourceName, releaseStatus });
+                  }}
+                  className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-full transition-colors"
+                  style={{
+                    background: wishlist.some(w => w.id === (item.link || item.id)) ? "#1a2c1a" : "#2a3f54",
+                    color: wishlist.some(w => w.id === (item.link || item.id)) ? "#6dbf6d" : "#8f98a0"
+                  }}
+                  title={wishlist.some(w => w.id === (item.link || item.id)) ? "Remove from wishlist" : "Add to wishlist"}
+                >
+                  {wishlist.some(w => w.id === (item.link || item.id)) ? "★" : "+"}
+                </button>
+              </h2>
+              <div className="text-sm prose prose-invert max-w-none opacity-80"
+                style={{ color: "#8f98a0" }}
+                dangerouslySetInnerHTML={{ __html: item.description }} />
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Stats View ────────────────────────────────────────────────────────────────
+function StatsView({ games, stats, sessions, customizations, metadata }: {
+  games: Game[]; stats: Record<string, GameStats>; sessions: SessionEntry[];
+  customizations: Record<string, GameCustomization>; metadata: Record<string, GameMetadata>;
+}) {
+  const totalPlaytime = Object.values(stats).reduce((acc, s) => acc + (s.totalTime || 0), 0);
+  const hours = Math.floor(totalPlaytime / 3600);
+  const mins = Math.floor((totalPlaytime % 3600) / 60);
+
+  const longestSession = sessions.length ? sessions.reduce((max, s) => s.duration > max.duration ? s : max, sessions[0]) : null;
+  const lsGame = longestSession ? (customizations[longestSession.path]?.displayName || metadata[longestSession.path]?.title || games.find(g => g.path === longestSession.path)?.name || "Unknown") : "-";
+  const lsHrs = longestSession ? Math.floor(longestSession.duration / 3600) : 0;
+  const lsMins = longestSession ? Math.floor((longestSession.duration % 3600) / 60) : 0;
+
+  let maxLaunches = 0;
+  let mostLaunchedGame = "-";
+  for (const path of Object.keys(stats)) {
+    if ((stats[path].launchCount || 0) > maxLaunches) {
+      maxLaunches = stats[path].launchCount;
+      mostLaunchedGame = customizations[path]?.displayName || metadata[path]?.title || games.find(g => g.path === path)?.name || "Unknown";
+    }
+  }
+
+  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const dayCounts = [0, 0, 0, 0, 0, 0, 0];
+  sessions.forEach(s => {
+    dayCounts[new Date(s.startedAt).getDay()]++;
+  });
+  let maxDayIdx = 0;
+  for (let i = 1; i < 7; i++) {
+    if (dayCounts[i] > dayCounts[maxDayIdx]) maxDayIdx = i;
+  }
+  const busiestDay = dayCounts[maxDayIdx] > 0 ? days[maxDayIdx] : "-";
+
+  return (
+    <div className="flex-1 overflow-y-auto px-10 py-8" style={{ background: "linear-gradient(to bottom, #1b2838 0%, #17212e 100%)", color: "#c6d4df" }}>
+      <h2 className="text-2xl font-bold mb-8 tracking-wide" style={{ color: "#fff" }}>LIBRALY STATS</h2>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
+          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Total Library Time</h3>
+          <p className="text-3xl font-bold" style={{ color: "#66c0f4" }}>{hours}h {mins}m</p>
+        </div>
+        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
+          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Longest Session</h3>
+          <p className="text-xl font-bold mb-1" style={{ color: "#c8a951" }}>{lsHrs}h {lsMins}m</p>
+          <p className="text-xs truncate text-ellipsis overflow-hidden" style={{ color: "#8f98a0" }}>{lsGame}</p>
+        </div>
+        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
+          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Most Played Game</h3>
+          <p className="text-xl font-bold mb-1" style={{ color: "#e57373" }}>{maxLaunches} launches</p>
+          <p className="text-xs truncate text-ellipsis overflow-hidden" style={{ color: "#8f98a0" }}>{mostLaunchedGame}</p>
+        </div>
+        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
+          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Busiest Day</h3>
+          <p className="text-2xl font-bold" style={{ color: "#6dbf6d" }}>{busiestDay}</p>
         </div>
       </div>
     </div>
@@ -2980,10 +3247,12 @@ export default function App() {
   const [stats, setStats] = useState<Record<string, GameStats>>(() => loadCache(SK_STATS, {}));
   const [metadata, setMetadata] = useState<Record<string, GameMetadata>>(() => loadCache(SK_META, {}));
   const [selected, setSelected] = useState<Game | null>(null);
+  const [activeMainTab, setActiveMainTab] = useState<"library" | "feed" | "stats">("library");
   const [search, setSearch] = useState("");
   const [syncState, setSyncState] = useState<"idle" | "syncing" | "full-scan">("idle");
   const [deleteTarget, setDeleteTarget] = useState<Game | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [keepDataOnDelete, setKeepDataOnDelete] = useState(true);
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [showF95Login, setShowF95Login] = useState(false);
   const [f95LoggedIn, setF95LoggedIn] = useState(false);
@@ -2993,6 +3262,72 @@ export default function App() {
   const [viewMode, setViewMode] = useState<"list" | "compact" | "grid">(() => loadCache("libmaly_view_mode", "list"));
 
   useEffect(() => saveCache("libmaly_view_mode", viewMode), [viewMode]);
+
+  const [isKioskMode, setIsKioskMode] = useState(false);
+  useEffect(() => {
+    if (!isKioskMode) return;
+    const keydown = async (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsKioskMode(false);
+        const w = getCurrentWindow();
+        if (await w.isFullscreen()) await w.setFullscreen(false);
+      }
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, [isKioskMode]);
+
+  const handleToggleKiosk = async () => {
+    const w = getCurrentWindow();
+    const isFull = await w.isFullscreen();
+    await w.setFullscreen(!isFull);
+    setIsKioskMode(!isFull);
+  };
+
+  const handleExportCSV = async () => {
+    let csv = "Name,Path,Source,Tags,Playtime (s),Uninstalled\n";
+    for (const g of games) {
+      const name = customizations[g.path]?.displayName || metadata[g.path]?.title || g.name;
+      const src = metadata[g.path]?.source || "";
+      const tags = (metadata[g.path]?.tags || []).join(";");
+      const pt = stats[g.path]?.totalTime || 0;
+      csv += `"${name.replace(/"/g, '""')}","${g.path.replace(/"/g, '""')}","${src}","${tags}",${pt},${g.uninstalled ? "yes" : "no"}\n`;
+    }
+    const savePath = await save({ defaultPath: "libmaly_export.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
+    if (savePath) {
+      await invoke("save_string_to_file", { path: savePath, contents: csv });
+    }
+  };
+
+  const handleExportHTML = async () => {
+    let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+      body { background: #1b2838; color: #c6d4df; font-family: sans-serif; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 20px; padding: 20px; }
+      .card { background: #1e2d3d; padding: 10px; border-radius: 8px; text-align: center; }
+      img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 4px; }
+      h3 { font-size: 14px; margin: 10px 0 0 0; }
+    </style></head><body><h1>LIBMALY Library</h1><div class="grid">`;
+    for (const g of games) {
+      const name = customizations[g.path]?.displayName || metadata[g.path]?.title || g.name;
+      const cvr = customizations[g.path]?.coverUrl || metadata[g.path]?.cover_url || "";
+      const pt = stats[g.path]?.totalTime || 0;
+      const hours = pt >= 3600 ? Math.floor(pt / 3600) + "h " : "";
+      const mins = Math.floor((pt % 3600) / 60) + "m";
+      const ptStr = pt > 0 ? `<div style="font-size: 11px; color: #8f98a0; margin-top: 5px;">🕓 ${hours}${mins}</div>` : "";
+
+      const src = metadata[g.path]?.source;
+      const url = metadata[g.path]?.source_url;
+      const sourceStr = src && url ? `<a href="${url}" target="_blank" style="display: inline-block; font-size: 10px; margin-top: 5px; color: #66c0f4; text-decoration: none; border: 1px solid #2a475e; padding: 2px 6px; border-radius: 4px;">↗ ${src}</a>` : "";
+
+      const img = cvr ? `<img src="${cvr}" />` : `<div style="aspect-ratio: 2/3; background: #2a475e; display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 12px; font-weight: bold; color: rgba(255,255,255,0.5);">NO COVER</div>`;
+      html += `<div class="card">${img}<h3>${name}</h3>${sourceStr}${ptStr}</div>`;
+    }
+    html += `</div></body></html>`;
+    const savePath = await save({ defaultPath: "libmaly_library.html", filters: [{ name: "HTML", extensions: ["html"] }] });
+    if (savePath) {
+      await invoke("save_string_to_file", { path: savePath, contents: html });
+    }
+  };
 
   const [screenshots, setScreenshots] = useState<Record<string, Screenshot[]>>({});
   const [hiddenGames, setHiddenGames] = useState<Record<string, boolean>>(() => loadCache(SK_HIDDEN, {}));
@@ -3010,6 +3345,7 @@ export default function App() {
   const [showCustomizeModal, setShowCustomizeModal] = useState(false);
   const [showNotesModal, setShowNotesModal] = useState(false);
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
+  const [showFilters, setShowFilters] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>("lastPlayed");
   /** custom-order map: contextKey -> ordered array of game paths */
   const [customOrder, setCustomOrder] = useState<Record<string, string[]>>(
@@ -3084,6 +3420,9 @@ export default function App() {
   const customizationsRef = useRef(customizations);
   useEffect(() => { customizationsRef.current = customizations; }, [customizations]);
 
+  const statsRef = useRef(stats);
+  useEffect(() => { statsRef.current = stats; }, [stats]);
+
   const [runningGamePath, setRunningGamePath] = useState<string | null>(null);
   const [platform, setPlatform] = useState<string>("windows");
   const [launchConfig, setLaunchConfig] = useState<LaunchConfig>(() => loadCache(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG));
@@ -3105,6 +3444,25 @@ export default function App() {
   const [pendingNoteSession, setPendingNoteSession] = useState<SessionEntry | null>(null);
   /** Show the Steam import modal */
   const [showSteamImport, setShowSteamImport] = useState(false);
+  /** Wishlisted unowned games */
+  const [wishlist, setWishlist] = useState<WishlistItem[]>(() => loadCache(SK_WISHLIST, []));
+
+  const handleToggleWishlist = useCallback((item: Omit<WishlistItem, 'addedAt'>) => {
+    setWishlist(prev => {
+      const exists = prev.find(w => w.id === item.id);
+      const n = exists ? prev.filter(w => w.id !== item.id) : [...prev, { ...item, addedAt: Date.now() }];
+      saveCache(SK_WISHLIST, n);
+      return n;
+    });
+  }, []);
+
+  const handleRemoveWishlist = useCallback((id: string) => {
+    setWishlist(prev => {
+      const n = prev.filter(w => w.id !== id);
+      saveCache(SK_WISHLIST, n);
+      return n;
+    });
+  }, []);
 
   // No auto-select: show HomeView when nothing is selected
 
@@ -3300,9 +3658,19 @@ export default function App() {
   /** Merge scanned results from one folder into the global game list. */
   const mergeGames = (scanned: Game[], nm: DirMtime[], folderPath: string) => {
     setGames((prev) => {
-      // Remove all entries that previously came from this folder path
-      const kept = prev.filter((g) => !g.path.startsWith(folderPath + "\\") && !g.path.startsWith(folderPath + "/") && g.path !== folderPath);
-      const merged = [...kept, ...scanned];
+      const isFromFolder = (gPath: string) => gPath.startsWith(folderPath + "\\") || gPath.startsWith(folderPath + "/") || gPath === folderPath;
+      const oldOther = prev.filter((g) => !isFromFolder(g.path));
+      const oldFromPath = prev.filter((g) => isFromFolder(g.path));
+
+      const scannedPaths = new Set(scanned.map(g => g.path));
+
+      const missingGhosts = oldFromPath
+        .filter((g) => !scannedPaths.has(g.path))
+        .filter((g) => (statsRef.current[g.path]?.totalTime ?? 0) > 0 || metadataRef.current[g.path])
+        .map(g => ({ ...g, uninstalled: true }));
+
+      const scannedClean = scanned.map(g => ({ ...g, uninstalled: false }));
+      const merged = [...oldOther, ...missingGhosts, ...scannedClean];
       saveCache(SK_GAMES, merged);
       return merged;
     });
@@ -3438,13 +3806,25 @@ export default function App() {
     setIsDeleting(true);
     try {
       await invoke("delete_game", { path: deleteTarget.path });
-      const updated = games.filter((g) => g.path !== deleteTarget.path);
-      saveCache(SK_GAMES, updated); setGames(updated);
-      const nm = { ...metadata }; delete nm[deleteTarget.path];
-      saveCache(SK_META, nm); setMetadata(nm);
-      if (selected?.path === deleteTarget.path) setSelected(updated[0] ?? null);
+      if (keepDataOnDelete) {
+        setGames(prev => {
+          const updated = prev.map(g => g.path === deleteTarget.path ? { ...g, uninstalled: true } : g);
+          saveCache(SK_GAMES, updated);
+          return updated;
+        });
+      } else {
+        const updated = games.filter((g) => g.path !== deleteTarget.path);
+        saveCache(SK_GAMES, updated); setGames(updated);
+        const nm = { ...metadata }; delete nm[deleteTarget.path];
+        saveCache(SK_META, nm); setMetadata(nm);
+        const ns = { ...stats }; delete ns[deleteTarget.path];
+        saveCache(SK_STATS, ns); setStats(ns);
+        const nc = { ...customizations }; delete nc[deleteTarget.path];
+        saveCache(SK_CUSTOM, nc); setCustomizations(nc);
+        if (selected?.path === deleteTarget.path) setSelected(updated[0] ?? null);
+      }
     } catch (e) { alert("Failed to delete: " + e); }
-    finally { setIsDeleting(false); setDeleteTarget(null); }
+    finally { setIsDeleting(false); setDeleteTarget(null); setKeepDataOnDelete(true); }
   };
 
   const handleMetaFetched = (meta: GameMetadata) => {
@@ -3583,6 +3963,9 @@ export default function App() {
         else if (filterMode === "f95") return metadata[g.path]?.source === "f95";
         else if (filterMode === "dlsite") return metadata[g.path]?.source === "dlsite";
         else if (filterMode === "unlinked") return !metadata[g.path];
+        else if (filterMode === "Playing" || filterMode === "Completed" || filterMode === "On Hold" || filterMode === "Dropped" || filterMode === "Plan to Play") {
+          return customizations[g.path]?.status === filterMode;
+        }
         return true;
       })
       .sort((a, b) => {
@@ -3655,14 +4038,12 @@ export default function App() {
     [sidebarItems, collapsedGroups]
   );
 
-  const sidebarListRef = useRef<HTMLDivElement>(null);
   const getSidebarItemHeight = useCallback((item: SidebarItem) =>
     item.kind === "group-header" ? 28 : (viewMode === "compact" ? 28 : 52)
     , [viewMode]);
-  const { virtualItems: vItems, totalHeight: vTotalH, scrollToIndex } = useVirtualList(
+  const { virtualItems: vItems, totalHeight: vTotalH, scrollToIndex, containerRef: sidebarListRefCb } = useVirtualList(
     visibleSidebarItems,
     getSidebarItemHeight,
-    sidebarListRef as { current: HTMLElement | null },
     5,
   );
 
@@ -3809,445 +4190,565 @@ export default function App() {
       )}
 
       {/* ── Sidebar ── */}
-      <aside className="flex flex-col flex-shrink-0 h-full relative" style={{ width: sidebarWidth, background: "#171a21", borderRight: "1px solid #0d1117" }}>
-        <div
-          className="absolute top-0 bottom-0 right-0 w-1 cursor-col-resize hover:bg-[#3d7dc8] transition-colors z-[100]"
-          style={{ transform: "translateX(50%)" }}
-          onMouseDown={() => { isDraggingSidebar.current = true; }}
-        />
-        <button
-          onClick={() => setSelected(null)}
-          title="Library Home"
-          className="flex items-center gap-2.5 px-4 py-3 border-b w-full text-left"
-          style={{ borderColor: "#0d1117", background: "transparent", cursor: "pointer" }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "#1b2838")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-            stroke={selected === null ? "#66c0f4" : "#4a7a9b"}
-            strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
-          </svg>
-          <span className="font-bold tracking-wide text-sm"
-            style={{ color: selected === null ? "#66c0f4" : "#c6d4df" }}>LIBMALY</span>
-        </button>
-        <div className="px-3 py-2 border-b" style={{ borderColor: "#0d1117" }}>
-          <div className="relative mb-2">
-            <svg className="absolute left-2 top-1/2 -translate-y-1/2" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+      {!isKioskMode && (
+        <aside className="flex flex-col flex-shrink-0 h-full relative" style={{ width: sidebarWidth, background: "#171a21", borderRight: "1px solid #0d1117" }}>
+          <div
+            className="absolute top-0 bottom-0 right-0 w-1 cursor-col-resize hover:bg-[#3d7dc8] transition-colors z-[100]"
+            style={{ transform: "translateX(50%)" }}
+            onMouseDown={() => { isDraggingSidebar.current = true; }}
+          />
+          <button
+            onClick={() => { setActiveMainTab("library"); setSelected(null); }}
+            title="Library Home"
+            className="flex items-center gap-2.5 px-4 py-3 border-b border-t-0 border-l-0 border-r-0 w-full text-left transition-colors"
+            style={{ borderColor: "#0d1117", background: activeMainTab === "library" && selected === null ? "#1b2838" : "transparent", cursor: "pointer" }}
+            onMouseEnter={(e) => { if (activeMainTab !== "library" || selected !== null) e.currentTarget.style.background = "#1b2838" }}
+            onMouseLeave={(e) => { if (activeMainTab !== "library" || selected !== null) e.currentTarget.style.background = "transparent" }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+              stroke={selected === null && activeMainTab === "library" ? "#66c0f4" : "#4a7a9b"}
+              strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+              <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
             </svg>
-            <input type="text" placeholder="Search games…" value={search}
-              onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
-              className="w-full pl-7 pr-3 py-1.5 rounded text-xs outline-none"
-              style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #1b3a50" }} />
-          </div>
-          {/* Filter chips */}
-          <div className="flex flex-wrap gap-1 mb-1.5">
-            {([
-              ["all", "All"],
-              ["favs", "★ Favs"],
-              ["hidden", `👁 Hidden (${Object.keys(hiddenGames).length})`],
-              ["f95", "F95"],
-              ["dlsite", "DLsite"],
-              ["unlinked", "Unlinked"],
-            ] as [FilterMode, string][]).map(([mode, label]) => (
-              <button key={mode} onClick={() => setFilterMode(mode)}
-                className="px-2 py-0.5 rounded text-[10px] font-semibold"
-                style={{
-                  background: filterMode === mode ? "#2a6db5" : "#1b2d3d",
-                  color: filterMode === mode ? "#fff" : "#5a6a7a",
-                  border: `1px solid ${filterMode === mode ? "#3d7dc8" : "#253545"}`,
-                }}>{label}</button>
-            ))}
-          </div>
-          {/* Sort */}
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[10px] flex-shrink-0" style={{ color: "#4a5568" }}>Sort:</span>
-            {([
-              ["lastPlayed", "Recent"],
-              ["playtime", "Time"],
-              ["name", "Name"],
-              ["custom", "Custom"],
-            ] as [SortMode, string][]).map(([mode, label]) => (
-              <button key={mode} onClick={() => setSortMode(mode)}
-                className="px-2 py-0.5 rounded text-[10px]"
-                style={{
-                  background: sortMode === mode ? "#2a3f54" : "transparent",
-                  color: sortMode === mode ? "#c6d4df" : "#4a5568",
-                  border: `1px solid ${sortMode === mode ? "#3d5a73" : "transparent"}`,
-                }}>{label}</button>
-            ))}
-            {sortMode === "custom" && (
-              <span className="text-[9px]" style={{ color: "#4a5568" }} title="Drag rows to reorder">⠿ drag</span>
+            <span className="font-bold tracking-wide text-sm truncate"
+              style={{ color: selected === null && activeMainTab === "library" ? "#66c0f4" : "#c6d4df" }}>LIBMALY</span>
+          </button>
+          <button
+            onClick={() => { setActiveMainTab("feed"); setSelected(null); }}
+            title="News Feed"
+            className="flex items-center gap-2.5 px-4 py-3 border-b border-t-0 border-l-0 border-r-0 w-full text-left transition-colors"
+            style={{ borderColor: "#0d1117", background: activeMainTab === "feed" && selected === null ? "#1b2838" : "transparent", cursor: "pointer" }}
+            onMouseEnter={(e) => { if (activeMainTab !== "feed" || selected !== null) e.currentTarget.style.background = "#1b2838" }}
+            onMouseLeave={(e) => { if (activeMainTab !== "feed" || selected !== null) e.currentTarget.style.background = "transparent" }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+              stroke={activeMainTab === "feed" && selected === null ? "#66c0f4" : "#4a7a9b"}
+              strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+              <path d="M4 11a9 9 0 0 1 9 9" /><path d="M4 4a16 16 0 0 1 16 16" /><circle cx="5" cy="19" r="1" />
+            </svg>
+            <span className="font-bold tracking-wide text-sm truncate"
+              style={{ color: activeMainTab === "feed" && selected === null ? "#66c0f4" : "#c6d4df" }}>News & Updates</span>
+          </button>
+          <button
+            onClick={() => { setActiveMainTab("stats"); setSelected(null); }}
+            title="All-Time Stats"
+            className="flex items-center gap-2.5 px-4 py-3 border-b border-t-0 border-l-0 border-r-0 w-full text-left transition-colors"
+            style={{ borderColor: "#0d1117", background: activeMainTab === "stats" && selected === null ? "#1b2838" : "transparent", cursor: "pointer" }}
+            onMouseEnter={(e) => { if (activeMainTab !== "stats" || selected !== null) e.currentTarget.style.background = "#1b2838" }}
+            onMouseLeave={(e) => { if (activeMainTab !== "stats" || selected !== null) e.currentTarget.style.background = "transparent" }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+              stroke={activeMainTab === "stats" && selected === null ? "#66c0f4" : "#4a7a9b"}
+              strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+              <path d="M12 20V10" /><path d="M18 20V4" /><path d="M6 20v-4" />
+            </svg>
+            <span className="font-bold tracking-wide text-sm truncate"
+              style={{ color: activeMainTab === "stats" && selected === null ? "#66c0f4" : "#c6d4df" }}>All-Time Stats</span>
+          </button>
+          <div className="px-3 py-2 border-b" style={{ borderColor: "#0d1117" }}>
+            <div className="relative mb-2">
+              <svg className="absolute left-2 top-1/2 -translate-y-1/2" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+              </svg>
+              <input type="text" placeholder="Search games…" value={search}
+                onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
+                className="w-full pl-7 pr-3 py-1.5 rounded text-xs outline-none"
+                style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #1b3a50" }} />
+            </div>
+            {/* Filter chips */}
+            <div
+              className="flex items-center gap-1 mb-2 mt-1 cursor-pointer text-[10px] uppercase font-bold select-none transition-colors hover:text-[#c6d4df]"
+              style={{ color: showFilters ? "#c6d4df" : "#8f98a0" }}
+              onClick={() => setShowFilters(p => !p)}
+            >
+              <svg
+                className="transition-transform duration-200"
+                style={{ transform: showFilters ? "rotate(90deg)" : "rotate(0deg)" }}
+                width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+              <span style={{ paddingTop: "1px" }}>Filters</span>
+            </div>
+            {showFilters && (
+              <div className="mb-2 space-y-1.5">
+                <div className="flex flex-wrap gap-1">
+                  {([
+                    ["all", "All"],
+                    ["favs", "★ Favs"],
+                    ["hidden", `👁 Hidden (${Object.keys(hiddenGames).length})`],
+                    ["f95", "F95"],
+                    ["dlsite", "DLsite"],
+                    ["unlinked", "Unlinked"],
+                  ] as [FilterMode, string][]).map(([mode, label]) => (
+                    <button key={mode} onClick={() => setFilterMode(mode)}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold"
+                      style={{
+                        background: filterMode === mode ? "#2a6db5" : "#1b2d3d",
+                        color: filterMode === mode ? "#fff" : "#5a6a7a",
+                        border: `1px solid ${filterMode === mode ? "#3d7dc8" : "#253545"}`,
+                      }}>{label}</button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-1 mb-1.5">
+                  {([
+                    ["Playing", "▶ Playing"],
+                    ["Completed", "✓ Completed"],
+                    ["On Hold", "⏸ On Hold"],
+                    ["Dropped", "⏹ Dropped"],
+                    ["Plan to Play", "📅 Plan"],
+                  ] as [FilterMode, string][]).map(([mode, label]) => (
+                    <button key={mode} onClick={() => setFilterMode(mode)}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold"
+                      style={{
+                        background: filterMode === mode ? "#2a6db5" : "#1b2d3d",
+                        color: filterMode === mode ? "#fff" : "#5a6a7a",
+                        border: `1px solid ${filterMode === mode ? "#3d7dc8" : "#253545"}`,
+                      }}>{label}</button>
+                  ))}
+                </div>
+              </div>
             )}
-            <div className="flex-1" />
-            <div className="flex bg-[#1b2d3d] rounded shrink-0 items-center" style={{ padding: "2px" }}>
-              <button title="List View" onClick={() => setViewMode("list")} className="p-1 rounded" style={{ background: viewMode === "list" ? "#2a475e" : "transparent" }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "list" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
-              </button>
-              <button title="Compact List" onClick={() => setViewMode("compact")} className="p-1 rounded" style={{ background: viewMode === "compact" ? "#2a475e" : "transparent" }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "compact" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="18" x2="20" y2="18"></line></svg>
-              </button>
-              <button title="Grid View" onClick={() => setViewMode("grid")} className="p-1 rounded" style={{ background: viewMode === "grid" ? "#2a475e" : "transparent" }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "grid" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+            {/* Sort */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] flex-shrink-0" style={{ color: "#4a5568" }}>Sort:</span>
+              {([
+                ["lastPlayed", "Recent"],
+                ["playtime", "Time"],
+                ["name", "Name"],
+                ["custom", "Custom"],
+              ] as [SortMode, string][]).map(([mode, label]) => (
+                <button key={mode} onClick={() => setSortMode(mode)}
+                  className="px-2 py-0.5 rounded text-[10px]"
+                  style={{
+                    background: sortMode === mode ? "#2a3f54" : "transparent",
+                    color: sortMode === mode ? "#c6d4df" : "#4a5568",
+                    border: `1px solid ${sortMode === mode ? "#3d5a73" : "transparent"}`,
+                  }}>{label}</button>
+              ))}
+              {sortMode === "custom" && (
+                <span className="text-[9px]" style={{ color: "#4a5568" }} title="Drag rows to reorder">⠿ drag</span>
+              )}
+              <div className="flex-1" />
+              <div className="flex bg-[#1b2d3d] rounded shrink-0 items-center" style={{ padding: "2px" }}>
+                <button title="List View" onClick={() => setViewMode("list")} className="p-1 rounded" style={{ background: viewMode === "list" ? "#2a475e" : "transparent" }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "list" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+                </button>
+                <button title="Compact List" onClick={() => setViewMode("compact")} className="p-1 rounded" style={{ background: viewMode === "compact" ? "#2a475e" : "transparent" }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "compact" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="18" x2="20" y2="18"></line></svg>
+                </button>
+                <button title="Grid View" onClick={() => setViewMode("grid")} className="p-1 rounded" style={{ background: viewMode === "grid" ? "#2a475e" : "transparent" }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "grid" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+                </button>
+              </div>
+
+              <button
+                title="Fullscreen Cover Wall"
+                onClick={handleToggleKiosk}
+                className="px-2 py-0.5 ml-2 rounded text-[9px] uppercase font-bold tracking-wider hover:opacity-100 opacity-60 transition-opacity"
+                style={{ background: "#2a3f54", color: "#c6d4df" }}>
+                Kiosk
               </button>
             </div>
           </div>
-        </div>
-        {/* ── Collections ── */}
-        <div className="border-b" style={{ borderColor: "#0d1117" }}>
-          <div className="flex items-center px-3 pt-2 pb-1 gap-1">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-            <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ color: "#4a5568" }}>Collections</span>
-            {activeCollectionId && (
-              <button onClick={() => setActiveCollectionId(null)}
-                className="text-[9px] px-1.5 py-0.5 rounded mr-1"
-                style={{ background: "#2a3f54", color: "#8f98a0" }}
-                title="Clear filter">✕ clear</button>
+          {/* ── Collections ── */}
+          <div className="border-b" style={{ borderColor: "#0d1117" }}>
+            <div className="flex items-center px-3 pt-2 pb-1 gap-1">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              </svg>
+              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ color: "#4a5568" }}>Collections</span>
+              {activeCollectionId && (
+                <button onClick={() => setActiveCollectionId(null)}
+                  className="text-[9px] px-1.5 py-0.5 rounded mr-1"
+                  style={{ background: "#2a3f54", color: "#8f98a0" }}
+                  title="Clear filter">✕ clear</button>
+              )}
+              <button onClick={() => setCreatingCollection(true)}
+                className="w-5 h-5 flex items-center justify-center rounded text-sm font-bold"
+                style={{ color: "#4a5568" }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "#66c0f4")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "#4a5568")}
+                title="New collection">+</button>
+            </div>
+            {collections.length === 0 && !creatingCollection && (
+              <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No collections yet</p>
             )}
-            <button onClick={() => setCreatingCollection(true)}
-              className="w-5 h-5 flex items-center justify-center rounded text-sm font-bold"
-              style={{ color: "#4a5568" }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = "#66c0f4")}
-              onMouseLeave={(e) => (e.currentTarget.style.color = "#4a5568")}
-              title="New collection">+</button>
-          </div>
-          {collections.length === 0 && !creatingCollection && (
-            <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No collections yet</p>
-          )}
-          <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
-            {collections.map((col) => (
-              <div key={col.id}
-                className="group flex items-center gap-2 px-3 py-1.5 cursor-pointer"
-                style={{ background: activeCollectionId === col.id ? "#1a2e40" : "transparent" }}
-                onClick={() => setActiveCollectionId(activeCollectionId === col.id ? null : col.id)}
-                onMouseEnter={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "#1b2838"; }}
-                onMouseLeave={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "transparent"; }}>
-                <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: col.color }} />
-                {renamingCollectionId === col.id ? (
-                  <input autoFocus className="flex-1 text-xs px-1 rounded outline-none"
-                    style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
-                    value={renamingCollectionName}
-                    onInput={(e) => setRenamingCollectionName((e.target as HTMLInputElement).value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") { handleRenameCollection(col.id, renamingCollectionName); setRenamingCollectionId(null); }
-                      if (e.key === "Escape") setRenamingCollectionId(null);
-                    }}
-                    onBlur={() => { if (renamingCollectionName.trim()) handleRenameCollection(col.id, renamingCollectionName); setRenamingCollectionId(null); }}
-                    onClick={(e) => e.stopPropagation()} />
-                ) : (
-                  <span className="flex-1 text-xs truncate"
-                    style={{ color: activeCollectionId === col.id ? "#66c0f4" : "#8f98a0" }}
-                    onDblClick={(e) => { e.stopPropagation(); setRenamingCollectionId(col.id); setRenamingCollectionName(col.name); }}>
-                    {col.name}
+            <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+              {collections.map((col) => (
+                <div key={col.id}
+                  className="group flex items-center gap-2 px-3 py-1.5 cursor-pointer"
+                  style={{ background: activeCollectionId === col.id ? "#1a2e40" : "transparent" }}
+                  onClick={() => setActiveCollectionId(activeCollectionId === col.id ? null : col.id)}
+                  onMouseEnter={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "#1b2838"; }}
+                  onMouseLeave={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "transparent"; }}>
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: col.color }} />
+                  {renamingCollectionId === col.id ? (
+                    <input autoFocus className="flex-1 text-xs px-1 rounded outline-none"
+                      style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
+                      value={renamingCollectionName}
+                      onInput={(e) => setRenamingCollectionName((e.target as HTMLInputElement).value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { handleRenameCollection(col.id, renamingCollectionName); setRenamingCollectionId(null); }
+                        if (e.key === "Escape") setRenamingCollectionId(null);
+                      }}
+                      onBlur={() => { if (renamingCollectionName.trim()) handleRenameCollection(col.id, renamingCollectionName); setRenamingCollectionId(null); }}
+                      onClick={(e) => e.stopPropagation()} />
+                  ) : (
+                    <span className="flex-1 text-xs truncate"
+                      style={{ color: activeCollectionId === col.id ? "#66c0f4" : "#8f98a0" }}
+                      onDblClick={(e) => { e.stopPropagation(); setRenamingCollectionId(col.id); setRenamingCollectionName(col.name); }}>
+                      {col.name}
+                    </span>
+                  )}
+                  <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>
+                    {col.gamePaths.filter((p) => games.some((g) => g.path === p)).length}
                   </span>
-                )}
-                <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>
-                  {col.gamePaths.filter((p) => games.some((g) => g.path === p)).length}
-                </span>
-                <button
-                  className="opacity-0 group-hover:opacity-100 flex-shrink-0 w-4 h-4 flex items-center justify-center rounded"
-                  style={{ fontSize: "13px", color: "#4a5568" }}
-                  onMouseEnter={(e) => { e.currentTarget.style.color = "#e57373"; e.currentTarget.style.background = "#2a1f1f"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.background = "transparent"; }}
-                  onClick={(e) => { e.stopPropagation(); handleDeleteCollection(col.id); }}
-                  title="Delete collection">×</button>
-              </div>
-            ))}
-          </div>
-          {creatingCollection && (
-            <div className="px-3 pb-2 pt-1 space-y-1.5">
-              <input autoFocus placeholder="Collection name…" value={newCollectionName}
-                onInput={(e) => setNewCollectionName((e.target as HTMLInputElement).value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && newCollectionName.trim()) {
-                    handleCreateCollection(newCollectionName.trim(), newCollectionColor);
-                    setNewCollectionName(""); setCreatingCollection(false);
-                  }
-                  if (e.key === "Escape") { setCreatingCollection(false); setNewCollectionName(""); }
-                }}
-                className="w-full px-2.5 py-1 rounded text-xs outline-none"
-                style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }} />
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {COLLECTION_COLORS.map((c) => (
-                  <button key={c} onClick={() => setNewCollectionColor(c)}
-                    className="w-3.5 h-3.5 rounded-full flex-shrink-0"
-                    style={{ background: c, outline: newCollectionColor === c ? "2px solid #fff" : "none", outlineOffset: "1px" }} />
-                ))}
-                <button className="ml-auto text-[10px] px-2 py-0.5 rounded font-semibold"
-                  style={{ background: "#2a6db5", color: "#fff" }}
-                  onClick={() => {
-                    if (newCollectionName.trim()) {
+                  <button
+                    className="opacity-0 group-hover:opacity-100 flex-shrink-0 w-4 h-4 flex items-center justify-center rounded"
+                    style={{ fontSize: "13px", color: "#4a5568" }}
+                    onMouseEnter={(e) => { e.currentTarget.style.color = "#e57373"; e.currentTarget.style.background = "#2a1f1f"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.background = "transparent"; }}
+                    onClick={(e) => { e.stopPropagation(); handleDeleteCollection(col.id); }}
+                    title="Delete collection">×</button>
+                </div>
+              ))}
+            </div>
+            {creatingCollection && (
+              <div className="px-3 pb-2 pt-1 space-y-1.5">
+                <input autoFocus placeholder="Collection name…" value={newCollectionName}
+                  onInput={(e) => setNewCollectionName((e.target as HTMLInputElement).value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newCollectionName.trim()) {
                       handleCreateCollection(newCollectionName.trim(), newCollectionColor);
                       setNewCollectionName(""); setCreatingCollection(false);
                     }
-                  }}>✓</button>
-                <button className="text-[10px] px-2 py-0.5 rounded"
-                  style={{ background: "#2a3f54", color: "#8f98a0" }}
-                  onClick={() => { setCreatingCollection(false); setNewCollectionName(""); }}>✗</button>
-              </div>
-            </div>
-          )}
-        </div>
-        <div
-          ref={sidebarListRef}
-          className="flex-1 overflow-y-auto"
-          style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}
-        >
-          {syncState === "full-scan" ? (
-            <div className="flex flex-col items-center justify-center h-32 gap-2">
-              <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2" style={{ borderColor: "#66c0f4" }} />
-              <span className="text-xs" style={{ color: "#8f98a0" }}>Scanning…</span>
-            </div>
-          ) : sidebarItems.length === 0 ? (
-            <p className="px-4 py-6 text-xs text-center" style={{ color: "#8f98a0" }}>
-              {games.length === 0 ? "Add a library folder to get started" : "No games match"}
-            </p>
-          ) : (
-            <div style={{ position: "relative", height: `${vTotalH}px` }}>
-              {vItems.map(({ item, offsetTop }) => {
-                if (item.kind === "group-header") {
-                  const collapsed = collapsedGroups.has(item.dir);
-                  return (
-                    <button key={`hdr:${item.dir}`}
-                      onClick={() => toggleGroup(item.dir)}
-                      className="w-full flex items-center gap-1.5 px-2.5 py-1 text-left"
-                      style={{
-                        position: "absolute", top: offsetTop, left: 0, right: 0, height: 28,
-                        background: "#0d1117", borderBottom: "1px solid #1a2535"
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = "#13202e")}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = "#0d1117")}>
-                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#4a5568"
-                        strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                        style={{ transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
-                        <polyline points="6 9 12 15 18 9" />
-                      </svg>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4a7a9b"
-                        strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                      </svg>
-                      <span className="flex-1 text-[10px] font-semibold truncate" style={{ color: "#8f98a0" }}>
-                        {item.label}
-                      </span>
-                      <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>{item.count}</span>
-                    </button>
-                  );
-                }
-
-                // ── Game row ──
-                const game = item.kind === "group-game" ? item.game : (item as { kind: "game"; game: Game }).game;
-                const isGrouped = item.kind === "group-game";
-                // visibleSidebarItems already excludes collapsed group items, but keep the guard
-                if (isGrouped && collapsedGroups.has((item as { kind: "group-game"; dir: string; game: Game }).dir)) return null;
-
-                const isSelected = selected?.path === game.path;
-                const isDragOver = dragOverPathState === game.path;
-                const m = metadata[game.path];
-                const cus = customizations[game.path];
-                const coverSrc = cus?.coverUrl ?? m?.cover_url;
-                const name = gameDisplayName(game);
-                const isFavItem = !!favGames[game.path];
-                const isHiddenItem = !!hiddenGames[game.path];
-                return (
-                  <button key={game.path} onClick={() => setSelected(game)}
-                    onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, game }); }}
-                    draggable={sortMode === "custom"}
-                    onDragStart={(e) => {
-                      dragPath.current = game.path;
-                      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-                    }}
-                    onDragEnter={(e) => {
-                      e.preventDefault();
-                      if (dragPath.current && dragPath.current !== game.path) {
-                        dragOverPath.current = game.path;
-                        setDragOverPathState(game.path);
+                    if (e.key === "Escape") { setCreatingCollection(false); setNewCollectionName(""); }
+                  }}
+                  className="w-full px-2.5 py-1 rounded text-xs outline-none"
+                  style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }} />
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {COLLECTION_COLORS.map((c) => (
+                    <button key={c} onClick={() => setNewCollectionColor(c)}
+                      className="w-3.5 h-3.5 rounded-full flex-shrink-0"
+                      style={{ background: c, outline: newCollectionColor === c ? "2px solid #fff" : "none", outlineOffset: "1px" }} />
+                  ))}
+                  <button className="ml-auto text-[10px] px-2 py-0.5 rounded font-semibold"
+                    style={{ background: "#2a6db5", color: "#fff" }}
+                    onClick={() => {
+                      if (newCollectionName.trim()) {
+                        handleCreateCollection(newCollectionName.trim(), newCollectionColor);
+                        setNewCollectionName(""); setCreatingCollection(false);
                       }
-                    }}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                    }}
-                    onDragLeave={() => {
-                      if (dragOverPath.current === game.path) {
+                    }}>✓</button>
+                  <button className="text-[10px] px-2 py-0.5 rounded"
+                    style={{ background: "#2a3f54", color: "#8f98a0" }}
+                    onClick={() => { setCreatingCollection(false); setNewCollectionName(""); }}>✗</button>
+                </div>
+              </div>
+            )}
+          </div>
+          {/* ── Wishlist ── */}
+          <div className="border-b" style={{ borderColor: "#0d1117" }}>
+            <div className="flex items-center px-3 pt-2 pb-1 gap-1">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z" />
+              </svg>
+              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ color: "#4a5568" }}>Wishlist ({wishlist.length})</span>
+            </div>
+            {wishlist.length === 0 && (
+              <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No wishlisted games</p>
+            )}
+            <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+              {wishlist.map((item) => (
+                <div key={item.id} className="group flex items-center justify-between px-3 py-1.5 cursor-pointer"
+                  style={{ borderBottom: "1px solid #0d1117" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#1b2838"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                  title={item.title}
+                  onClick={() => {
+                    invoke("open_in_browser", { url: item.id }).catch(() => {
+                      const a = document.createElement("a");
+                      a.href = item.id;
+                      a.target = "_blank";
+                      a.click();
+                    });
+                  }}>
+                  <div className="flex flex-col overflow-hidden text-left flex-1 min-w-0 pr-2">
+                    <span className="text-xs truncate font-medium" style={{ color: "#c6d4df" }}>{item.title}</span>
+                    <span className="text-[9px] truncate mt-0.5" style={{ color: "#8f98a0" }}>{item.source} • <span className={item.releaseStatus === "Completed" ? "text-[#6dbf6d]" : ""}>{item.releaseStatus}</span></span>
+                  </div>
+                  <button onClick={(e) => { e.stopPropagation(); handleRemoveWishlist(item.id); }}
+                    className="opacity-0 group-hover:opacity-100 px-1 py-0.5 text-[12px] font-bold rounded flex-shrink-0 transition-opacity"
+                    style={{ color: "#4a5568" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "#2a1f1f"; e.currentTarget.style.color = "#e57373"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#4a5568"; }}
+                  >✕</button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div
+            ref={sidebarListRefCb}
+            className="flex-1 overflow-y-auto"
+            style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}
+          >
+            {syncState === "full-scan" ? (
+              <div className="flex flex-col items-center justify-center h-32 gap-2">
+                <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2" style={{ borderColor: "#66c0f4" }} />
+                <span className="text-xs" style={{ color: "#8f98a0" }}>Scanning…</span>
+              </div>
+            ) : sidebarItems.length === 0 ? (
+              <p className="px-4 py-6 text-xs text-center" style={{ color: "#8f98a0" }}>
+                {games.length === 0 ? "Add a library folder to get started" : "No games match"}
+              </p>
+            ) : (
+              <div style={{ position: "relative", height: `${vTotalH}px` }}>
+                {vItems.map(({ item, offsetTop }) => {
+                  if (item.kind === "group-header") {
+                    const collapsed = collapsedGroups.has(item.dir);
+                    return (
+                      <button key={`hdr:${item.dir}`}
+                        onClick={() => toggleGroup(item.dir)}
+                        className="w-full flex items-center gap-1.5 px-2.5 py-1 text-left"
+                        style={{
+                          position: "absolute", top: offsetTop, left: 0, right: 0, height: 28,
+                          background: "#0d1117", borderBottom: "1px solid #1a2535"
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "#13202e")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "#0d1117")}>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#4a5568"
+                          strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                          style={{ transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
+                          <polyline points="6 9 12 15 18 9" />
+                        </svg>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4a7a9b"
+                          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                        </svg>
+                        <span className="flex-1 text-[10px] font-semibold truncate" style={{ color: "#8f98a0" }}>
+                          {item.label}
+                        </span>
+                        <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>{item.count}</span>
+                      </button>
+                    );
+                  }
+
+                  // ── Game row ──
+                  const game = item.kind === "group-game" ? item.game : (item as { kind: "game"; game: Game }).game;
+                  const isGrouped = item.kind === "group-game";
+                  // visibleSidebarItems already excludes collapsed group items, but keep the guard
+                  if (isGrouped && collapsedGroups.has((item as { kind: "group-game"; dir: string; game: Game }).dir)) return null;
+
+                  const isSelected = selected?.path === game.path;
+                  const isDragOver = dragOverPathState === game.path;
+                  const m = metadata[game.path];
+                  const cus = customizations[game.path];
+                  const coverSrc = cus?.coverUrl ?? m?.cover_url;
+                  const name = gameDisplayName(game);
+                  const isFavItem = !!favGames[game.path];
+                  const isHiddenItem = !!hiddenGames[game.path];
+                  return (
+                    <button key={game.path} onClick={() => setSelected(game)}
+                      onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, game }); }}
+                      draggable={sortMode === "custom"}
+                      onDragStart={(e) => {
+                        dragPath.current = game.path;
+                        if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+                      }}
+                      onDragEnter={(e) => {
+                        e.preventDefault();
+                        if (dragPath.current && dragPath.current !== game.path) {
+                          dragOverPath.current = game.path;
+                          setDragOverPathState(game.path);
+                        }
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverPath.current === game.path) {
+                          dragOverPath.current = null;
+                          setDragOverPathState(null);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (dragPath.current && dragPath.current !== game.path) {
+                          applyDrop(dragPath.current, game.path);
+                        }
+                        dragPath.current = null;
                         dragOverPath.current = null;
                         setDragOverPathState(null);
-                      }
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      if (dragPath.current && dragPath.current !== game.path) {
-                        applyDrop(dragPath.current, game.path);
-                      }
-                      dragPath.current = null;
-                      dragOverPath.current = null;
-                      setDragOverPathState(null);
-                    }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors"
-                    style={{
-                      position: "absolute", top: offsetTop, left: 0, right: 0, height: viewMode === "compact" ? 28 : 52,
-                      background: isSelected ? "#2a475e" : isDragOver ? "#1e3a52" : "transparent",
-                      borderLeft: `3px solid ${isSelected ? "#66c0f4" : isDragOver ? "#4a8ab5" : isFavItem ? "#c8a951" : "transparent"}`,
-                      borderTop: isDragOver ? "1px solid #4a8ab5" : undefined,
-                      color: isSelected ? "#fff" : "#8f98a0",
-                      opacity: isHiddenItem ? 0.6 : 1,
-                      paddingLeft: isGrouped ? "1.75rem" : undefined,
-                      cursor: sortMode === "custom" ? "grab" : undefined,
-                    }}>
-                    {availableGameUpdates[game.path] && (
-                      <span className="absolute top-[4px] right-[4px] w-1.5 h-1.5 rounded-full z-10 animate-pulse bg-green-500"
-                        style={{ boxShadow: "0 0 5px #10b981" }} title="New update available!" />
-                    )}
-                    {viewMode === "compact" ? (
-                      <div className="w-5 h-5 rounded flex-shrink-0 overflow-hidden relative" style={{ background: heroGradient(game.name) }}>
-                        {coverSrc ? <img src={coverSrc} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-white" style={{ fontSize: "9px" }}>{name.charAt(0).toUpperCase()}</div>}
-                        <NsfwOverlay gamePath={game.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
-                      </div>
-                    ) : (
-                      <div className="w-9 h-9 rounded flex-shrink-0 overflow-hidden relative"
-                        style={{ background: (!coverSrc && syncState === "syncing") ? "#1e3a50" : heroGradient(game.name) }}>
-                        {coverSrc
-                          ? <img src={coverSrc} alt="" className="w-full h-full object-cover" />
-                          : syncState === "syncing"
-                            ? <div className="w-full h-full animate-pulse bg-[#2a475e]" />
-                            : <div className="w-full h-full flex items-center justify-center text-sm font-bold text-white">
-                              {name.charAt(0).toUpperCase()}
-                            </div>}
-                        {isFavItem && (
-                          <span className="absolute top-0 right-0 text-[8px] leading-none p-px"
-                            style={{ color: "#c8a951", textShadow: "0 0 3px #000", zIndex: 11 }}>★</span>
-                        )}
-                        <NsfwOverlay gamePath={game.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
-                      </div>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1">
-                        {sortMode === "custom" && (
-                          <span className="text-[11px] flex-shrink-0 leading-none select-none"
-                            style={{ color: "#3a5068" }}>⠿</span>
-                        )}
-                        <p className="text-xs font-medium truncate flex-1">{name}</p>
-                        {isHiddenItem && (
-                          <span className="text-[9px] px-1 rounded flex-shrink-0"
-                            style={{ background: "#2a3f54", color: "#4a5568" }}>hidden</span>
-                        )}
-                      </div>
-                      {viewMode !== "compact" && (
-                        <>
-                          <p className="text-[10px] truncate" style={{ color: "#4a5568" }}>
-                            {stats[game.path]?.totalTime > 0
-                              ? `${formatTime(stats[game.path].totalTime)}${(stats[game.path].launchCount ?? 0) > 0
-                                ? ` · ${stats[game.path].launchCount}×`
-                                : ""
-                              }`
-                              : "Never played"}
-                          </p>
-                          {collections.some((c) => c.gamePaths.includes(game.path)) && (
-                            <div className="flex gap-0.5 mt-0.5">
-                              {collections.filter((c) => c.gamePaths.includes(game.path)).map((c) => (
-                                <span key={c.id} title={c.name} className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
-                              ))}
-                            </div>
-                          )}
-                        </>
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors"
+                      style={{
+                        position: "absolute", top: offsetTop, left: 0, right: 0, height: viewMode === "compact" ? 28 : 52,
+                        background: isSelected ? "#2a475e" : isDragOver ? "#1e3a52" : "transparent",
+                        borderLeft: `3px solid ${isSelected ? "#66c0f4" : isDragOver ? "#4a8ab5" : isFavItem ? "#c8a951" : "transparent"}`,
+                        borderTop: isDragOver ? "1px solid #4a8ab5" : undefined,
+                        color: isSelected ? "#fff" : "#8f98a0",
+                        opacity: isHiddenItem ? 0.6 : 1,
+                        paddingLeft: isGrouped ? "1.75rem" : undefined,
+                        cursor: sortMode === "custom" ? "grab" : undefined,
+                      }}>
+                      {availableGameUpdates[game.path] && (
+                        <span className="absolute top-[4px] right-[4px] w-1.5 h-1.5 rounded-full z-10 animate-pulse bg-green-500"
+                          style={{ boxShadow: "0 0 5px #10b981" }} title="New update available!" />
                       )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-        <div className="px-3 py-3 space-y-1.5 border-t" style={{ borderColor: "#0d1117" }}>
-          {syncState === "syncing" && (
-            <div className="flex items-center gap-2 px-1 py-1">
-              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "#66c0f4" }} />
-              <span className="text-xs" style={{ color: "#66c0f4" }}>Checking changes…</span>
-            </div>
-          )}
-
-          {/* ── Add dropdown ── */}
-          <div ref={addMenuRef} className="relative">
-            <button
-              onClick={() => setShowAddMenu((p) => !p)}
-              className="w-full py-2 rounded text-xs font-semibold flex items-center justify-center gap-1.5"
-              style={{ background: showAddMenu ? "#3d6b8e" : "#2a475e", color: "#c6d4df", border: "1px solid #1b3a50" }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "#3d6b8e")}
-              onMouseLeave={(e) => { if (!showAddMenu) e.currentTarget.style.background = "#2a475e"; }}>
-              {/* plus icon */}
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-              Add…
-              {/* chevron */}
-              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                style={{ marginLeft: "auto", transform: showAddMenu ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
-                <polyline points="6 9 12 15 18 9" />
-              </svg>
-            </button>
-            {showAddMenu && (
-              <div className="absolute bottom-full mb-1 left-0 right-0 rounded-lg py-1 shadow-2xl z-30"
-                style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
-                <button
-                  onClick={handleAddFolder}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
-                  style={{ color: "#c6d4df" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                  </svg>
-                  Add Library Folder
-                  <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }}>scan dir</span>
-                </button>
-                <button
-                  onClick={handleAddGameManually}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
-                  style={{ color: "#c6d4df" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#c8a951" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
-                  </svg>
-                  Add Game Manually
-                  <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }}>.exe / .sh</span>
-                </button>
+                      {viewMode === "compact" ? (
+                        <div className="w-5 h-5 rounded flex-shrink-0 overflow-hidden relative" style={{ background: heroGradient(game.name) }}>
+                          {coverSrc ? <img src={coverSrc} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-white" style={{ fontSize: "9px" }}>{name.charAt(0).toUpperCase()}</div>}
+                          <NsfwOverlay gamePath={game.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
+                        </div>
+                      ) : (
+                        <div className="w-9 h-9 rounded flex-shrink-0 overflow-hidden relative"
+                          style={{ background: (!coverSrc && syncState === "syncing") ? "#1e3a50" : heroGradient(game.name) }}>
+                          {coverSrc
+                            ? <img src={coverSrc} alt="" className="w-full h-full object-cover" />
+                            : syncState === "syncing"
+                              ? <div className="w-full h-full animate-pulse bg-[#2a475e]" />
+                              : <div className="w-full h-full flex items-center justify-center text-sm font-bold text-white">
+                                {name.charAt(0).toUpperCase()}
+                              </div>}
+                          {isFavItem && (
+                            <span className="absolute top-0 right-0 text-[8px] leading-none p-px"
+                              style={{ color: "#c8a951", textShadow: "0 0 3px #000", zIndex: 11 }}>★</span>
+                          )}
+                          <NsfwOverlay gamePath={game.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1">
+                          {sortMode === "custom" && (
+                            <span className="text-[11px] flex-shrink-0 leading-none select-none"
+                              style={{ color: "#3a5068" }}>⠿</span>
+                          )}
+                          <p className="text-xs font-medium truncate flex-1">{name}</p>
+                          {isHiddenItem && (
+                            <span className="text-[9px] px-1 rounded flex-shrink-0"
+                              style={{ background: "#2a3f54", color: "#4a5568" }}>hidden</span>
+                          )}
+                        </div>
+                        {viewMode !== "compact" && (
+                          <>
+                            <p className="text-[10px] truncate" style={{ color: "#4a5568" }}>
+                              {stats[game.path]?.totalTime > 0
+                                ? `${formatTime(stats[game.path].totalTime)}${(stats[game.path].launchCount ?? 0) > 0
+                                  ? ` · ${stats[game.path].launchCount}×`
+                                  : ""
+                                }`
+                                : "Never played"}
+                            </p>
+                            {collections.some((c) => c.gamePaths.includes(game.path)) && (
+                              <div className="flex gap-0.5 mt-0.5">
+                                {collections.filter((c) => c.gamePaths.includes(game.path)).map((c) => (
+                                  <span key={c.id} title={c.name} className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
-
-          {/* Settings + app update */}
-          <div className="flex gap-1.5">
-            <button onClick={() => setShowSettings(true)}
-              className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
-              style={{ background: "transparent", color: "#4a5568", border: "1px solid #2a3f54" }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = "#8f98a0"; e.currentTarget.style.borderColor = "#3d5a73"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.borderColor = "#2a3f54"; }}
-              title="Settings">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-              </svg>
-              Settings
-            </button>
-            {appUpdate && (
-              <button onClick={() => setShowAppUpdateModal(true)}
-                className="flex-1 py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1"
-                style={{ background: "#1a3a1a", color: "#6dbf6d", border: "1px solid #2a5a2a" }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "#1e4a1e")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "#1a3a1a")}
-                title={`v${appUpdate.version} is available — click to install`}>
-                ↑ v{appUpdate.version}
-              </button>
+          <div className="px-3 py-3 space-y-1.5 border-t" style={{ borderColor: "#0d1117" }}>
+            {syncState === "syncing" && (
+              <div className="flex items-center gap-2 px-1 py-1">
+                <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "#66c0f4" }} />
+                <span className="text-xs" style={{ color: "#66c0f4" }}>Checking changes…</span>
+              </div>
             )}
+
+            {/* ── Add dropdown ── */}
+            <div ref={addMenuRef} className="relative">
+              <button
+                onClick={() => setShowAddMenu((p) => !p)}
+                className="w-full py-2 rounded text-xs font-semibold flex items-center justify-center gap-1.5"
+                style={{ background: showAddMenu ? "#3d6b8e" : "#2a475e", color: "#c6d4df", border: "1px solid #1b3a50" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#3d6b8e")}
+                onMouseLeave={(e) => { if (!showAddMenu) e.currentTarget.style.background = "#2a475e"; }}>
+                {/* plus icon */}
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                Add…
+                {/* chevron */}
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ marginLeft: "auto", transform: showAddMenu ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+              {showAddMenu && (
+                <div className="absolute bottom-full mb-1 left-0 right-0 rounded-lg py-1 shadow-2xl z-30"
+                  style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+                  <button
+                    onClick={handleAddFolder}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
+                    style={{ color: "#c6d4df" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                    </svg>
+                    Add Library Folder
+                    <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }}>scan dir</span>
+                  </button>
+                  <button
+                    onClick={handleAddGameManually}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
+                    style={{ color: "#c6d4df" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#c8a951" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
+                    </svg>
+                    Add Game Manually
+                    <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }}>.exe / .sh</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Settings + app update */}
+            <div className="flex gap-1.5">
+              <button onClick={() => setShowSettings(true)}
+                className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
+                style={{ background: "transparent", color: "#4a5568", border: "1px solid #2a3f54" }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "#8f98a0"; e.currentTarget.style.borderColor = "#3d5a73"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.borderColor = "#2a3f54"; }}
+                title="Settings">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                </svg>
+                Settings
+              </button>
+              {appUpdate && (
+                <button onClick={() => setShowAppUpdateModal(true)}
+                  className="flex-1 py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1"
+                  style={{ background: "#1a3a1a", color: "#6dbf6d", border: "1px solid #2a5a2a" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "#1e4a1e")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "#1a3a1a")}
+                  title={`v${appUpdate.version} is available — click to install`}>
+                  ↑ v{appUpdate.version}
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      </aside>
+        </aside>
+      )
+      }
 
       {/* ── Main ── */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative">
-        {viewMode === "grid" && !selected ? (
+        {selected === null && activeMainTab === "feed" ? (
+          <FeedView appSettings={appSettings} wishlist={wishlist} onToggleWishlist={handleToggleWishlist} />
+        ) : selected === null && activeMainTab === "stats" ? (
+          <StatsView games={games} stats={stats} sessions={sessionLog} customizations={customizations} metadata={metadata} />
+        ) : viewMode === "grid" && !selected ? (
           <div className="flex-1 overflow-y-auto px-6 py-6" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
             <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
               {filtered.map(game => {
@@ -4341,6 +4842,14 @@ export default function App() {
             onToggleHide={toggleHide}
             onToggleFav={toggleFav}
             onOpenCustomize={() => setShowCustomizeModal(true)}
+            onSaveCustomization={(changes) => {
+              const nc = { ...(customizations[selected.path] || {}), ...changes };
+              setCustomizations(prev => {
+                const n = { ...prev, [selected.path]: nc };
+                saveCache(SK_CUSTOM, n);
+                return n;
+              });
+            }}
             onOpenNotes={() => setShowNotesModal(true)}
             hasNotes={!!(notes[selected.path]?.trim())}
             onManageCollections={() => setShowManageCollections(true)}
@@ -4370,142 +4879,174 @@ export default function App() {
       </main>
 
       {/* ── Modals ── */}
-      {showSettings && (
-        <SettingsModal
-          f95LoggedIn={f95LoggedIn}
-          dlsiteLoggedIn={dlsiteLoggedIn}
-          libraryFolders={libraryFolders}
-          syncState={syncState}
-          platform={platform}
-          launchConfig={launchConfig}
-          appUpdate={appUpdate}
-          onF95Login={() => setShowF95Login(true)}
-          onF95Logout={async () => { await invoke("f95_logout").catch(() => { }); setF95LoggedIn(false); }}
-          onDLsiteLogin={() => setShowDLsiteLogin(true)}
-          onDLsiteLogout={async () => { await invoke("dlsite_logout").catch(() => { }); setDlsiteLoggedIn(false); }}
-          onRemoveFolder={handleRemoveFolder}
-          onRescanAll={() => runFullScanAll(libraryFolders)}
-          onWineSettings={() => setShowWineSettings(true)}
-          onSteamImport={() => setShowSteamImport(true)}
-          onAppUpdate={() => setShowAppUpdateModal(true)}
-          appSettings={appSettings}
-          onSaveSettings={(s) => { setAppSettings(s); saveCache(SK_SETTINGS, s); }}
-          onClose={() => setShowSettings(false)}
-        />
-      )}
-      {showWineSettings && (
-        <WineSettingsModal
-          config={launchConfig}
-          onSave={(c) => { setLaunchConfig(c); saveCache(SK_LAUNCH, c); }}
-          onClose={() => setShowWineSettings(false)}
-        />
-      )}
-      {showManageCollections && selected && (
-        <ManageCollectionsModal
-          gamePath={selected.path}
-          displayTitle={customizations[selected.path]?.displayName ?? metadata[selected.path]?.title ?? selected.name}
-          collections={collections}
-          onToggle={handleToggleGameInCollection}
-          onCreate={handleCreateCollection}
-          onClose={() => setShowManageCollections(false)}
-        />
-      )}
-      {showNotesModal && selected && (
-        <NotesModal
-          displayTitle={customizations[selected.path]?.displayName ?? metadata[selected.path]?.title ?? selected.name}
-          initialNote={notes[selected.path] ?? ""}
-          onSave={handleSaveNote}
-          onClose={() => setShowNotesModal(false)}
-        />
-      )}
-      {showCustomizeModal && selected && (
-        <CustomizeModal
-          game={selected}
-          meta={metadata[selected.path]}
-          custom={customizations[selected.path] ?? {}}
-          onSave={handleSaveCustomization}
-          onClose={() => setShowCustomizeModal(false)}
-        />
-      )}
-      {showUpdateModal && selected && (
-        <UpdateModal game={selected} onClose={() => setShowUpdateModal(false)} />
-      )}
-      {showAppUpdateModal && appUpdate && (
-        <AppUpdateModal
-          version={appUpdate.version}
-          url={appUpdate.url}
-          downloadUrl={appUpdate.downloadUrl}
-          onClose={() => setShowAppUpdateModal(false)}
-        />
-      )}
-      {showLinkModal && selected && (
-        <LinkPageModal
-          gameName={selected.name}
-          onClose={() => setShowLinkModal(false)}
-          onFetched={handleMetaFetched}
-          f95LoggedIn={f95LoggedIn}
-          onOpenF95Login={() => { setShowLinkModal(false); setShowF95Login(true); }}
-        />
-      )}
-      {showF95Login && (
-        <F95LoginModal
-          onClose={() => setShowF95Login(false)}
-          onSuccess={() => setF95LoggedIn(true)}
-        />
-      )}
-      {showDLsiteLogin && (
-        <DLsiteLoginModal
-          onClose={() => setShowDLsiteLogin(false)}
-          onSuccess={() => setDlsiteLoggedIn(true)}
-        />
-      )}
-      {deleteTarget && (
-        <div className="fixed inset-0 flex items-center justify-center z-50"
-          style={{ background: "rgba(0,0,0,0.75)" }}
-          onClick={(e) => { if (e.target === e.currentTarget && !isDeleting) setDeleteTarget(null); }}>
-          <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "#1e2d3d", border: "1px solid #3d5a73" }}>
-            <h2 className="text-lg font-bold mb-2" style={{ color: "#fff" }}>Uninstall Game</h2>
-            <p className="text-sm mb-1" style={{ color: "#c6d4df" }}>This will permanently delete:</p>
-            <p className="text-xs font-mono mb-4 break-all" style={{ color: "#e57373" }}>
-              {deleteTarget.path.replace(/[\\/][^\\/]+$/, "")}
-            </p>
-            <p className="text-xs mb-5" style={{ color: "#8f98a0" }}>This action cannot be undone.</p>
-            <div className="flex gap-3 justify-end">
-              <button onClick={() => setDeleteTarget(null)} disabled={isDeleting}
-                className="px-4 py-2 rounded text-sm disabled:opacity-50"
-                style={{ background: "#152232", color: "#c6d4df", border: "1px solid #3d5a73" }}>Cancel</button>
-              <button onClick={confirmDelete} disabled={isDeleting}
-                className="px-4 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
-                style={{ background: "#c0392b", color: "#fff" }}>
-                {isDeleting && <span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
-                Delete Files
-              </button>
+      {
+        showSettings && (
+          <SettingsModal
+            f95LoggedIn={f95LoggedIn}
+            dlsiteLoggedIn={dlsiteLoggedIn}
+            libraryFolders={libraryFolders}
+            syncState={syncState}
+            platform={platform}
+            launchConfig={launchConfig}
+            appUpdate={appUpdate}
+            onF95Login={() => setShowF95Login(true)}
+            onF95Logout={async () => { await invoke("f95_logout").catch(() => { }); setF95LoggedIn(false); }}
+            onDLsiteLogin={() => setShowDLsiteLogin(true)}
+            onDLsiteLogout={async () => { await invoke("dlsite_logout").catch(() => { }); setDlsiteLoggedIn(false); }}
+            onRemoveFolder={handleRemoveFolder}
+            onRescanAll={() => runFullScanAll(libraryFolders)}
+            onWineSettings={() => setShowWineSettings(true)}
+            onSteamImport={() => setShowSteamImport(true)}
+            onAppUpdate={() => setShowAppUpdateModal(true)}
+            appSettings={appSettings}
+            onSaveSettings={(s) => { setAppSettings(s); saveCache(SK_SETTINGS, s); }}
+            onExportCSV={handleExportCSV}
+            onExportHTML={handleExportHTML}
+            onClose={() => setShowSettings(false)}
+          />
+        )
+      }
+      {
+        showWineSettings && (
+          <WineSettingsModal
+            config={launchConfig}
+            onSave={(c) => { setLaunchConfig(c); saveCache(SK_LAUNCH, c); }}
+            onClose={() => setShowWineSettings(false)}
+          />
+        )
+      }
+      {
+        showManageCollections && selected && (
+          <ManageCollectionsModal
+            gamePath={selected.path}
+            displayTitle={customizations[selected.path]?.displayName ?? metadata[selected.path]?.title ?? selected.name}
+            collections={collections}
+            onToggle={handleToggleGameInCollection}
+            onCreate={handleCreateCollection}
+            onClose={() => setShowManageCollections(false)}
+          />
+        )
+      }
+      {
+        showNotesModal && selected && (
+          <NotesModal
+            displayTitle={customizations[selected.path]?.displayName ?? metadata[selected.path]?.title ?? selected.name}
+            initialNote={notes[selected.path] ?? ""}
+            onSave={handleSaveNote}
+            onClose={() => setShowNotesModal(false)}
+          />
+        )
+      }
+      {
+        showCustomizeModal && selected && (
+          <CustomizeModal
+            game={selected}
+            meta={metadata[selected.path]}
+            custom={customizations[selected.path] ?? {}}
+            onSave={handleSaveCustomization}
+            onClose={() => setShowCustomizeModal(false)}
+          />
+        )
+      }
+      {
+        showUpdateModal && selected && (
+          <UpdateModal game={selected} onClose={() => setShowUpdateModal(false)} />
+        )
+      }
+      {
+        showAppUpdateModal && appUpdate && (
+          <AppUpdateModal
+            version={appUpdate.version}
+            url={appUpdate.url}
+            downloadUrl={appUpdate.downloadUrl}
+            onClose={() => setShowAppUpdateModal(false)}
+          />
+        )
+      }
+      {
+        showLinkModal && selected && (
+          <LinkPageModal
+            gameName={selected.name}
+            onClose={() => setShowLinkModal(false)}
+            onFetched={handleMetaFetched}
+            f95LoggedIn={f95LoggedIn}
+            onOpenF95Login={() => { setShowLinkModal(false); setShowF95Login(true); }}
+          />
+        )
+      }
+      {
+        showF95Login && (
+          <F95LoginModal
+            onClose={() => setShowF95Login(false)}
+            onSuccess={() => setF95LoggedIn(true)}
+          />
+        )
+      }
+      {
+        showDLsiteLogin && (
+          <DLsiteLoginModal
+            onClose={() => setShowDLsiteLogin(false)}
+            onSuccess={() => setDlsiteLoggedIn(true)}
+          />
+        )
+      }
+      {
+        deleteTarget && (
+          <div className="fixed inset-0 flex items-center justify-center z-50"
+            style={{ background: "rgba(0,0,0,0.75)" }}
+            onClick={(e) => { if (e.target === e.currentTarget && !isDeleting) setDeleteTarget(null); }}>
+            <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "#1e2d3d", border: "1px solid #3d5a73" }}>
+              <h2 className="text-lg font-bold mb-2" style={{ color: "#fff" }}>Uninstall Game</h2>
+              <p className="text-sm mb-1" style={{ color: "#c6d4df" }}>This will permanently delete:</p>
+              <p className="text-xs font-mono mb-4 break-all" style={{ color: "#e57373" }}>
+                {deleteTarget.path.replace(/[\\/][^\\/]+$/, "")}
+              </p>
+              <p className="text-xs mb-3" style={{ color: "#8f98a0" }}>This action cannot be undone unless you reinstall the game later.</p>
+              <label className="flex items-center gap-2 text-xs mb-5 cursor-pointer select-none" style={{ color: "#c6d4df" }}>
+                <input type="checkbox" checked={keepDataOnDelete} onChange={(e) => setKeepDataOnDelete(e.currentTarget.checked)} />
+                Keep playtime and metadata (mark as uninstalled)
+              </label>
+              <div className="flex gap-3 justify-end">
+                <button onClick={() => setDeleteTarget(null)} disabled={isDeleting}
+                  className="px-4 py-2 rounded text-sm disabled:opacity-50"
+                  style={{ background: "#152232", color: "#c6d4df", border: "1px solid #3d5a73" }}>Cancel</button>
+                <button onClick={confirmDelete} disabled={isDeleting}
+                  className="px-4 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
+                  style={{ background: "#c0392b", color: "#fff" }}>
+                  {isDeleting && <span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
+                  Delete Files
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      }
       {/* Session note prompt */}
-      {pendingNoteSession && (() => {
-        const g = games.find(gm => gm.path === pendingNoteSession!.path);
-        const name = g ? (customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name) : "Game";
-        return (
-          <SessionNoteModal
-            session={pendingNoteSession}
-            gameName={name}
-            onSave={handleSaveSessionNote}
-            onDismiss={() => setPendingNoteSession(null)}
+      {
+        pendingNoteSession && (() => {
+          const g = games.find(gm => gm.path === pendingNoteSession!.path);
+          const name = g ? (customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name) : "Game";
+          return (
+            <SessionNoteModal
+              session={pendingNoteSession}
+              gameName={name}
+              onSave={handleSaveSessionNote}
+              onDismiss={() => setPendingNoteSession(null)}
+            />
+          );
+        })()
+      }
+      {
+        showSteamImport && (
+          <SteamImportModal
+            games={games}
+            metadata={metadata}
+            customizations={customizations}
+            onImport={handleSteamImport}
+            onClose={() => setShowSteamImport(false)}
           />
-        );
-      })()}
-      {showSteamImport && (
-        <SteamImportModal
-          games={games}
-          metadata={metadata}
-          customizations={customizations}
-          onImport={handleSteamImport}
-          onClose={() => setShowSteamImport(false)}
-        />
-      )}
+        )
+      }
 
       <CommandPalette
         isOpen={showCmdPalette}
@@ -4515,7 +5056,7 @@ export default function App() {
         notes={notes}
         onSelect={(g) => setSelected(g)}
       />
-    </div>
+    </div >
   );
 
 }

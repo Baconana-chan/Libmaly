@@ -30,10 +30,11 @@ Designed for managing local game collections — with metadata from F95zone & DL
 - Tracks total playtime, last-played date and last session duration per game
 - Home view shows library stats and a "Recent Games" grid (last 60 days)
 
-### 📸 In-Game Screenshots (Windows)
-- Press **F12** at any time while a game is running to capture its window (uses `WH_KEYBOARD_LL` — works even when Steam overlay has F12 reserved)
-- Screenshots saved as PNG, browsable in-app with a lightbox; "Open Folder" shortcut
-- Manual capture button always available
+### 📸 In-Game Screenshots
+- Press **F12** at any time while a game is running to capture its window (uses `WH_KEYBOARD_LL` on Windows — works even when Steam overlay has F12 reserved)
+- **Auto-screenshot Timer** — optional background timer to automatically take a screenshot every N minutes while playing
+- **Screenshot Tagging** — label screenshots ("Ending", "Bug", "Funny") and instantly filter the gallery to find specific moments
+- Screenshots saved as PNG alongside a `tags.json`, browsable in-app with a lightbox
 
 ### 📝 Notes
 - Per-game Markdown notes with live preview and auto-save
@@ -57,6 +58,25 @@ Designed for managing local game collections — with metadata from F95zone & DL
 - **Multiple Executables** — pin alternative launch targets (e.g., `config.exe` or mod managers) directly to the game's page
 - **Wine / Proton (Linux & macOS)** — auto-detects system Wine and Steam Proton installations
 - Global Wine/Proton settings (runner type, WINEPREFIX, `STEAM_COMPAT_DATA_PATH`) and a dynamic "Play via Wine" badge when active
+
+---
+
+## Why LIBMALY? (Comparison)
+
+If you're looking for a local game library manager, here is how LIBMALY compares to the popular alternatives, specifically for managing DRM-free, F95zone, or DLsite collections:
+
+| Feature | LIBMALY | Playnite | Heroic Games Launcher |
+| :--- | :--- | :--- | :--- |
+| **Primary Focus** | Standalone DRM-free, Visual Novels (F95/DLsite) | Mainstream stores (Steam, Epic, Xbox) | Epic, GOG, Amazon |
+| **Performance** | **Ultra-lightweight** (Rust/Tauri) | Heavy (WPF / .NET) | Medium (Electron) |
+| **Automatic Scraping** | Built-in F95zone & DLsite support | Needs 3rd-party community plugins | Only IGDB/Store API |
+| **Update Management** | Built-in `.zip` archiver/updater + Save Backup | Manual / Plugins | Built-in for supported stores |
+| **In-Game Screenshots** | Built-in (F12 hooking) + **Tagging** | Needs external tools (Steam/Fraps) | Needs external tools |
+| **Time Tracking** | Native + **Steam Playtime Import** | Native | Native |
+| **Cross-Platform** | Windows, Linux, macOS | Windows only | Windows, Linux, macOS |
+| **Login Gates** | Direct F95/DLsite login to bypass age gates | Plugin dependant | N/A for F95/DLsite |
+
+**The TL;DR:** If you primarily play Steam games, use Playnite. If you play Epic/GOG games on Linux, use Heroic. If you have a large folder of unmanaged, standalone indie games, downloaded zips, or visual novels that you want to track, update, and grab metadata for seamlessly — use **LIBMALY**.
 
 ---
 

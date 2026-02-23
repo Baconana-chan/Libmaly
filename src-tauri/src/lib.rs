@@ -13,14 +13,16 @@ use walkdir::WalkDir;
 mod metadata;
 use metadata::{
     dlsite_is_logged_in, dlsite_login, dlsite_logout, f95_is_logged_in, f95_login, f95_logout,
-    fetch_dlsite_metadata, fetch_f95_metadata,
+    fetch_dlsite_metadata, fetch_f95_metadata, search_suggest_links,
 };
 
 mod updater;
 use updater::{preview_update, update_game};
 
 mod screenshot;
-use screenshot::{get_screenshots, open_screenshots_folder, take_screenshot_manual};
+use screenshot::{
+    get_screenshots, open_screenshots_folder, save_screenshot_tags, take_screenshot_manual,
+};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Game {
@@ -1142,6 +1144,7 @@ pub fn run() {
             apply_update,
             fetch_f95_metadata,
             fetch_dlsite_metadata,
+            search_suggest_links,
             f95_login,
             f95_logout,
             f95_is_logged_in,
@@ -1153,6 +1156,7 @@ pub fn run() {
             get_screenshots,
             open_screenshots_folder,
             take_screenshot_manual,
+            save_screenshot_tags,
             import_steam_playtime,
             set_tray_tooltip,
             fetch_rss,

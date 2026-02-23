@@ -22,14 +22,14 @@
 
 ## 🌐 Metadata
 
-- [ ] **Auto-link by name** — fuzzy-match game folder name against F95 / DLsite and suggest a link without manual URL entry
-- [ ] **Batch metadata refresh** — "Update all linked games" button that re-fetches all entries in the background
+- [x] **Auto-link by name** — fuzzy-match game folder name against F95 / DLsite and suggest a link without manual URL entry
+- [x] **Batch metadata refresh** — "Update all linked games" button that re-fetches all entries in the background
 - [ ] **Metadata diff view** — when re-fetching, show "changed: version 0.9 → 1.0" before applying
-- [ ] **Cache expiry** — auto-re-fetch metadata older than N days (configurable)
+- [x] **Cache expiry** — auto-re-fetch metadata older than N days (configurable)
 - [ ] **VNDB support** — fetch metadata from vndb.org for visual novels (cover, tags, relations, release date)
 - [ ] **MangaGamer / Johren / Fakku support** — additional store scrapers
 - [ ] **Developer grouping** — sidebar section "By Developer"; click to filter all games from one circle/studio
-- [ ] **Custom user tags** — free-form tags beyond the scraped ones; filterable in sidebar
+- [x] **Custom user tags** — free-form tags beyond the scraped ones; filterable in sidebar
 - [x] **Wishlist** — add un-owned games with a link and release status; separate sidebar section
 - [ ] **Game version history** — log each time you update a game (date + note); shown as timeline entries
 
@@ -38,8 +38,8 @@
 ## 🖼️ Screenshots
 
 - [ ] **Non-Windows screenshot** — global hotkey via X11/Wayland on Linux; CGWindow on macOS
-- [ ] **Auto-screenshot timer** — periodic screenshot every N minutes while a game runs
-- [ ] **Screenshot tagging** — label screenshots ("ending", "bug", "funny moment"); filterable gallery
+- [x] **Auto-screenshot timer** — periodic screenshot every N minutes while a game runs
+- [x] **Screenshot tagging** — label screenshots ("ending", "bug", "funny moment"); filterable gallery
 - [ ] **Screenshot annotation** — simple draw / text overlay before saving
 - [ ] **Export gallery** — zip all screenshots for a game and save / share
 

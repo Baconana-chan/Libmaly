@@ -112,6 +112,7 @@ interface SteamEntry { app_id: string; name: string; played_minutes: number; }
 interface GameMetadata {
   source: string;
   source_url: string;
+  fetchedAt?: number;
   title?: string;
   version?: string;
   developer?: string;
@@ -162,6 +163,7 @@ interface Screenshot {
   path: string;
   filename: string;
   timestamp: number;
+  tags: string[];
 }
 
 interface GameCustomization {
@@ -178,6 +180,15 @@ interface GameCustomization {
   status?: "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play";
   /** Daily/session time budget in minutes */
   timeLimitMins?: number;
+  /** Free-form user tags */
+  customTags?: string[];
+}
+
+interface SearchResultItem {
+  title: string;
+  url: string;
+  cover_url: string | null;
+  source: string;
 }
 
 // ─── Generic exe-name detection ──────────────────────────────────────────────
@@ -255,6 +266,8 @@ interface AppSettings {
   startupWithWindows: boolean;
   blurNsfwContent: boolean;
   rssFeeds: { url: string; name: string }[];
+  metadataAutoRefetchDays: number;
+  autoScreenshotInterval: number;
 }
 const DEFAULT_SETTINGS: AppSettings = {
   updateCheckerEnabled: false,
@@ -265,6 +278,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   rssFeeds: [
     { url: "https://f95zone.to/sam/latest_alpha/latest_data.php?cmd=rss&cat=games", name: "F95zone Latest" }
   ],
+  metadataAutoRefetchDays: 0,
+  autoScreenshotInterval: 0,
 };
 
 function isGameAdult(meta?: GameMetadata): boolean {
@@ -307,7 +322,7 @@ interface Collection {
 }
 
 type SortMode = "name" | "lastPlayed" | "playtime" | "custom";
-type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "unlinked" | "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play";
+type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "unlinked" | "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play" | string;
 
 function loadCache<T>(key: string, fallback: T): T {
   try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : fallback; }
@@ -592,12 +607,25 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
 
   const src = isF95Url(url) ? "f95" : isDLsiteUrl(url) ? "dlsite" : null;
 
-  const doFetch = async () => {
-    if (!src) { setError("Paste a valid F95zone or DLsite URL."); return; }
+  const [suggestions, setSuggestions] = useState<SearchResultItem[] | null>(null);
+
+  // Auto-fetch suggestions on mount
+  useEffect(() => {
+    let active = true;
+    invoke<SearchResultItem[]>("search_suggest_links", { query: gameName })
+      .then((res) => { if (active) setSuggestions(res); })
+      .catch((e) => { if (active) console.error("suggestions err", e); });
+    return () => { active = false; };
+  }, [gameName]);
+
+  const doFetch = async (targetUrl = url) => {
+    if (!targetUrl) return;
+    const targetSrc = isF95Url(targetUrl) ? "f95" : isDLsiteUrl(targetUrl) ? "dlsite" : null;
+    if (!targetSrc) { setError("Paste a valid F95zone or DLsite URL."); return; }
     setLoading(true); setError("");
     try {
-      const cmd = src === "f95" ? "fetch_f95_metadata" : "fetch_dlsite_metadata";
-      const meta = await invoke<GameMetadata>(cmd, { url: url.trim() });
+      const cmd = targetSrc === "f95" ? "fetch_f95_metadata" : "fetch_dlsite_metadata";
+      const meta = await invoke<GameMetadata>(cmd, { url: targetUrl.trim() });
       onFetched(meta); onClose();
     } catch (e) { setError(String(e)); }
     finally { setLoading(false); }
@@ -641,12 +669,38 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
             <button onClick={onOpenF95Login} className="text-xs underline" style={{ color: "#c8a951" }}>Sign in</button>
           </div>
         )}
+        {!url && suggestions && suggestions.length > 0 && (
+          <div className="mb-4">
+            <p className="text-[10px] uppercase text-[#8f98a0] font-bold tracking-widest mb-2">Suggestions</p>
+            <div className="space-y-2">
+              {suggestions.map((s) => (
+                <div key={s.url} onClick={() => doFetch(s.url)}
+                  className="group flex gap-3 p-2 rounded cursor-pointer transition-colors"
+                  style={{ background: "#152232", border: "1px solid #1e3a50" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#1b2838"}
+                  onMouseLeave={e => e.currentTarget.style.background = "#152232"}>
+                  {s.cover_url ? (
+                    <img src={s.cover_url} alt="" className="w-10 h-10 object-cover rounded" />
+                  ) : (
+                    <div className="w-10 h-10 rounded flex items-center justify-center font-bold" style={{ background: "#1e2d3d", color: "#66c0f4" }}>
+                      {s.source[0]}
+                    </div>
+                  )}
+                  <div className="flex flex-col flex-1 min-w-0 justify-center">
+                    <p className="text-xs text-[#c6d4df] truncate font-medium group-hover:text-[#fff]" title={s.title}>{s.title}</p>
+                    <p className="text-[10px] text-[#8f98a0] uppercase">{s.source}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {error && <p className="text-xs mb-2" style={{ color: "#e57373" }}>{error}</p>}
         <div className="flex gap-3 justify-end mt-2">
           <button onClick={onClose} disabled={loading}
             className="px-4 py-2 rounded text-sm"
             style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Cancel</button>
-          <button onClick={doFetch} disabled={loading || !url.trim()}
+          <button onClick={() => doFetch()} disabled={loading || !url.trim()}
             className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
             style={{ background: "#2a6db5", color: "#fff" }}>
             {loading
@@ -1352,41 +1406,83 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
 }
 
 // ─── In-Game Screenshots Gallery ─────────────────────────────────────────────
-function InGameGallery({ shots, onTake, onOpenFolder }: {
+function InGameGallery({ shots, onTake, onOpenFolder, onUpdateTags }: {
   shots: Screenshot[];
   onTake: () => void;
   onOpenFolder: () => void;
+  onUpdateTags: (filename: string, tags: string[]) => void;
 }) {
   const [lightbox, setLightbox] = useState<Screenshot | null>(null);
+  const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
+
+  // Derived filtered shots
+  const filteredShots = activeTagFilter
+    ? shots.filter(s => s.tags?.includes(activeTagFilter))
+    : shots;
+
+  // Collect all unique tags from all screenshots
+  const allShotTags = useMemo(() => {
+    const tags = new Set<string>();
+    shots.forEach(s => s.tags?.forEach(t => tags.add(t)));
+    return Array.from(tags).sort();
+  }, [shots]);
 
   return (
     <section>
-      <div className="flex items-center gap-2 mb-2">
-        <h2 className="text-xs uppercase tracking-widest flex-1" style={{ color: "#8f98a0" }}>
-          In-Game Screenshots {shots.length > 0 && <span style={{ color: "#4a5568" }}>({shots.length})</span>}
-        </h2>
-        <button onClick={onTake}
-          className="flex items-center gap-1 px-2 py-1 rounded text-xs"
-          style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}
-          title="Capture game window now (F12 hotkey works while game is running)">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-            <circle cx="12" cy="13" r="4" />
-          </svg>
-          Capture
-        </button>
-        <button onClick={onOpenFolder}
-          className="flex items-center gap-1 px-2 py-1 rounded text-xs"
-          style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          </svg>
-          Folder
-        </button>
+      <div className="flex flex-col gap-2 mb-2">
+        <div className="flex items-center gap-2">
+          <h2 className="text-xs uppercase tracking-widest flex-1" style={{ color: "#8f98a0" }}>
+            In-Game Screenshots {shots.length > 0 && <span style={{ color: "#4a5568" }}>({shots.length})</span>}
+          </h2>
+          <button onClick={onTake}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs"
+            style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}
+            title="Capture game window now (F12 hotkey works while game is running)">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+              <circle cx="12" cy="13" r="4" />
+            </svg>
+            Capture
+          </button>
+          <button onClick={onOpenFolder}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs"
+            style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+            Folder
+          </button>
+        </div>
+
+        {allShotTags.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            <button
+              onClick={() => setActiveTagFilter(null)}
+              className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
+              style={{
+                background: !activeTagFilter ? "#3d5a73" : "#1a2734",
+                color: !activeTagFilter ? "#fff" : "#8f98a0",
+                border: "1px solid #2a3f54"
+              }}
+            >ALL</button>
+            {allShotTags.map(tag => (
+              <button
+                key={tag}
+                onClick={() => setActiveTagFilter(activeTagFilter === tag ? null : tag)}
+                className="text-[10px] px-1.5 py-0.5 rounded transition-colors uppercase tracking-tight"
+                style={{
+                  background: activeTagFilter === tag ? "#2a6db5" : "#1a2734",
+                  color: activeTagFilter === tag ? "#fff" : "#4cb5ff",
+                  border: `1px solid ${activeTagFilter === tag ? "#3d8ee6" : "#2a3f54"}`
+                }}
+              >{tag}</button>
+            ))}
+          </div>
+        )}
       </div>
 
       {shots.length === 0 ? (
@@ -1397,7 +1493,7 @@ function InGameGallery({ shots, onTake, onOpenFolder }: {
         </div>
       ) : (
         <div className="flex flex-wrap gap-2">
-          {shots.map((s) => (
+          {filteredShots.map((s) => (
             <button key={s.filename} onClick={() => setLightbox(s)}
               className="rounded overflow-hidden flex-shrink-0 relative group"
               style={{ width: "90px", height: "60px", background: "#0d1117" }}>
@@ -1407,6 +1503,14 @@ function InGameGallery({ shots, onTake, onOpenFolder }: {
                 className="w-full h-full object-cover"
                 style={{ display: "block" }}
               />
+              {s.tags?.length > 0 && (
+                <div className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl">
+                  <svg width="8" height="8" viewBox="0 0 24 24" fill="#66c0f4" stroke="#66c0f4" strokeWidth="1">
+                    <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+                    <line x1="7" y1="7" x2="7.01" y2="7" />
+                  </svg>
+                </div>
+              )}
               <div className="absolute inset-0 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"
                 style={{ background: "rgba(0,0,0,0.5)" }}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1416,26 +1520,82 @@ function InGameGallery({ shots, onTake, onOpenFolder }: {
               </div>
             </button>
           ))}
+          {filteredShots.length === 0 && (
+            <div className="text-[10px] py-4 text-center w-full" style={{ color: "#4a5568" }}>
+              No shots match the selected tag.
+            </div>
+          )}
         </div>
       )}
 
       {/* Lightbox */}
       {lightbox && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center"
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
           style={{ background: "rgba(0,0,0,0.92)" }}
           onClick={() => setLightbox(null)}>
-          <div onClick={(e) => e.stopPropagation()} className="relative max-w-[90vw] max-h-[90vh]">
-            <img
-              src={convertFileSrc(lightbox.path)}
-              alt={lightbox.filename}
-              style={{ maxWidth: "90vw", maxHeight: "85vh", objectFit: "contain", display: "block" }}
-              className="rounded shadow-2xl"
-            />
-            <div className="flex items-center justify-between mt-2 px-1">
-              <span className="text-xs font-mono" style={{ color: "#8f98a0" }}>{lightbox.filename}</span>
-              <button onClick={() => setLightbox(null)}
-                className="text-xs px-3 py-1 rounded"
-                style={{ background: "#2a3f54", color: "#c6d4df" }}>Close</button>
+          <div onClick={(e) => e.stopPropagation()} className="relative flex flex-col items-center max-w-full max-h-full">
+            <div className="relative">
+              <img
+                src={convertFileSrc(lightbox.path)}
+                alt={lightbox.filename}
+                style={{ maxWidth: "90vw", maxHeight: "80vh", objectFit: "contain", display: "block" }}
+                className="rounded shadow-2xl"
+              />
+            </div>
+
+            <div className="w-full max-w-[90vw] mt-4 flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-mono" style={{ color: "#8cb4d5" }}>{lightbox.filename}</span>
+                <button onClick={() => setLightbox(null)}
+                  className="text-xs px-4 py-1.5 rounded font-semibold transition-colors"
+                  style={{ background: "#2a475e", color: "#fff" }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = "#3d5a73"}
+                  onMouseLeave={(e) => e.currentTarget.style.background = "#2a475e"}>CLOSE</button>
+              </div>
+
+              {/* Tags Section */}
+              <div className="bg-[#16202d] p-3 rounded-lg border border-[#2a3f54]">
+                <div className="flex items-center gap-2 mb-2">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" strokeWidth="2">
+                    <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+                    <line x1="7" y1="7" x2="7.01" y2="7" />
+                  </svg>
+                  <span className="text-[10px] uppercase tracking-widest font-bold" style={{ color: "#8f98a0" }}>Labels / Tags</span>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5 items-center">
+                  {lightbox.tags?.map(t => (
+                    <span key={t} className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded bg-[#2a475e] text-[#c6d4df] border border-[#3d5a73] group hover:border-[#66c0f4] cursor-default transition-colors">
+                      {t}
+                      <button
+                        onClick={() => {
+                          const next = lightbox.tags.filter(x => x !== t);
+                          onUpdateTags(lightbox.filename, next);
+                          setLightbox({ ...lightbox, tags: next });
+                        }}
+                        className="hover:text-red-400 opacity-60 hover:opacity-100 transition-opacity"
+                      >✕</button>
+                    </span>
+                  ))}
+
+                  <input
+                    type="text"
+                    placeholder="Add label (Bug, Ending, Funny...)"
+                    className="bg-transparent border border-dashed border-[#2a475e] text-[#8f98a0] text-[11px] px-2 py-0.5 rounded outline-none w-48 focus:w-64 focus:border-solid focus:border-[#66c0f4] focus:text-[#fff] transition-all"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        const val = e.currentTarget.value.trim().toLowerCase();
+                        if (val && !lightbox.tags?.includes(val)) {
+                          const next = [...(lightbox.tags || []), val];
+                          onUpdateTags(lightbox.filename, next);
+                          setLightbox({ ...lightbox, tags: next });
+                        }
+                        e.currentTarget.value = '';
+                      }
+                    }}
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1715,24 +1875,27 @@ const MILESTONES = [
 function PlayChart({ sessions, gamePath, days = 7 }: { sessions: SessionEntry[]; gamePath: string | null; days?: number }) {
   const data = sessionsPerDay(sessions, gamePath, days);
   const maxSecs = Math.max(...data.map(d => d.secs), 1);
-  const W = 260, H = 80, barW = Math.floor((W - (days - 1) * 4) / days);
+  const H = 80;
 
   return (
-    <div>
-      <svg width={W} height={H + 20} style={{ overflow: "visible" }}>
+    <div className="w-full">
+      <svg width="100%" height={H + 20} style={{ overflow: "visible" }}>
         {data.map((d, i) => {
           const barH = Math.max(d.secs > 0 ? 4 : 0, Math.round((d.secs / maxSecs) * H));
-          const x = i * (barW + 4);
-          const y = H - barH;
+          const wPct = 100 / days;
+          const gapPct = 1.5;
+          const xPct = i * wPct + (gapPct / 2);
+          const barWPct = wPct - gapPct;
+
           return (
             <g key={i}>
-              <rect x={x} y={y} width={barW} height={barH}
+              <rect x={`${xPct}%`} y={H - barH} width={`${barWPct}%`} height={barH}
                 rx="2"
                 fill={d.secs > 0 ? "#2a6db5" : "#1a2d3d"}
                 style={{ transition: "height 0.3s" }}>
                 {d.secs > 0 && <title>{formatTime(d.secs)}</title>}
               </rect>
-              <text x={x + barW / 2} y={H + 14} textAnchor="middle"
+              <text x={`${i * wPct + (wPct / 2)}%`} y={H + 14} textAnchor="middle"
                 fontSize="9" fill="#4a5568">{d.label}</text>
             </g>
           );
@@ -2031,7 +2194,7 @@ function SettingsModal({
   appUpdate, appSettings,
   onF95Login, onF95Logout, onDLsiteLogin, onDLsiteLogout, onRemoveFolder,
   onRescanAll, onWineSettings, onSteamImport, onAppUpdate, onSaveSettings, onClose,
-  onExportCSV, onExportHTML
+  onExportCSV, onExportHTML, onBatchMetadataRefresh, batchRefreshStatus
 }: {
   f95LoggedIn: boolean; dlsiteLoggedIn: boolean; libraryFolders: { path: string }[]; syncState: string;
   platform: string; launchConfig: { enabled: boolean; runner: string };
@@ -2042,6 +2205,8 @@ function SettingsModal({
   onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void;
   onAppUpdate: () => void; onSaveSettings: (s: AppSettings) => void; onClose: () => void;
   onExportCSV: () => void; onExportHTML: () => void;
+  onBatchMetadataRefresh: () => void;
+  batchRefreshStatus: string | null;
 }) {
   const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "wine">("general");
   const tabs: { id: typeof tab; label: string }[] = [
@@ -2171,6 +2336,14 @@ function SettingsModal({
                     onChange={(e) => onSaveSettings({ ...appSettings, blurNsfwContent: e.currentTarget.checked })} />
                   Blur adult/NSFW covers (Click to reveal)
                 </label>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }} title="Automatically take a screenshot while a game is running">
+                  Auto-screenshot interval (mins)
+                  <input type="number" min="0" className="w-12 px-1 py-1 bg-transparent border rounded outline-none text-center ml-2"
+                    style={{ color: "#c6d4df", borderColor: "#2a475e" }}
+                    value={appSettings.autoScreenshotInterval || 0}
+                    onChange={e => onSaveSettings({ ...appSettings, autoScreenshotInterval: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
+                  <span className="text-[10px] ml-2" style={{ color: "#4a5568" }}>(0 to disable)</span>
+                </label>
               </section>
 
               <section className="space-y-4 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
@@ -2266,21 +2439,43 @@ function SettingsModal({
           )}
 
           {tab === "scanner" && (
-            <section className="space-y-3">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Library Scanner</h3>
-              <p className="text-xs leading-relaxed" style={{ color: "#8f98a0" }}>
-                Force a full re-scan of all library folders. Use this if new games were added to the folders outside of LIBMALY, or if some entries are missing.
-              </p>
-              <button onClick={() => { onRescanAll(); onClose(); }}
-                disabled={syncState !== "idle"}
-                className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
-                style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d7a9b" }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
-                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-                </svg>
-                Force Rescan All Folders
-              </button>
+            <section className="space-y-6">
+              <div className="space-y-3">
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Library Scanner</h3>
+                <p className="text-xs leading-relaxed" style={{ color: "#8f98a0" }}>
+                  Force a full re-scan of all library folders. Use this if new games were added to the folders outside of LIBMALY, or if some entries are missing.
+                </p>
+                <button onClick={() => { onRescanAll(); onClose(); }}
+                  disabled={syncState !== "idle"}
+                  className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
+                  style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d7a9b" }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                  </svg>
+                  Force Rescan All Folders
+                </button>
+              </div>
+
+              <div className="space-y-3 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Metadata Refetch</h3>
+                <p className="text-xs leading-relaxed" style={{ color: "#8f98a0" }}>
+                  Update metadata for all currently linked games (runs in the background).
+                </p>
+                <button onClick={onBatchMetadataRefresh} disabled={!!batchRefreshStatus}
+                  className="w-full py-2.5 rounded text-sm font-semibold disabled:opacity-50"
+                  style={{ background: "#2a6db5", color: "#fff", border: "1px solid #3d7dc8" }}>
+                  {batchRefreshStatus || "Refetch All Linked Games"}
+                </button>
+                <label className="flex items-center gap-2 text-sm mt-3" style={{ color: "#8f98a0" }}>
+                  Auto-refetch metadata older than
+                  <input type="number" min="0" className="w-12 px-1 py-1 bg-transparent border rounded outline-none text-center"
+                    style={{ color: "#c6d4df", borderColor: "#2a475e" }}
+                    value={appSettings.metadataAutoRefetchDays || 0}
+                    onChange={e => onSaveSettings({ ...appSettings, metadataAutoRefetchDays: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
+                  days (0 to disable)
+                </label>
+              </div>
             </section>
           )}
 
@@ -2329,7 +2524,7 @@ function SettingsModal({
 // ─── Game Detail ──────────────────────────────────────────────────────────────
 function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots, isHidden, isFav,
   onPlay, onStop, isRunning, runnerLabel, onDelete, onLinkPage, onOpenF95Login, onClearMeta, onUpdate,
-  onTakeScreenshot, onOpenScreenshotsFolder, onToggleHide, onToggleFav, onOpenCustomize, onSaveCustomization, onOpenNotes, hasNotes, onManageCollections,
+  onTakeScreenshot, onOpenScreenshotsFolder, onUpdateScreenshotTags, onToggleHide, onToggleFav, onOpenCustomize, onSaveCustomization, onOpenNotes, hasNotes, onManageCollections,
   sessions, onEditSessionNote, appSettings, revealedNsfw, onRevealNsfw }: {
     game: Game; stat: GameStats; meta?: GameMetadata;
     customization: GameCustomization; f95LoggedIn: boolean;
@@ -2337,7 +2532,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
     onPlay: (overridePath?: string, overrideArgs?: string) => void; onStop: () => void; isRunning: boolean; runnerLabel?: string;
     onDelete: () => void; onLinkPage: () => void;
     onOpenF95Login: () => void; onClearMeta: () => void; onUpdate: () => void;
-    onTakeScreenshot: () => void; onOpenScreenshotsFolder: () => void;
+    onTakeScreenshot: () => void; onOpenScreenshotsFolder: () => void; onUpdateScreenshotTags: (filename: string, tags: string[]) => void;
     onToggleHide: () => void; onToggleFav: () => void; onOpenCustomize: () => void;
     onSaveCustomization: (changes: Partial<GameCustomization>) => void;
     onOpenNotes: () => void; hasNotes: boolean; onManageCollections: () => void;
@@ -2553,6 +2748,36 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
                 </div>
               </section>
             )}
+            <section>
+              <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center justify-between" style={{ color: "#8f98a0" }}>
+                <span>Custom Tags</span>
+              </h2>
+              <div className="flex flex-wrap gap-1.5 items-center">
+                {customization.customTags?.map((t) => (
+                  <span key={t} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded cursor-pointer group"
+                    style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d5a73" }}
+                    onClick={() => {
+                      const tags = customization.customTags?.filter(x => x !== t) || [];
+                      onSaveCustomization({ customTags: tags });
+                    }}>
+                    {t} <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">✕</span>
+                  </span>
+                ))}
+                <input type="text" placeholder="+ add tag"
+                  className="bg-transparent border border-dashed border-[#2a475e] text-[#8f98a0] hover:text-[#c6d4df] hover:border-[#3d5a73] transition-colors text-xs px-2 py-0.5 rounded outline-none w-24 focus:w-32 focus:border-solid focus:border-[#66c0f4] focus:text-[#fff]"
+                  onKeyDown={e => {
+                    if (e.key === "Enter") {
+                      const val = e.currentTarget.value.trim().toLowerCase();
+                      if (val) {
+                        const tags = new Set(customization.customTags || []);
+                        tags.add(val);
+                        onSaveCustomization({ customTags: Array.from(tags) });
+                        e.currentTarget.value = "";
+                      }
+                    }
+                  }} />
+              </div>
+            </section>
             {!meta && (
               <div className="rounded-lg px-6 py-8 text-center" style={{ background: "#16202d", border: "2px dashed #2a3f54" }}>
                 <p className="text-sm mb-1" style={{ color: "#8f98a0" }}>No metadata linked yet.</p>
@@ -2570,6 +2795,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
               shots={screenshots}
               onTake={onTakeScreenshot}
               onOpenFolder={onOpenScreenshotsFolder}
+              onUpdateTags={onUpdateScreenshotTags}
             />
             {/* Play History */}
             <section>
@@ -3260,6 +3486,7 @@ export default function App() {
   const [dlsiteLoggedIn, setDlsiteLoggedIn] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "compact" | "grid">(() => loadCache("libmaly_view_mode", "list"));
+  const [isAppReady, setIsAppReady] = useState(false);
 
   useEffect(() => saveCache("libmaly_view_mode", viewMode), [viewMode]);
 
@@ -3346,6 +3573,9 @@ export default function App() {
   const [showNotesModal, setShowNotesModal] = useState(false);
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [showFilters, setShowFilters] = useState(false);
+  const [showCollections, setShowCollections] = useState(false);
+  const [showWishlist, setShowWishlist] = useState(false);
+  const [batchRefreshStatus, setBatchRefreshStatus] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("lastPlayed");
   /** custom-order map: contextKey -> ordered array of game paths */
   const [customOrder, setCustomOrder] = useState<Record<string, string[]>>(
@@ -3483,7 +3713,12 @@ export default function App() {
     const folders = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
     const legacyPath = localStorage.getItem(SK_PATH);
     const roots = folders.length > 0 ? folders : (legacyPath ? [{ path: legacyPath }] : []);
-    if (roots.length > 0) runIncrementalSyncAll(roots);
+    if (roots.length > 0) {
+      runIncrementalSyncAll(roots).finally(() => setIsAppReady(true));
+    } else {
+      setIsAppReady(true);
+    }
+
     const unlistenFinished = listen("game-finished", (ev: any) => {
       const p = ev.payload as { path: string; duration_secs: number };
       updateStats(p.path, p.duration_secs);
@@ -3543,6 +3778,26 @@ export default function App() {
     const iv = setInterval(updateTooltip, 60000); // 1 minute
     return () => clearInterval(iv);
   }, [appSettings.trayTooltipEnabled, runningGamePath, games, metadata, customizations]);
+
+  // Auto-screenshot timer
+  useEffect(() => {
+    const mins = appSettings.autoScreenshotInterval;
+    if (!mins || mins <= 0 || !runningGamePath) return;
+
+    const intervalId = setInterval(async () => {
+      try {
+        const shot = await invoke<Screenshot>("take_screenshot_manual");
+        setScreenshots((prev) => ({
+          ...prev,
+          [runningGamePath]: [shot, ...(prev[runningGamePath] ?? [])],
+        }));
+      } catch (e) {
+        console.error("Auto-screenshot failed:", e);
+      }
+    }, mins * 60_000);
+
+    return () => clearInterval(intervalId);
+  }, [appSettings.autoScreenshotInterval, runningGamePath]);
 
   // Background game update checker
   useEffect(() => {
@@ -3829,9 +4084,97 @@ export default function App() {
 
   const handleMetaFetched = (meta: GameMetadata) => {
     if (!selected) return;
-    const next = { ...metadata, [selected.path]: meta };
+    const next = { ...metadata, [selected.path]: { ...meta, fetchedAt: Date.now() } };
     setMetadata(next); saveCache(SK_META, next);
   };
+
+  const handleBatchMetadataRefresh = async () => {
+    if (batchRefreshStatus) return;
+    const paths = Object.keys(metadata).filter(p => metadata[p]?.source_url);
+    if (paths.length === 0) return;
+    let count = 0;
+
+    for (const p of paths) {
+      count++;
+      setBatchRefreshStatus(`Updating ${count} / ${paths.length} ...`);
+      const m = metadata[p];
+      try {
+        let newMeta: GameMetadata | undefined;
+        if (m.source === "f95") {
+          newMeta = await invoke<GameMetadata>("fetch_f95_metadata", { url: m.source_url });
+        } else if (m.source === "dlsite") {
+          newMeta = await invoke<GameMetadata>("fetch_dlsite_metadata", { url: m.source_url });
+        }
+        if (newMeta) {
+          const finalMeta = { ...newMeta, fetchedAt: Date.now() };
+          setMetadata(prev => {
+            const next = { ...prev, [p]: finalMeta };
+            saveCache(SK_META, next);
+            return next;
+          });
+        }
+      } catch (e) { console.error(`Failed to update metadata for ${p}`, e); }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    setBatchRefreshStatus(null);
+  };
+
+  const handleUpdateScreenshotTags = async (filename: string, tags: string[]) => {
+    if (!selected) return;
+    try {
+      await invoke("save_screenshot_tags", {
+        gameExe: selected.path,
+        filename,
+        tags
+      });
+      // Optionally update local state if needed (though InGameGallery handles its own UI state for speed)
+      setScreenshots(prev => {
+        const list = prev[selected.path] || [];
+        const nextList = list.map(s => s.filename === filename ? { ...s, tags } : s);
+        return { ...prev, [selected.path]: nextList };
+      });
+    } catch (e) {
+      console.error("Failed to save screenshot tags:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (!appSettings.metadataAutoRefetchDays) return;
+    let active = true;
+    const run = async () => {
+      const now = Date.now();
+      const expiryAge = appSettings.metadataAutoRefetchDays * 24 * 60 * 60 * 1000;
+
+      const paths = Object.keys(metadata).filter(p => {
+        const m = metadata[p];
+        if (!m.source_url) return false;
+        if (!m.fetchedAt) return true;
+        return now - m.fetchedAt > expiryAge;
+      });
+
+      for (const p of paths) {
+        if (!active) break;
+        const m = metadata[p];
+        try {
+          let newMeta: GameMetadata | undefined;
+          if (m.source === "f95") newMeta = await invoke<GameMetadata>("fetch_f95_metadata", { url: m.source_url });
+          else if (m.source === "dlsite") newMeta = await invoke<GameMetadata>("fetch_dlsite_metadata", { url: m.source_url });
+
+          if (newMeta) {
+            const finalMeta = { ...newMeta, fetchedAt: Date.now() };
+            setMetadata(prev => {
+              const next = { ...prev, [p]: finalMeta };
+              saveCache(SK_META, next);
+              return next;
+            });
+          }
+        } catch (e) { console.error(`Auto-update failed for ${p}`, e); }
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    };
+    run();
+    return () => { active = false; };
+  }, [appSettings.metadataAutoRefetchDays]); // eslint-disable-line
 
   const handleClearMeta = () => {
     if (!selected) return;
@@ -3948,6 +4291,14 @@ export default function App() {
     | { kind: "group-game"; game: Game; dir: string };
 
 
+  const allCustomTags = useMemo(() => {
+    const tags = new Set<string>();
+    for (const c of Object.values(customizations)) {
+      if (c.customTags) c.customTags.forEach(t => tags.add(t));
+    }
+    return Array.from(tags).sort();
+  }, [customizations]);
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     const activeCol = activeCollectionId ? collections.find((c) => c.id === activeCollectionId) : null;
@@ -3965,6 +4316,10 @@ export default function App() {
         else if (filterMode === "unlinked") return !metadata[g.path];
         else if (filterMode === "Playing" || filterMode === "Completed" || filterMode === "On Hold" || filterMode === "Dropped" || filterMode === "Plan to Play") {
           return customizations[g.path]?.status === filterMode;
+        }
+        else if (filterMode.startsWith("tag:")) {
+          const t = filterMode.slice(4);
+          return customizations[g.path]?.customTags?.includes(t) ?? false;
         }
         return true;
       })
@@ -4103,6 +4458,16 @@ export default function App() {
 
   /** Settings modal */
   const [showSettings, setShowSettings] = useState(false);
+
+  if (!isAppReady) {
+    return (
+      <div className="flex flex-col items-center justify-center w-screen h-screen select-none" style={{ background: "#0d1117" }}>
+        <h1 className="text-4xl font-black italic tracking-widest mb-6" style={{ background: "linear-gradient(90deg, #66c0f4, #c8a951)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>LIBMALY</h1>
+        <div className="w-8 h-8 rounded-full border-4 border-[#2a475e] border-t-[#66c0f4] animate-spin" />
+        <p className="mt-4 text-[10px] font-bold uppercase tracking-wider" style={{ color: "#8f98a0" }}>Building your library...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: "#1b2838", color: "#c6d4df", fontFamily: "'Arial', sans-serif" }}>
@@ -4304,6 +4669,27 @@ export default function App() {
                       }}>{label}</button>
                   ))}
                 </div>
+                {allCustomTags.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {allCustomTags.map((tag) => (
+                      <button key={`tag:${tag}`} onClick={() => setFilterMode(`tag:${tag}`)}
+                        className="px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1"
+                        style={{
+                          background: filterMode === `tag:${tag}` ? "#2a6db5" : "#1b2d3d",
+                          color: filterMode === `tag:${tag}` ? "#fff" : "#8cb4d5",
+                          border: `1px solid ${filterMode === `tag:${tag}` ? "#3d7dc8" : "#264d68"}`,
+                        }}>
+                        <span className="opacity-60 text-[9px]">#</span>
+                        {tag}
+                        {filterMode === `tag:${tag}` && (
+                          <span className="ml-1 opacity-60" onClick={(e) => {
+                            e.stopPropagation(); setFilterMode("all");
+                          }}>✕</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             {/* Sort */}
@@ -4350,140 +4736,151 @@ export default function App() {
           </div>
           {/* ── Collections ── */}
           <div className="border-b" style={{ borderColor: "#0d1117" }}>
-            <div className="flex items-center px-3 pt-2 pb-1 gap-1">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <div
+              className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[#c6d4df]"
+              style={{ color: showCollections ? "#c6d4df" : "#4a5568" }}
+              onClick={() => setShowCollections(p => !p)}
+            >
+              <svg className="transition-transform duration-200" style={{ transform: showCollections ? "rotate(90deg)" : "rotate(0deg)" }} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
               </svg>
-              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ color: "#4a5568" }}>Collections</span>
+              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ paddingTop: "1px" }}>Collections</span>
               {activeCollectionId && (
-                <button onClick={() => setActiveCollectionId(null)}
+                <button onClick={(e) => { e.stopPropagation(); setActiveCollectionId(null); }}
                   className="text-[9px] px-1.5 py-0.5 rounded mr-1"
                   style={{ background: "#2a3f54", color: "#8f98a0" }}
                   title="Clear filter">✕ clear</button>
               )}
-              <button onClick={() => setCreatingCollection(true)}
-                className="w-5 h-5 flex items-center justify-center rounded text-sm font-bold"
-                style={{ color: "#4a5568" }}
-                onMouseEnter={(e) => (e.currentTarget.style.color = "#66c0f4")}
-                onMouseLeave={(e) => (e.currentTarget.style.color = "#4a5568")}
+              <button onClick={(e) => { e.stopPropagation(); setCreatingCollection(true); setShowCollections(true); }}
+                className="w-5 h-5 flex items-center justify-center rounded text-sm font-bold opacity-60 hover:opacity-100 transition-opacity"
                 title="New collection">+</button>
             </div>
-            {collections.length === 0 && !creatingCollection && (
-              <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No collections yet</p>
-            )}
-            <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
-              {collections.map((col) => (
-                <div key={col.id}
-                  className="group flex items-center gap-2 px-3 py-1.5 cursor-pointer"
-                  style={{ background: activeCollectionId === col.id ? "#1a2e40" : "transparent" }}
-                  onClick={() => setActiveCollectionId(activeCollectionId === col.id ? null : col.id)}
-                  onMouseEnter={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "#1b2838"; }}
-                  onMouseLeave={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "transparent"; }}>
-                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: col.color }} />
-                  {renamingCollectionId === col.id ? (
-                    <input autoFocus className="flex-1 text-xs px-1 rounded outline-none"
-                      style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
-                      value={renamingCollectionName}
-                      onInput={(e) => setRenamingCollectionName((e.target as HTMLInputElement).value)}
+            {showCollections && (
+              <>
+                {collections.length === 0 && !creatingCollection && (
+                  <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No collections yet</p>
+                )}
+                {collections.length > 0 && (
+                  <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+                    {collections.map((col) => (
+                      <div key={col.id}
+                        className="group flex items-center gap-2 px-3 py-1.5 cursor-pointer"
+                        style={{ background: activeCollectionId === col.id ? "#1a2e40" : "transparent" }}
+                        onClick={() => setActiveCollectionId(activeCollectionId === col.id ? null : col.id)}
+                        onMouseEnter={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "#1b2838"; }}
+                        onMouseLeave={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "transparent"; }}>
+                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: col.color }} />
+                        {renamingCollectionId === col.id ? (
+                          <input autoFocus className="flex-1 text-xs px-1 rounded outline-none"
+                            style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
+                            value={renamingCollectionName}
+                            onInput={(e) => setRenamingCollectionName((e.target as HTMLInputElement).value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") { handleRenameCollection(col.id, renamingCollectionName); setRenamingCollectionId(null); }
+                              if (e.key === "Escape") setRenamingCollectionId(null);
+                            }}
+                            onBlur={() => { if (renamingCollectionName.trim()) handleRenameCollection(col.id, renamingCollectionName); setRenamingCollectionId(null); }}
+                            onClick={(e) => e.stopPropagation()} />
+                        ) : (
+                          <span className="flex-1 text-xs truncate"
+                            style={{ color: activeCollectionId === col.id ? "#66c0f4" : "#8f98a0" }}
+                            onDblClick={(e) => { e.stopPropagation(); setRenamingCollectionId(col.id); setRenamingCollectionName(col.name); }}>
+                            {col.name}
+                          </span>
+                        )}
+                        <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>
+                          {col.gamePaths.filter((p) => games.some((g) => g.path === p)).length}
+                        </span>
+                        <button
+                          className="opacity-0 group-hover:opacity-100 flex-shrink-0 w-4 h-4 flex items-center justify-center rounded"
+                          style={{ fontSize: "13px", color: "#4a5568" }}
+                          onMouseEnter={(e) => { e.currentTarget.style.color = "#e57373"; e.currentTarget.style.background = "#2a1f1f"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.background = "transparent"; }}
+                          onClick={(e) => { e.stopPropagation(); handleDeleteCollection(col.id); }}
+                          title="Delete collection">×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {creatingCollection && (
+                  <div className="px-3 pb-2 pt-1 space-y-1.5">
+                    <input autoFocus placeholder="Collection name…" value={newCollectionName}
+                      onInput={(e) => setNewCollectionName((e.target as HTMLInputElement).value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") { handleRenameCollection(col.id, renamingCollectionName); setRenamingCollectionId(null); }
-                        if (e.key === "Escape") setRenamingCollectionId(null);
+                        if (e.key === "Enter" && newCollectionName.trim()) {
+                          handleCreateCollection(newCollectionName.trim(), newCollectionColor);
+                          setNewCollectionName(""); setCreatingCollection(false);
+                        }
+                        if (e.key === "Escape") { setCreatingCollection(false); setNewCollectionName(""); }
                       }}
-                      onBlur={() => { if (renamingCollectionName.trim()) handleRenameCollection(col.id, renamingCollectionName); setRenamingCollectionId(null); }}
-                      onClick={(e) => e.stopPropagation()} />
-                  ) : (
-                    <span className="flex-1 text-xs truncate"
-                      style={{ color: activeCollectionId === col.id ? "#66c0f4" : "#8f98a0" }}
-                      onDblClick={(e) => { e.stopPropagation(); setRenamingCollectionId(col.id); setRenamingCollectionName(col.name); }}>
-                      {col.name}
-                    </span>
-                  )}
-                  <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>
-                    {col.gamePaths.filter((p) => games.some((g) => g.path === p)).length}
-                  </span>
-                  <button
-                    className="opacity-0 group-hover:opacity-100 flex-shrink-0 w-4 h-4 flex items-center justify-center rounded"
-                    style={{ fontSize: "13px", color: "#4a5568" }}
-                    onMouseEnter={(e) => { e.currentTarget.style.color = "#e57373"; e.currentTarget.style.background = "#2a1f1f"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.background = "transparent"; }}
-                    onClick={(e) => { e.stopPropagation(); handleDeleteCollection(col.id); }}
-                    title="Delete collection">×</button>
-                </div>
-              ))}
-            </div>
-            {creatingCollection && (
-              <div className="px-3 pb-2 pt-1 space-y-1.5">
-                <input autoFocus placeholder="Collection name…" value={newCollectionName}
-                  onInput={(e) => setNewCollectionName((e.target as HTMLInputElement).value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && newCollectionName.trim()) {
-                      handleCreateCollection(newCollectionName.trim(), newCollectionColor);
-                      setNewCollectionName(""); setCreatingCollection(false);
-                    }
-                    if (e.key === "Escape") { setCreatingCollection(false); setNewCollectionName(""); }
-                  }}
-                  className="w-full px-2.5 py-1 rounded text-xs outline-none"
-                  style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }} />
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {COLLECTION_COLORS.map((c) => (
-                    <button key={c} onClick={() => setNewCollectionColor(c)}
-                      className="w-3.5 h-3.5 rounded-full flex-shrink-0"
-                      style={{ background: c, outline: newCollectionColor === c ? "2px solid #fff" : "none", outlineOffset: "1px" }} />
-                  ))}
-                  <button className="ml-auto text-[10px] px-2 py-0.5 rounded font-semibold"
-                    style={{ background: "#2a6db5", color: "#fff" }}
-                    onClick={() => {
-                      if (newCollectionName.trim()) {
-                        handleCreateCollection(newCollectionName.trim(), newCollectionColor);
-                        setNewCollectionName(""); setCreatingCollection(false);
-                      }
-                    }}>✓</button>
-                  <button className="text-[10px] px-2 py-0.5 rounded"
-                    style={{ background: "#2a3f54", color: "#8f98a0" }}
-                    onClick={() => { setCreatingCollection(false); setNewCollectionName(""); }}>✗</button>
-                </div>
-              </div>
+                      className="w-full px-2.5 py-1 rounded text-xs outline-none"
+                      style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }} />
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {COLLECTION_COLORS.map((c) => (
+                        <button key={c} onClick={() => setNewCollectionColor(c)}
+                          className="w-3.5 h-3.5 rounded-full flex-shrink-0"
+                          style={{ background: c, outline: newCollectionColor === c ? "2px solid #fff" : "none", outlineOffset: "1px" }} />
+                      ))}
+                      <button className="ml-auto text-[10px] px-2 py-0.5 rounded font-semibold"
+                        style={{ background: "#2a6db5", color: "#fff" }}
+                        onClick={() => {
+                          if (newCollectionName.trim()) {
+                            handleCreateCollection(newCollectionName.trim(), newCollectionColor);
+                            setNewCollectionName(""); setCreatingCollection(false);
+                          }
+                        }}>✓</button>
+                      <button className="text-[10px] px-2 py-0.5 rounded"
+                        style={{ background: "#2a3f54", color: "#8f98a0" }}
+                        onClick={() => { setCreatingCollection(false); setNewCollectionName(""); }}>✗</button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
           {/* ── Wishlist ── */}
           <div className="border-b" style={{ borderColor: "#0d1117" }}>
-            <div className="flex items-center px-3 pt-2 pb-1 gap-1">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <div
+              className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[#c6d4df]"
+              style={{ color: showWishlist ? "#c6d4df" : "#4a5568" }}
+              onClick={() => setShowWishlist(p => !p)}
+            >
+              <svg className="transition-transform duration-200" style={{ transform: showWishlist ? "rotate(90deg)" : "rotate(0deg)" }} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z" />
               </svg>
-              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ color: "#4a5568" }}>Wishlist ({wishlist.length})</span>
+              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ paddingTop: "1px" }}>Wishlist ({wishlist.length})</span>
             </div>
-            {wishlist.length === 0 && (
-              <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No wishlisted games</p>
-            )}
-            <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
-              {wishlist.map((item) => (
-                <div key={item.id} className="group flex items-center justify-between px-3 py-1.5 cursor-pointer"
-                  style={{ borderBottom: "1px solid #0d1117" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#1b2838"}
-                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                  title={item.title}
-                  onClick={() => {
-                    invoke("open_in_browser", { url: item.id }).catch(() => {
-                      const a = document.createElement("a");
-                      a.href = item.id;
-                      a.target = "_blank";
-                      a.click();
-                    });
-                  }}>
-                  <div className="flex flex-col overflow-hidden text-left flex-1 min-w-0 pr-2">
-                    <span className="text-xs truncate font-medium" style={{ color: "#c6d4df" }}>{item.title}</span>
-                    <span className="text-[9px] truncate mt-0.5" style={{ color: "#8f98a0" }}>{item.source} • <span className={item.releaseStatus === "Completed" ? "text-[#6dbf6d]" : ""}>{item.releaseStatus}</span></span>
+            {showWishlist && (
+              <>
+                {wishlist.length === 0 && (
+                  <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No wishlisted games</p>
+                )}
+                {wishlist.length > 0 && (
+                  <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+                    {wishlist.map((item) => (
+                      <a key={item.id} href={item.id} target="_blank" rel="noreferrer" className="group flex items-center justify-between px-3 py-1.5 cursor-pointer"
+                        style={{ borderBottom: "1px solid #0d1117", textDecoration: "none" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "#1b2838"}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                        title={item.title}>
+                        <div className="flex flex-col overflow-hidden text-left flex-1 min-w-0 pr-2">
+                          <span className="text-xs truncate font-medium group-hover:underline" style={{ color: "#c6d4df" }}>{item.title}</span>
+                          <span className="text-[9px] truncate mt-0.5" style={{ color: "#8f98a0" }}>{item.source} • <span className={item.releaseStatus === "Completed" ? "text-[#6dbf6d]" : ""}>{item.releaseStatus}</span></span>
+                        </div>
+                        <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRemoveWishlist(item.id); }}
+                          className="opacity-0 group-hover:opacity-100 px-1 py-0.5 text-[12px] font-bold rounded flex-shrink-0 transition-opacity relative z-10"
+                          style={{ color: "#4a5568" }}
+                          onMouseEnter={e => { e.currentTarget.style.background = "#2a1f1f"; e.currentTarget.style.color = "#e57373"; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#4a5568"; }}
+                        >✕</button>
+                      </a>
+                    ))}
                   </div>
-                  <button onClick={(e) => { e.stopPropagation(); handleRemoveWishlist(item.id); }}
-                    className="opacity-0 group-hover:opacity-100 px-1 py-0.5 text-[12px] font-bold rounded flex-shrink-0 transition-opacity"
-                    style={{ color: "#4a5568" }}
-                    onMouseEnter={e => { e.currentTarget.style.background = "#2a1f1f"; e.currentTarget.style.color = "#e57373"; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#4a5568"; }}
-                  >✕</button>
-                </div>
-              ))}
-            </div>
+                )}
+              </>
+            )}
           </div>
           <div
             ref={sidebarListRefCb}
@@ -4872,6 +5269,7 @@ export default function App() {
                 alert("Could not open folder: " + e)
               )
             }
+            onUpdateScreenshotTags={handleUpdateScreenshotTags}
             sessions={sessionLog}
             onEditSessionNote={handleEditSessionNote}
           />
@@ -4903,6 +5301,8 @@ export default function App() {
             onExportCSV={handleExportCSV}
             onExportHTML={handleExportHTML}
             onClose={() => setShowSettings(false)}
+            onBatchMetadataRefresh={handleBatchMetadataRefresh}
+            batchRefreshStatus={batchRefreshStatus}
           />
         )
       }

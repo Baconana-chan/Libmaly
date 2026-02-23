@@ -77,6 +77,7 @@ pub struct Screenshot {
     pub path: String,
     pub filename: String,
     pub timestamp: u64,
+    pub tags: Vec<String>,
 }
 
 #[cfg(windows)]
@@ -90,10 +91,20 @@ pub struct ScreenshotTakenPayload {
 
 #[tauri::command]
 pub fn get_screenshots(game_exe: String) -> Result<Vec<Screenshot>, String> {
+    
     let dir = screenshots_dir(&game_exe);
     if !dir.exists() {
         return Ok(vec![]);
     }
+
+    let meta_path = dir.join("tags.json");
+    let all_tags: std::collections::HashMap<String, Vec<String>> = if meta_path.exists() {
+        let content = std::fs::read_to_string(&meta_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        std::collections::HashMap::new()
+    };
+
     let mut shots: Vec<Screenshot> = std::fs::read_dir(&dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok())
@@ -113,15 +124,40 @@ pub fn get_screenshots(game_exe: String) -> Result<Vec<Screenshot>, String> {
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
+            let tags = all_tags.get(&filename).cloned().unwrap_or_default();
             Screenshot {
                 path: path_str,
                 filename,
                 timestamp,
+                tags,
             }
         })
         .collect();
     shots.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     Ok(shots)
+}
+
+
+#[tauri::command]
+pub fn save_screenshot_tags(game_exe: String, screenshot_name: String, tags: Vec<String>) -> Result<(), String> {
+    let dir = screenshots_dir(&game_exe);
+    if !dir.exists() {
+        return Err("Screenshots directory not found".into());
+    }
+
+    let meta_path = dir.join("tags.json");
+    let mut all_tags: std::collections::HashMap<String, Vec<String>> = if meta_path.exists() {
+        let content = std::fs::read_to_string(&meta_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    all_tags.insert(screenshot_name, tags);
+
+    let content = serde_json::to_string_pretty(&all_tags).map_err(|e| e.to_string())?;
+    std::fs::write(&meta_path, content).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -357,6 +393,7 @@ fn capture_linux(pid: u32, game_exe: &str) -> Result<Screenshot, String> {
         path: out_str,
         filename,
         timestamp: now,
+        tags: vec![],
     })
 }
 
@@ -390,6 +427,7 @@ fn capture_macos(game_exe: &str) -> Result<Screenshot, String> {
         path: out_str,
         filename,
         timestamp: now,
+        tags: vec![],
     })
 }
 
@@ -565,6 +603,7 @@ mod win {
             path: out_path.to_string_lossy().to_string(),
             filename,
             timestamp: now,
+        tags: vec![],
         })
     }
 }

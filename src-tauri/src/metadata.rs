@@ -864,3 +864,107 @@ pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> 
         file_size,
     })
 }
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+pub struct SearchResultItem {
+    pub title: String,
+    pub url: String,
+    pub cover_url: Option<String>,
+    pub source: String,
+}
+
+#[tauri::command]
+pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>, String> {
+    let mut results = Vec::new();
+
+    // DLsite query
+    let dlsite_url = format!(
+        "https://www.dlsite.com/home/fsr/=/keyword/{}",
+        urlencoding::encode(&query)
+    );
+    if let Ok(resp) = dlsite_http()
+        .get(&dlsite_url)
+        .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
+        .send()
+        .await
+    {
+        if let Ok(body) = resp.text().await {
+            let doc = Html::parse_document(&body);
+            let item_sel = sel(".search_result_img_box_inner");
+            let mut count = 0;
+            for el in doc.select(&item_sel) {
+                if count >= 3 {
+                    break;
+                }
+                let a_sel = sel("a");
+                let img_sel = sel("img");
+                if let Some(a) = el.select(&a_sel).next() {
+                    let title = a
+                        .attr("title")
+                        .or_else(|| {
+                            let img = el.select(&img_sel).next()?;
+                            img.attr("alt")
+                        })
+                        .unwrap_or("Unknown")
+                        .to_string();
+                    let url = a.attr("href").unwrap_or("").to_string();
+                    let cover_url =
+                        el.select(&img_sel)
+                            .next()
+                            .and_then(|i| i.attr("src"))
+                            .map(|s| {
+                                if s.starts_with("//") {
+                                    format!("https:{}", s)
+                                } else {
+                                    s.to_string()
+                                }
+                            });
+                    if !url.is_empty() && !url.contains("category") {
+                        results.push(SearchResultItem {
+                            title: title.clone(),
+                            url: url.clone(),
+                            cover_url,
+                            source: "DLsite".into(),
+                        });
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // DuckDuckGo lite for F95zone
+    let ddg_body = format!("q=site:f95zone.to+{}", urlencoding::encode(&query));
+    if let Ok(resp) = reqwest::Client::new()
+        .post("https://lite.duckduckgo.com/lite/")
+        .header("User-Agent", "Mozilla/5.0")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(ddg_body)
+        .send()
+        .await
+    {
+        if let Ok(body) = resp.text().await {
+            let doc = Html::parse_document(&body);
+            let a_sel = sel(".result-link");
+            let mut count = 0;
+            for el in doc.select(&a_sel) {
+                if count >= 3 {
+                    break;
+                }
+                let url = el.attr("href").unwrap_or("").to_string();
+                if url.contains("f95zone.to/threads") {
+                    let title = el.text().collect::<String>().trim().to_string();
+                    results.push(SearchResultItem {
+                        title,
+                        url,
+                        cover_url: None,
+                        source: "F95zone".into(),
+                    });
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}

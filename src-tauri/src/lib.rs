@@ -754,6 +754,21 @@ async fn apply_update(app: AppHandle, download_url: String) -> Result<(), String
                 std::io::copy(&mut entry, &mut out_file).map_err(|e| e.to_string())?;
             }
         }
+    } else if archive_name.ends_with(".exe") || archive_name.ends_with(".msi") {
+        #[cfg(windows)]
+        {
+            // Just launch the installer and exit LIBMALY so it can overwrite files.
+            let mut cmd = std::process::Command::new("cmd");
+            cmd.args(["/C", "start", "\"\"", &archive_path.to_string_lossy()]);
+            cmd.spawn()
+                .map_err(|e| format!("Failed to start installer: {}", e))?;
+            app.exit(0);
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        {
+            return Err("Cannot run Windows installer on this OS.".to_string());
+        }
     } else {
         // For non-zip archives (tar.gz etc.) just leave the archive in tmp_dir;
         // the script will deal with them or the user can update manually.

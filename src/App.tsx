@@ -608,14 +608,21 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
   const src = isF95Url(url) ? "f95" : isDLsiteUrl(url) ? "dlsite" : null;
 
   const [suggestions, setSuggestions] = useState<SearchResultItem[] | null>(null);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
+  const [query, setQuery] = useState(gameName);
+
+  const fetchSuggestions = () => {
+    setIsLoadingSuggestions(true);
+    invoke<SearchResultItem[]>("search_suggest_links", { query })
+      .then((res) => setSuggestions(res))
+      .catch((e) => { console.error("suggestions err", e); setSuggestions([]); })
+      .finally(() => setIsLoadingSuggestions(false));
+  };
 
   // Auto-fetch suggestions on mount
   useEffect(() => {
-    let active = true;
-    invoke<SearchResultItem[]>("search_suggest_links", { query: gameName })
-      .then((res) => { if (active) setSuggestions(res); })
-      .catch((e) => { if (active) console.error("suggestions err", e); });
-    return () => { active = false; };
+    fetchSuggestions();
+    // eslint-disable-next-line
   }, [gameName]);
 
   const doFetch = async (targetUrl = url) => {
@@ -669,30 +676,45 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
             <button onClick={onOpenF95Login} className="text-xs underline" style={{ color: "#c8a951" }}>Sign in</button>
           </div>
         )}
-        {!url && suggestions && suggestions.length > 0 && (
+        {!url && (
           <div className="mb-4">
-            <p className="text-[10px] uppercase text-[#8f98a0] font-bold tracking-widest mb-2">Suggestions</p>
-            <div className="space-y-2">
-              {suggestions.map((s) => (
-                <div key={s.url} onClick={() => doFetch(s.url)}
-                  className="group flex gap-3 p-2 rounded cursor-pointer transition-colors"
-                  style={{ background: "#152232", border: "1px solid #1e3a50" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#1b2838"}
-                  onMouseLeave={e => e.currentTarget.style.background = "#152232"}>
-                  {s.cover_url ? (
-                    <img src={s.cover_url} alt="" className="w-10 h-10 object-cover rounded" />
-                  ) : (
-                    <div className="w-10 h-10 rounded flex items-center justify-center font-bold" style={{ background: "#1e2d3d", color: "#66c0f4" }}>
-                      {s.source[0]}
-                    </div>
-                  )}
-                  <div className="flex flex-col flex-1 min-w-0 justify-center">
-                    <p className="text-xs text-[#c6d4df] truncate font-medium group-hover:text-[#fff]" title={s.title}>{s.title}</p>
-                    <p className="text-[10px] text-[#8f98a0] uppercase">{s.source}</p>
-                  </div>
-                </div>
-              ))}
+            <div className="flex items-center gap-2 mb-2">
+              <p className="text-[10px] uppercase text-[#8f98a0] font-bold tracking-widest flex-1">Auto-Link Suggestions</p>
+              <input type="text" value={query} onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
+                className="bg-[#152232] border border-[#2a475e] text-[11px] px-2 py-0.5 rounded outline-none text-[#c6d4df]"
+                placeholder="Search query..."
+                onKeyDown={(e) => e.key === "Enter" && fetchSuggestions()} />
+              <button onClick={fetchSuggestions} disabled={isLoadingSuggestions} className="bg-[#2a475e] hover:bg-[#3d5a73] text-[11px] px-2 py-0.5 rounded text-[#c6d4df] disabled:opacity-50">
+                {isLoadingSuggestions ? "Searching…" : "Search"}
+              </button>
             </div>
+            {isLoadingSuggestions ? (
+              <p className="text-xs text-[#8f98a0]">Searching for matches...</p>
+            ) : suggestions && suggestions.length > 0 ? (
+              <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                {suggestions.map((s) => (
+                  <div key={s.url} onClick={() => doFetch(s.url)}
+                    className="group flex gap-3 p-2 rounded cursor-pointer transition-colors"
+                    style={{ background: "#152232", border: "1px solid #1e3a50" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#1b2838"}
+                    onMouseLeave={e => e.currentTarget.style.background = "#152232"}>
+                    {s.cover_url ? (
+                      <img src={s.cover_url} alt="" className="w-10 h-10 object-cover rounded" />
+                    ) : (
+                      <div className="w-10 h-10 rounded flex items-center justify-center font-bold" style={{ background: "#1e2d3d", color: "#66c0f4" }}>
+                        {s.source[0]}
+                      </div>
+                    )}
+                    <div className="flex flex-col flex-1 min-w-0 justify-center">
+                      <p className="text-xs text-[#c6d4df] truncate font-medium group-hover:text-[#fff]" title={s.title}>{s.title}</p>
+                      <p className="text-[10px] text-[#8f98a0] uppercase">{s.source}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : suggestions && suggestions.length === 0 ? (
+              <p className="text-xs text-[#8f98a0]">No suggestions found.</p>
+            ) : null}
           </div>
         )}
         {error && <p className="text-xs mb-2" style={{ color: "#e57373" }}>{error}</p>}

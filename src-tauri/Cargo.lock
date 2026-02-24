@@ -2056,7 +2056,7 @@ dependencies = [
 
 [[package]]
 name = "libmaly"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "image",
  "reqwest 0.12.28",

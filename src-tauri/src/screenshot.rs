@@ -16,11 +16,19 @@ pub struct ActiveGameState(pub Mutex<Option<ActiveGame>>);
 
 // ── Global state for WH_KEYBOARD_LL callback (Windows only) ────────────────
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BossKeyConfig {
+    pub vk_code: u32,
+    pub action: String,
+    pub mute: bool,
+}
+
 #[cfg(windows)]
 struct HookState {
     pid: u32,
     exe: String,
     app: AppHandle,
+    boss_key: Option<BossKeyConfig>,
 }
 
 #[cfg(windows)]
@@ -91,7 +99,6 @@ pub struct ScreenshotTakenPayload {
 
 #[tauri::command]
 pub fn get_screenshots(game_exe: String) -> Result<Vec<Screenshot>, String> {
-    
     let dir = screenshots_dir(&game_exe);
     if !dir.exists() {
         return Ok(vec![]);
@@ -137,9 +144,12 @@ pub fn get_screenshots(game_exe: String) -> Result<Vec<Screenshot>, String> {
     Ok(shots)
 }
 
-
 #[tauri::command]
-pub fn save_screenshot_tags(game_exe: String, screenshot_name: String, tags: Vec<String>) -> Result<(), String> {
+pub fn save_screenshot_tags(
+    game_exe: String,
+    screenshot_name: String,
+    tags: Vec<String>,
+) -> Result<(), String> {
     let dir = screenshots_dir(&game_exe);
     if !dir.exists() {
         return Err("Screenshots directory not found".into());
@@ -230,20 +240,33 @@ unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: usize, lparam: isi
     if code >= 0 && wparam == WM_KEYDOWN as usize {
         let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
         if kb.vkCode == 0x7B {
-            // VK_F12 — take screenshot
             if let Ok(guard) = hook_state().lock() {
                 if let Some(ref state) = *guard {
-                    match capture_window_of(state.pid, &state.exe) {
-                        Ok(shot) => {
-                            let _ = state.app.emit(
-                                "screenshot-taken",
-                                ScreenshotTakenPayload {
-                                    game_exe: state.exe.clone(),
-                                    screenshot: shot,
-                                },
-                            );
+                    if kb.vkCode == 0x7B {
+                        match capture_window_of(state.pid, &state.exe) {
+                            Ok(shot) => {
+                                let _ = state.app.emit(
+                                    "screenshot-taken",
+                                    ScreenshotTakenPayload {
+                                        game_exe: state.exe.clone(),
+                                        screenshot: shot,
+                                    },
+                                );
+                            }
+                            Err(e) => eprintln!("[screenshot] F12: {}", e),
                         }
-                        Err(e) => eprintln!("[screenshot] F12: {}", e),
+                    } else if let Some(ref boss) = state.boss_key {
+                        if kb.vkCode == boss.vk_code {
+                            let action = boss.action.clone();
+                            let mute = boss.mute;
+                            let pid = state.pid;
+                            // Hide the Libmaly window via frontend event
+                            let _ = state.app.emit("boss-key-pressed", ());
+                            // Execute panic action in background to avoid blocking the hook thread
+                            std::thread::spawn(move || {
+                                win::exec_panic_action(pid, &action, mute);
+                            });
+                        }
                     }
                 }
             }
@@ -259,6 +282,7 @@ pub fn start_hotkey_listener(
     pid: u32,
     game_exe: String,
     app: AppHandle,
+    boss_key: Option<BossKeyConfig>,
     thread_id_tx: mpsc::Sender<u32>,
 ) {
     #[cfg(windows)]
@@ -273,6 +297,7 @@ pub fn start_hotkey_listener(
             pid,
             exe: game_exe,
             app,
+            boss_key,
         });
 
         let thread_id = GetCurrentThreadId();
@@ -447,6 +472,38 @@ mod win {
         GetWindowThreadProcessId, IsWindowVisible, PrintWindow, ReleaseDC, GWL_STYLE,
     };
 
+    pub fn exec_panic_action(pid: u32, action: &str, mute: bool) {
+        if action == "kill" {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .creation_flags(0x08000000)
+                .spawn();
+        } else if action == "hide" {
+            use winapi::um::winuser::{ShowWindow, SW_HIDE};
+            if let Some(hwnd) = find_game_window(pid) {
+                unsafe {
+                    ShowWindow(hwnd, SW_HIDE);
+                }
+            }
+        }
+
+        if mute {
+            unsafe {
+                use winapi::um::winuser::{
+                    keybd_event, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VK_VOLUME_MUTE,
+                };
+                keybd_event(VK_VOLUME_MUTE as u8, 0, KEYEVENTF_EXTENDEDKEY, 0);
+                keybd_event(
+                    VK_VOLUME_MUTE as u8,
+                    0,
+                    KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP,
+                    0,
+                );
+            }
+        }
+    }
+
     // ── Window finder ──────────────────────────────────────────────────────
 
     struct FindData {
@@ -603,7 +660,7 @@ mod win {
             path: out_path.to_string_lossy().to_string(),
             filename,
             timestamp: now,
-        tags: vec![],
+            tags: vec![],
         })
     }
 }

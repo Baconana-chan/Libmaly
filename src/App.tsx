@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "preact/hooks"
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -166,6 +167,14 @@ interface Screenshot {
   tags: string[];
 }
 
+interface HistoryEntry {
+  id: string;
+  date: number;
+  version: string;
+  note: string;
+}
+type GameHistoryMap = Record<string, HistoryEntry[]>;
+
 interface GameCustomization {
   displayName?: string;
   coverUrl?: string;
@@ -235,6 +244,7 @@ const SK_RECENT = "recent-games-v1";
 const SK_ORDER = "custom-order-v1";
 const SK_SESSION_LOG = "session-log-v1";
 const SK_WISHLIST = "wishlist-v1";
+const SK_HISTORY = "game-history-v1";
 
 interface WishlistItem {
   id: string; // usually a URL
@@ -268,6 +278,11 @@ interface AppSettings {
   rssFeeds: { url: string; name: string }[];
   metadataAutoRefetchDays: number;
   autoScreenshotInterval: number;
+  bossKeyEnabled?: boolean;
+  bossKeyCode?: number;
+  bossKeyAction?: "hide" | "kill";
+  bossKeyMuteSystem?: boolean;
+  bossKeyFallbackUrl?: string;
 }
 const DEFAULT_SETTINGS: AppSettings = {
   updateCheckerEnabled: false,
@@ -280,6 +295,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   ],
   metadataAutoRefetchDays: 0,
   autoScreenshotInterval: 0,
+  bossKeyEnabled: false,
+  bossKeyCode: 0x7A, // F11
+  bossKeyAction: "hide",
+  bossKeyMuteSystem: false,
+  bossKeyFallbackUrl: "",
 };
 
 function isGameAdult(meta?: GameMetadata): boolean {
@@ -586,6 +606,72 @@ function DLsiteLoginModal({ onClose, onSuccess }: { onClose: () => void; onSucce
             style={{ background: "#e0534a", color: "#fff" }}>
             {loading && <span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />}
             Sign In
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Metadata Diff Modal ──────────────────────────────────────────────────────
+function MetadataDiffModal({ oldMeta, newMeta, onConfirm, onClose }: {
+  oldMeta: GameMetadata;
+  newMeta: GameMetadata;
+  onConfirm: (logNote: string | null) => void;
+  onClose: () => void;
+}) {
+  const versionChanged = oldMeta.version !== newMeta.version;
+  const oldV = oldMeta.version || "Unknown";
+  const newV = newMeta.version || "Unknown";
+  const [note, setNote] = useState("");
+  const [wantsToLog, setWantsToLog] = useState(versionChanged);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.8)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="rounded-lg p-6 w-[480px] shadow-2xl" style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+        <h2 className="text-lg font-bold mb-4" style={{ color: "#fff" }}>Metadata Update</h2>
+
+        <div className="space-y-3 mb-6">
+          {versionChanged ? (
+            <div className="p-3 rounded" style={{ background: "#2a3f54" }}>
+              <p className="text-sm" style={{ color: "#c6d4df" }}>
+                Version changed: <span className="font-mono text-[#e57373] line-through">{oldV}</span> → <span className="font-mono text-[#6dbf6d] font-bold">{newV}</span>
+              </p>
+            </div>
+          ) : (
+            <div className="p-3 rounded" style={{ background: "#152232" }}>
+              <p className="text-sm" style={{ color: "#8f98a0" }}>
+                No version change detected (remains <span className="font-mono">{newV}</span>). The metadata fields will be refreshed.
+              </p>
+            </div>
+          )}
+
+          <label className="flex items-center gap-2 text-sm" style={{ color: "#c6d4df" }}>
+            <input type="checkbox" checked={wantsToLog} onChange={(e) => setWantsToLog(e.currentTarget.checked)} />
+            Log this update in the game's version history
+          </label>
+
+          {wantsToLog && (
+            <textarea
+              className="w-full h-20 p-2 rounded text-sm outline-none resize-none"
+              style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }}
+              placeholder={`Notes for version ${newV} update (e.g. "Downloaded from F95", "Added new route")...`}
+              value={note}
+              onInput={(e) => setNote((e.target as HTMLTextAreaElement).value)}
+            />
+          )}
+        </div>
+
+        <div className="flex gap-3 justify-end">
+          <button onClick={onClose}
+            className="px-4 py-2 rounded text-sm hover:opacity-80 transition-opacity"
+            style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Cancel</button>
+          <button onClick={() => onConfirm(wantsToLog ? note : null)}
+            className="px-5 py-2 rounded text-sm font-semibold hover:opacity-80 transition-opacity"
+            style={{ background: "#66c0f4", color: "#1a1a1a" }}>
+            Apply Update
           </button>
         </div>
       </div>
@@ -2368,6 +2454,49 @@ function SettingsModal({
                 </label>
               </section>
 
+              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Panic Button (Boss Key)</h3>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }} title="Press a global hotkey to instantly hide the game and open something else.">
+                  <input type="checkbox" checked={appSettings.bossKeyEnabled}
+                    onChange={(e) => onSaveSettings({ ...appSettings, bossKeyEnabled: e.currentTarget.checked })} />
+                  Enable Panic Button
+                </label>
+                {appSettings.bossKeyEnabled && (
+                  <div className="pl-6 space-y-3 mt-2">
+                    <label className="flex items-center gap-2 text-xs" style={{ color: "#8f98a0" }}>
+                      Hotkey:
+                      <select value={appSettings.bossKeyCode || 0x7A}
+                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyCode: parseInt(e.currentTarget.value) })}
+                        className="bg-transparent border rounded px-2 py-1 outline-none text-[#c6d4df]" style={{ borderColor: "#2a475e" }}>
+                        {[...Array(11)].map((_, i) => (
+                          <option key={i} value={0x70 + i} style={{ background: "#152232" }}>F{i + 1}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2 text-xs" style={{ color: "#8f98a0" }}>
+                      Action:
+                      <select value={appSettings.bossKeyAction || "hide"}
+                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyAction: e.currentTarget.value as "hide" | "kill" })}
+                        className="bg-transparent border rounded px-2 py-1 outline-none text-[#c6d4df]" style={{ borderColor: "#2a475e" }}>
+                        <option value="hide" style={{ background: "#152232" }}>Hide Window (Smooth, but audio keeps playing)</option>
+                        <option value="kill" style={{ background: "#152232" }}>Force Close Game (Stops audio instantly)</option>
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2 text-xs" style={{ color: "#8f98a0" }}>
+                      <input type="checkbox" checked={appSettings.bossKeyMuteSystem}
+                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyMuteSystem: e.currentTarget.checked })} />
+                      Also mute system volume (Shows Windows volume overlay)
+                    </label>
+                    <label className="flex items-center gap-2 text-xs" style={{ color: "#8f98a0" }}>
+                      Fallback App / URL:
+                      <input type="text" placeholder="e.g. notepad.exe or https://google.com" className="bg-transparent border rounded px-2 py-1 outline-none flex-1 text-[#c6d4df]"
+                        style={{ borderColor: "#2a475e" }} value={appSettings.bossKeyFallbackUrl || ""}
+                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyFallbackUrl: e.currentTarget.value })} />
+                    </label>
+                  </div>
+                )}
+              </section>
+
               <section className="space-y-4 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
                 <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Export Library</h3>
                 <div className="flex gap-2">
@@ -2543,11 +2672,73 @@ function SettingsModal({
   );
 }
 
+// ─── Version Timeline ─────────────────────────────────────────────────────────
+function VersionTimeline({ history, onAddHistory }: {
+  history: HistoryEntry[];
+  onAddHistory: (v: string, n: string) => void;
+}) {
+  const [isAdding, setIsAdding] = useState(false);
+  const [draftV, setDraftV] = useState("");
+  const [draftN, setDraftN] = useState("");
+
+  const submit = () => {
+    if (!draftV.trim() || !draftN.trim()) return;
+    onAddHistory(draftV.trim(), draftN.trim());
+    setIsAdding(false);
+    setDraftV("");
+    setDraftN("");
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="text-xs uppercase tracking-widest text-[#8f98a0]">Version History</h2>
+        <button onClick={() => setIsAdding(!isAdding)} className="text-xs text-[#66c0f4] hover:underline">
+          {isAdding ? "Cancel" : "+ Log update"}
+        </button>
+      </div>
+
+      {isAdding && (
+        <div className="p-3 rounded mb-4" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
+          <div className="flex gap-2 mb-2">
+            <input type="text" placeholder="Vers" value={draftV} onChange={e => setDraftV(e.currentTarget.value)}
+              className="w-16 px-2 py-1 bg-[#152232] border border-[#1b3a50] rounded text-xs outline-none focus:border-[#66c0f4] text-white" />
+            <input type="text" placeholder="Update notes (e.g. Added patch)" value={draftN} onChange={e => setDraftN(e.currentTarget.value)}
+              onKeyDown={e => e.key === "Enter" && submit()}
+              className="flex-1 px-2 py-1 bg-[#152232] border border-[#1b3a50] rounded text-xs outline-none focus:border-[#66c0f4] text-white" />
+            <button onClick={submit} className="px-3 py-1 bg-[#66c0f4] text-black text-xs font-semibold rounded">Log</button>
+          </div>
+        </div>
+      )}
+
+      {history.length === 0 ? (
+        <p className="text-xs text-[#4a5568] italic">No version history logged yet.</p>
+      ) : (
+        <div className="relative border-l border-[#2a475e] ml-2 pl-4 pb-1">
+          {history.map((h) => (
+            <div key={h.id} className="relative mb-5 last:mb-0 group">
+              {/* timeline dot */}
+              <div className="absolute w-2 h-2 rounded-full bg-[#66c0f4] -left-[21px] top-1 transition-transform group-hover:scale-125" />
+              <div className="flex items-baseline gap-2 mb-0.5">
+                <span className="font-mono text-sm font-bold text-[#e57373]">{h.version}</span>
+                <span className="text-[10px] text-[#4a5568]" title={new Date(h.date).toLocaleString()}>
+                  {timeAgo(h.date)}
+                </span>
+              </div>
+              <p className="text-xs text-[#b8c8d4] leading-relaxed">{h.note}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Game Detail ──────────────────────────────────────────────────────────────
 function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots, isHidden, isFav,
   onPlay, onStop, isRunning, runnerLabel, onDelete, onLinkPage, onOpenF95Login, onClearMeta, onUpdate,
   onTakeScreenshot, onOpenScreenshotsFolder, onUpdateScreenshotTags, onToggleHide, onToggleFav, onOpenCustomize, onSaveCustomization, onOpenNotes, hasNotes, onManageCollections,
-  sessions, onEditSessionNote, appSettings, revealedNsfw, onRevealNsfw }: {
+  sessions, onEditSessionNote, appSettings, revealedNsfw, onRevealNsfw, history, onAddHistory }: {
     game: Game; stat: GameStats; meta?: GameMetadata;
     customization: GameCustomization; f95LoggedIn: boolean;
     screenshots: Screenshot[]; isHidden: boolean; isFav: boolean;
@@ -2560,6 +2751,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
     onOpenNotes: () => void; hasNotes: boolean; onManageCollections: () => void;
     sessions: SessionEntry[]; onEditSessionNote: (entry: SessionEntry) => void;
     appSettings: AppSettings; revealedNsfw: Record<string, boolean>; onRevealNsfw: (path: string) => void;
+    history: HistoryEntry[]; onAddHistory: (version: string, note: string) => void;
   }) {
   const [activeShot, setActiveShot] = useState(0);
   const cover = customization.coverUrl ?? meta?.cover_url;
@@ -2823,6 +3015,10 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
             <section>
               <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Play History</h2>
               <SessionTimeline sessions={sessions} gamePath={game.path} onEditNote={onEditSessionNote} />
+            </section>
+            {/* Version History */}
+            <section>
+              <VersionTimeline history={history} onAddHistory={onAddHistory} />
             </section>
           </div>
 
@@ -3699,6 +3895,15 @@ export default function App() {
   /** Wishlisted unowned games */
   const [wishlist, setWishlist] = useState<WishlistItem[]>(() => loadCache(SK_WISHLIST, []));
 
+  /** Game version history */
+  const [history, setHistory] = useState<GameHistoryMap>(() => loadCache(SK_HISTORY, {}));
+  /** Pending metadata update requiring confirmation */
+  const [pendingMetaUpdate, setPendingMetaUpdate] = useState<{
+    path: string;
+    oldMeta: GameMetadata;
+    newMeta: GameMetadata;
+  } | null>(null);
+
   const handleToggleWishlist = useCallback((item: Omit<WishlistItem, 'addedAt'>) => {
     setWishlist(prev => {
       const exists = prev.find(w => w.id === item.id);
@@ -3771,10 +3976,25 @@ export default function App() {
         [game_exe]: [screenshot, ...(prev[game_exe] ?? [])],
       }));
     });
+    const unlistenBoss = listen("boss-key-pressed", async () => {
+      // 1. Un-focus and minimize the main app window
+      try { await getCurrentWindow().minimize(); } catch (e) { console.error("minimize err", e); }
+      // 2. Clear running state (if it was killed, native toast will also fire but we can preempt)
+      if (appSettingsRef.current.bossKeyAction === "kill") {
+        setRunningGamePath(null);
+      }
+      // 3. Open fallback url / app if specified
+      const fallback = appSettingsRef.current.bossKeyFallbackUrl;
+      if (fallback && fallback.trim() !== "") {
+        openUrl(fallback).catch(console.error);
+      }
+    });
+
     return () => {
       unlistenFinished.then((f) => f());
       unlistenStarted.then((f) => f());
       unlistenShot.then((f) => f());
+      unlistenBoss.then((f) => f());
     };
   }, []);
 
@@ -4106,8 +4326,27 @@ export default function App() {
 
   const handleMetaFetched = (meta: GameMetadata) => {
     if (!selected) return;
-    const next = { ...metadata, [selected.path]: { ...meta, fetchedAt: Date.now() } };
-    setMetadata(next); saveCache(SK_META, next);
+    const oldMeta = metadata[selected.path];
+    if (oldMeta) {
+      setPendingMetaUpdate({ path: selected.path, oldMeta, newMeta: meta });
+    } else {
+      const next = { ...metadata, [selected.path]: { ...meta, fetchedAt: Date.now() } };
+      setMetadata(next);
+      saveCache(SK_META, next);
+
+      if (meta.version) {
+        setHistory(prev => {
+          const list = prev[selected.path] || [];
+          if (list.length === 0) {
+            const nextList = [{ id: String(Date.now()), date: Date.now(), version: meta.version!, note: "Initial link" }];
+            const n = { ...prev, [selected.path]: nextList };
+            saveCache(SK_HISTORY, n);
+            return n;
+          }
+          return prev;
+        });
+      }
+    }
   };
 
   const handleBatchMetadataRefresh = async () => {
@@ -5294,6 +5533,16 @@ export default function App() {
             onUpdateScreenshotTags={handleUpdateScreenshotTags}
             sessions={sessionLog}
             onEditSessionNote={handleEditSessionNote}
+            history={history[selected.path] || []}
+            onAddHistory={(version, note) => {
+              setHistory(prev => {
+                const list = prev[selected.path] || [];
+                const nextList = [{ id: String(Date.now()), date: Date.now(), version, note }, ...list];
+                const n = { ...prev, [selected.path]: nextList };
+                saveCache(SK_HISTORY, n);
+                return n;
+              });
+            }}
           />
         )}
       </main>
@@ -5382,6 +5631,30 @@ export default function App() {
             url={appUpdate.url}
             downloadUrl={appUpdate.downloadUrl}
             onClose={() => setShowAppUpdateModal(false)}
+          />
+        )
+      }
+      {
+        pendingMetaUpdate && (
+          <MetadataDiffModal
+            oldMeta={pendingMetaUpdate.oldMeta}
+            newMeta={pendingMetaUpdate.newMeta}
+            onConfirm={(logNote) => {
+              const { path, newMeta } = pendingMetaUpdate;
+              const next = { ...metadata, [path]: { ...newMeta, fetchedAt: Date.now() } };
+              setMetadata(next); saveCache(SK_META, next);
+              if (logNote) {
+                setHistory(prev => {
+                  const list = prev[path] || [];
+                  const nextList = [{ id: String(Date.now()), date: Date.now(), version: newMeta.version || "Unknown", note: logNote }, ...list];
+                  const n = { ...prev, [path]: nextList };
+                  saveCache(SK_HISTORY, n);
+                  return n;
+                });
+              }
+              setPendingMetaUpdate(null);
+            }}
+            onClose={() => setPendingMetaUpdate(null)}
           />
         )
       }

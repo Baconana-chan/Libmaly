@@ -7,39 +7,26 @@
 - [ ] **Themes** — Dark (current), Light, OLED-black; accent colour picker
 - [ ] **Theme scheduler** — auto-switch Light ↔ Dark based on time of day or OS setting
 - [ ] **Back / Forward navigation** — browser-style history for jumping between views
-- [x] **Fullscreen cover wall** — kiosk mode hiding all chrome; just the game grid
-- [x] **Export library as HTML/CSV** — sharable static page or spreadsheet of your collection
 
 ---
 
 ## 📊 Stats & Tracking
 
-- [x] **All-time stats page** — total hours, busiest day of week, longest single session, most-launched game
-- [x] **Game completion status** — mark games as Playing / Completed / On Hold / Dropped; filter sidebar by status
-- [x] **Session time budget** — optional daily/session time limit per game with a toast warning when reached
+
 
 ---
 
 ## 🌐 Metadata
 
-- [x] **Auto-link by name** — fuzzy-match game folder name against F95 / DLsite and suggest a link without manual URL entry
-- [x] **Batch metadata refresh** — "Update all linked games" button that re-fetches all entries in the background
-- [ ] **Metadata diff view** — when re-fetching, show "changed: version 0.9 → 1.0" before applying
-- [x] **Cache expiry** — auto-re-fetch metadata older than N days (configurable)
 - [ ] **VNDB support** — fetch metadata from vndb.org for visual novels (cover, tags, relations, release date)
 - [ ] **MangaGamer / Johren / Fakku support** — additional store scrapers
 - [ ] **Developer grouping** — sidebar section "By Developer"; click to filter all games from one circle/studio
-- [x] **Custom user tags** — free-form tags beyond the scraped ones; filterable in sidebar
-- [x] **Wishlist** — add un-owned games with a link and release status; separate sidebar section
-- [ ] **Game version history** — log each time you update a game (date + note); shown as timeline entries
 
 ---
 
 ## 🖼️ Screenshots
 
 - [ ] **Non-Windows screenshot** — global hotkey via X11/Wayland on Linux; CGWindow on macOS
-- [x] **Auto-screenshot timer** — periodic screenshot every N minutes while a game runs
-- [x] **Screenshot tagging** — label screenshots ("ending", "bug", "funny moment"); filterable gallery
 - [ ] **Screenshot annotation** — simple draw / text overlay before saving
 - [ ] **Export gallery** — zip all screenshots for a game and save / share
 
@@ -124,6 +111,8 @@
 - [x] **Sidebar badge** — total hidden count next to "Hidden" filter chip
 - [x] **Animated cover placeholder** — shimmer skeleton while metadata is loading
 - [x] **Scroll-to-selected** — sidebar scrolls to keep selected game visible
+- [x] **Fullscreen cover wall** — kiosk mode hiding all chrome; just the game grid
+- [x] **Export library as HTML/CSV** — sharable static page or spreadsheet of your collection
 
 ### Stats & Tracking
 - [x] **Play history log** — timestamped session log per game shown as a timeline (max 50 entries)
@@ -132,11 +121,21 @@
 - [x] **Most played this week** — HomeView widget with top-5 progress-bar ranking
 - [x] **Import playtime from Steam** — reads `localconfig.vdf`, fuzzy-matches by name, merges playtime
 - [x] **Session notes** — toast after each session (≥30 s); editable inline from Play History timeline
+- [x] **All-time stats page** — total hours, busiest day of week, longest single session, most-launched game
+- [x] **Game completion status** — mark games as Playing / Completed / On Hold / Dropped; filter sidebar by status
+- [x] **Session time budget** — optional daily/session time limit per game with a toast warning when reached
 
 ### Metadata
 - [x] **F95Zone scraper** — cover, tags, version, developer, screenshots
 - [x] **DLsite scraper** — cover, tags, version, circle name, rating
 - [x] **DLsite age-gate cookies** — manual cookie/session support; no login flow required
+- [x] **Auto-link by name** — fuzzy-match game folder name against F95 / DLsite and suggest a link without manual URL entry
+- [x] **Batch metadata refresh** — "Update all linked games" button that re-fetches all entries in the background
+- [x] **Cache expiry** — auto-re-fetch metadata older than N days (configurable)
+- [x] **Custom user tags** — free-form tags beyond the scraped ones; filterable in sidebar
+- [x] **Wishlist** — add un-owned games with a link and release status; separate sidebar section
+- [x] **Metadata diff view** — when re-fetching, show "changed: version 0.9 → 1.0" before applying
+- [x] **Game version history** — log each time you update a game (date + note); shown as timeline entries
 
 ### Notifications & Tray
 - [x] **Update checker** — notification when a linked F95/DLsite game has a new version posted
@@ -150,6 +149,8 @@
 - [x] **F12 global hotkey** — capture foreground window while any game is running
 - [x] **Screenshot gallery** — per-game gallery with thumbnails in the detail panel
 - [x] **Screenshot deletion** — remove individual screenshots from the gallery
+- [x] **Auto-screenshot timer** — periodic screenshot every N minutes while a game runs
+- [x] **Screenshot tagging** — label screenshots ("ending", "bug", "funny moment"); filterable gallery
 
 ### Wine / Proton
 - [x] **Global Wine/Proton config** — set Wine binary and prefix globally; used for all non-Windows games

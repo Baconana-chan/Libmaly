@@ -387,6 +387,7 @@ fn launch_game(
     runner: Option<String>,
     prefix: Option<String>,
     args: Option<String>,
+    boss_key: Option<screenshot::BossKeyConfig>,
 ) -> Result<(), String> {
     let path_clone = path.clone();
     thread::spawn(move || {
@@ -471,8 +472,9 @@ fn launch_game(
                 let (tx, rx) = std::sync::mpsc::channel::<u32>();
                 let exe_hk = path_clone.clone();
                 let app_hk = app.clone();
+                let boss_hk = boss_key.clone();
                 thread::spawn(move || {
-                    screenshot::start_hotkey_listener(pid, exe_hk, app_hk, tx);
+                    screenshot::start_hotkey_listener(pid, exe_hk, app_hk, boss_hk, tx);
                 });
                 let hotkey_thread_id = rx.recv().unwrap_or(0);
 
@@ -1204,7 +1206,7 @@ pub fn run() {
                                     let path = game.path.clone();
                                     let app2 = app.clone();
                                     thread::spawn(move || {
-                                        let _ = launch_game(app2, path, None, None, None);
+                                        let _ = launch_game(app2, path, None, None, None, None);
                                     });
                                 }
                             }

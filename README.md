@@ -45,6 +45,7 @@ Designed for managing local game collections — with metadata from F95zone & DL
 ### 🔔 Notifications & System Tray
 - Closing the window minimises to tray instead of quitting
 - **Startup with Windows** — option to launch minimised to the tray automatically on login
+- **Panic Button (Boss Key)** — customizable global hotkey (e.g. F11) to instantly hide or forcibly close the active game, optionally mute system audio, and launch a fallback application.
 - Tray menu shows the **5 most recently launched games** for quick-launch without opening the UI
 - **Live Tray Tooltip** — hover the tray icon to see the currently-running game and live session duration
 - **Session End Toast** — native system notification showing total playtime when a game exits

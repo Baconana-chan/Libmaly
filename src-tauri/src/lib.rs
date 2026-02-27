@@ -158,7 +158,6 @@ fn dir_has_files(dir: &Path) -> bool {
 fn detect_save_dirs(game_path: &str) -> Vec<PathBuf> {
     let game = PathBuf::from(game_path);
     let variants = name_variants_from_game_path(&game);
-    let variants_lc: Vec<String> = variants.iter().map(|v| v.to_lowercase()).collect();
 
     let mut candidates = Vec::<PathBuf>::new();
     if let Some(parent) = game.parent() {
@@ -178,6 +177,7 @@ fn detect_save_dirs(game_path: &str) -> Vec<PathBuf> {
 
     #[cfg(windows)]
     {
+        let variants_lc: Vec<String> = variants.iter().map(|v| v.to_lowercase()).collect();
         if let Ok(appdata) = std::env::var("APPDATA") {
             let appdata = PathBuf::from(appdata);
             for v in &variants {

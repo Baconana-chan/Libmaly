@@ -361,7 +361,7 @@ fn detect_wine_runners() -> Vec<WineRunner> {
     #[cfg(not(windows))]
     {
         macro_rules! push_runner {
-            ($name:expr, $path:expr, $kind:expr, $flavor:expr) => {{
+            ($name:expr, $path:expr, $kind:expr, $flavor:expr $(,)?) => {{
                 let path: String = $path;
                 if !path.is_empty() && seen_paths.insert(path.clone()) {
                     runners.push(WineRunner {

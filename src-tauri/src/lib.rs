@@ -514,7 +514,7 @@ fn detect_prefix_graphics(prefix: &std::path::Path) -> (bool, bool) {
 fn list_wine_prefixes() -> Vec<PrefixInfo> {
     #[cfg(windows)]
     {
-        return Vec::new();
+        Vec::new()
     }
     #[cfg(not(windows))]
     {
@@ -626,7 +626,7 @@ fn create_wine_prefix(path: String, runner: Option<String>) -> Result<(), String
     #[cfg(windows)]
     {
         let _ = (path, runner);
-        return Err("Wine prefixes are not supported on Windows".to_string());
+        Err("Wine prefixes are not supported on Windows".to_string())
     }
     #[cfg(not(windows))]
     {
@@ -675,7 +675,7 @@ fn delete_wine_prefix(path: String) -> Result<(), String> {
     #[cfg(windows)]
     {
         let _ = path;
-        return Err("Wine prefixes are not supported on Windows".to_string());
+        Err("Wine prefixes are not supported on Windows".to_string())
     }
     #[cfg(not(windows))]
     {
@@ -728,7 +728,7 @@ fn run_winetricks(prefix: String, verbs: Vec<String>) -> Result<String, String> 
     #[cfg(windows)]
     {
         let _ = (prefix, verbs);
-        return Err("Winetricks is not available on Windows".to_string());
+        Err("Winetricks is not available on Windows".to_string())
     }
     #[cfg(not(windows))]
     {
@@ -745,7 +745,7 @@ fn install_dxvk_vkd3d(
     #[cfg(windows)]
     {
         let _ = (prefix, install_dxvk, install_vkd3d);
-        return Err("DXVK/VKD3D installer is not available on Windows".to_string());
+        Err("DXVK/VKD3D installer is not available on Windows".to_string())
     }
     #[cfg(not(windows))]
     {
@@ -792,7 +792,7 @@ fn extract_yaml_value(source: &str, keys: &[&str]) -> Option<String> {
 fn import_lutris_games() -> Vec<LutrisGameEntry> {
     #[cfg(windows)]
     {
-        return Vec::new();
+        Vec::new()
     }
     #[cfg(not(windows))]
     {

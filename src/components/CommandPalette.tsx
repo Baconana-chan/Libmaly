@@ -19,6 +19,10 @@ export function CommandPalette({
   metadata,
   notes,
   onSelect,
+  onBack,
+  onForward,
+  canGoBack,
+  canGoForward,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -26,6 +30,10 @@ export function CommandPalette({
   metadata: Record<string, MetaLite>;
   notes: Record<string, string>;
   onSelect: (g: GameLite) => void;
+  onBack: () => void;
+  onForward: () => void;
+  canGoBack: boolean;
+  canGoForward: boolean;
 }) {
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -66,18 +74,36 @@ export function CommandPalette({
     >
       <div
         className="w-[600px] rounded-lg shadow-2xl overflow-hidden flex flex-col"
-        style={{ background: "#1b2838", border: "1px solid #2a475e" }}
+        style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
       >
         <div
           className="flex items-center px-4 py-3 border-b"
-          style={{ borderColor: "#1e3a50" }}
+          style={{ borderColor: "var(--color-border-soft)" }}
         >
+          <button
+            onClick={onBack}
+            disabled={!canGoBack}
+            className="w-7 h-7 rounded text-sm disabled:opacity-40"
+            style={{ color: "var(--color-text-muted)" }}
+            title="Back (Alt+Left)"
+          >
+            ←
+          </button>
+          <button
+            onClick={onForward}
+            disabled={!canGoForward}
+            className="w-7 h-7 rounded text-sm disabled:opacity-40"
+            style={{ color: "var(--color-text-muted)" }}
+            title="Forward (Alt+Right)"
+          >
+            →
+          </button>
           <svg
             width="18"
             height="18"
             viewBox="0 0 24 24"
             fill="none"
-            stroke="#66c0f4"
+            stroke="var(--color-accent)"
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -89,7 +115,7 @@ export function CommandPalette({
             ref={inputRef}
             type="text"
             className="flex-1 bg-transparent px-3 text-[15px] outline-none"
-            style={{ color: "#fff" }}
+            style={{ color: "var(--color-white)" }}
             placeholder="Search games, tags, developers, notes... (Ctrl+K)"
             value={query}
             onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
@@ -108,20 +134,20 @@ export function CommandPalette({
         {results.length > 0 && (
           <div
             className="py-2 max-h-[400px] overflow-y-auto"
-            style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}
+            style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}
           >
             {results.map((g) => (
               <button
                 key={g.path}
-                className="w-full flex items-center gap-3 px-4 py-2 hover:bg-[#2a475e] text-left transition-colors"
+                className="w-full flex items-center gap-3 px-4 py-2 hover:bg-[var(--color-border)] text-left transition-colors"
                 onClick={() => {
                   onSelect(g);
                   onClose();
                 }}
               >
                 <div
-                  className="w-8 h-8 rounded shrink-0 bg-[#0d1b2a] border border-[#1e3a50] overflow-hidden flex items-center justify-center font-bold text-xs"
-                  style={{ color: "#fff" }}
+                  className="w-8 h-8 rounded shrink-0 bg-[var(--color-bg-code)] border border-[var(--color-border-soft)] overflow-hidden flex items-center justify-center font-bold text-xs"
+                  style={{ color: "var(--color-white)" }}
                 >
                   {metadata[g.path]?.cover_url ? (
                     <img src={metadata[g.path].cover_url} className="w-full h-full object-cover" alt="" />
@@ -130,10 +156,10 @@ export function CommandPalette({
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold truncate" style={{ color: "#c6d4df" }}>
+                  <p className="text-sm font-semibold truncate" style={{ color: "var(--color-text)" }}>
                     {metadata[g.path]?.title ?? g.name}
                   </p>
-                  <p className="text-[10px] truncate" style={{ color: "#8f98a0" }}>
+                  <p className="text-[10px] truncate" style={{ color: "var(--color-text-muted)" }}>
                     {metadata[g.path]?.developer || "Unknown Developer"}
                     {metadata[g.path]?.tags?.length
                       ? ` · ${metadata[g.path]?.tags?.slice(0, 3).join(", ")}`
@@ -145,7 +171,7 @@ export function CommandPalette({
           </div>
         )}
         {query.trim() && results.length === 0 && (
-          <div className="py-8 text-center text-sm" style={{ color: "#8f98a0" }}>
+          <div className="py-8 text-center text-sm" style={{ color: "var(--color-text-muted)" }}>
             No results found for "{query}"
           </div>
         )}
@@ -153,3 +179,4 @@ export function CommandPalette({
     </div>
   );
 }
+

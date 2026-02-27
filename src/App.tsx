@@ -203,6 +203,10 @@ interface HistoryEntry {
   note: string;
 }
 type GameHistoryMap = Record<string, HistoryEntry[]>;
+type NavEntry = {
+  tab: "library" | "feed" | "stats";
+  selectedPath: string | null;
+};
 
 interface GameCustomization {
   displayName?: string;
@@ -332,6 +336,13 @@ interface AppSettings {
   sessionToastEnabled: boolean;
   trayTooltipEnabled: boolean;
   startupWithWindows: boolean;
+  themeMode: "dark" | "light" | "oled";
+  themeScheduleMode: "manual" | "os" | "time";
+  dayThemeMode: "light" | "dark";
+  nightThemeMode: "dark" | "oled";
+  lightStartHour: number;
+  darkStartHour: number;
+  accentColor: string;
   blurNsfwContent: boolean;
   rssFeeds: { url: string; name: string }[];
   metadataAutoRefetchDays: number;
@@ -347,6 +358,13 @@ const DEFAULT_SETTINGS: AppSettings = {
   sessionToastEnabled: false,
   trayTooltipEnabled: false,
   startupWithWindows: false,
+  themeMode: "dark",
+  themeScheduleMode: "manual",
+  dayThemeMode: "light",
+  nightThemeMode: "dark",
+  lightStartHour: 7,
+  darkStartHour: 19,
+  accentColor: "#66c0f4",
   blurNsfwContent: true,
   rssFeeds: [
     { url: "https://f95zone.to/sam/latest_alpha/latest_data.php?cmd=rss&cat=games", name: "F95zone Latest" }
@@ -362,7 +380,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 
 
-const COLLECTION_COLORS = ["#66c0f4", "#c8a951", "#a170c8", "#e8734a", "#5ba85b", "#d45252", "#4a8ee8", "#e85480"];
+const COLLECTION_COLORS = ["var(--color-accent)", "var(--color-warning)", "#a170c8", "#e8734a", "#5ba85b", "#d45252", "#4a8ee8", "#e85480"];
 
 interface Collection {
   id: string;
@@ -380,6 +398,23 @@ function loadCache<T>(key: string, fallback: T): T {
   catch { return fallback; }
 }
 function saveCache(key: string, val: unknown) { localStorage.setItem(key, JSON.stringify(val)); }
+
+function normalizeHexColor(input: string, fallback: string) {
+  const x = (input || "").trim();
+  const hex = x.startsWith("#") ? x : `#${x}`;
+  return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex.toLowerCase() : fallback;
+}
+
+function shiftHexColor(hex: string, amount: number) {
+  const safe = normalizeHexColor(hex, "#66c0f4");
+  const r = parseInt(safe.slice(1, 3), 16);
+  const g = parseInt(safe.slice(3, 5), 16);
+  const b = parseInt(safe.slice(5, 7), 16);
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+  const toHex = (v: number) => clamp(v).toString(16).padStart(2, "0");
+  const factor = amount >= 0 ? 1 + amount : 1 - Math.abs(amount);
+  return `#${toHex(r * factor)}${toHex(g * factor)}${toHex(b * factor)}`;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatTime(s: number) {
@@ -453,34 +488,34 @@ function F95LoginModal({ onClose, onSuccess }: { onClose: () => void; onSuccess:
     <div className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.8)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+      <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
         <div className="flex items-center gap-3 mb-4">
           <div className="w-8 h-8 rounded flex items-center justify-center font-bold text-sm"
-            style={{ background: "#c8a951", color: "#1a1a1a" }}>F95</div>
-          <h2 className="text-lg font-bold" style={{ color: "#fff" }}>Sign in to F95zone</h2>
+            style={{ background: "var(--color-warning)", color: "var(--color-black-strong)" }}>F95</div>
+          <h2 className="text-lg font-bold" style={{ color: "var(--color-white)" }}>Sign in to F95zone</h2>
         </div>
-        <p className="text-xs mb-4" style={{ color: "#8f98a0" }}>
+        <p className="text-xs mb-4" style={{ color: "var(--color-text-muted)" }}>
           Logging in allows fetching restricted metadata (adult content, spoilers, etc.).
         </p>
         <div className="space-y-3">
           <input type="text" placeholder="Username" value={user}
             onInput={(e) => setUser((e.target as HTMLInputElement).value)}
             className="w-full px-3 py-2 rounded text-sm outline-none"
-            style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
           <input type="password" placeholder="Password" value={pass}
             onInput={(e) => setPass((e.target as HTMLInputElement).value)}
             onKeyDown={(e) => e.key === "Enter" && doLogin()}
             className="w-full px-3 py-2 rounded text-sm outline-none"
-            style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
         </div>
-        {error && <p className="mt-2 text-xs" style={{ color: "#e57373" }}>{error}</p>}
+        {error && <p className="mt-2 text-xs" style={{ color: "var(--color-danger)" }}>{error}</p>}
         <div className="flex gap-3 justify-end mt-5">
           <button onClick={onClose}
             className="px-4 py-2 rounded text-sm"
-            style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Cancel</button>
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
           <button onClick={doLogin} disabled={loading || !user || !pass}
             className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
-            style={{ background: "#c8a951", color: "#1a1a1a" }}>
+            style={{ background: "var(--color-warning)", color: "var(--color-black-strong)" }}>
             {loading && <span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />}
             Sign In
           </button>
@@ -512,43 +547,43 @@ function DLsiteLoginModal({ onClose, onSuccess }: { onClose: () => void; onSucce
     <div className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.8)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+      <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
         <div className="flex items-center gap-3 mb-4">
           <div className="w-8 h-8 rounded flex items-center justify-center font-bold text-[11px]"
-            style={{ background: "#e0534a", color: "#fff" }}>DL</div>
-          <h2 className="text-lg font-bold" style={{ color: "#fff" }}>Sign in to DLsite</h2>
+            style={{ background: "var(--color-danger-strong)", color: "var(--color-white)" }}>DL</div>
+          <h2 className="text-lg font-bold" style={{ color: "var(--color-white)" }}>Sign in to DLsite</h2>
         </div>
-        <p className="text-xs mb-1" style={{ color: "#8f98a0" }}>
+        <p className="text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>
           Logging in unlocks age-gated product pages, so metadata can be fetched without the age-gate redirect.
         </p>
-        <p className="text-xs mb-4" style={{ color: "#4a5568" }}>
+        <p className="text-xs mb-4" style={{ color: "var(--color-text-dim)" }}>
           Your credentials are sent directly to DLsite (login.dlsite.com) and are never stored by LIBMALY.
         </p>
         <div className="space-y-3">
           <div>
-            <label className="text-[10px] uppercase tracking-widest block mb-1" style={{ color: "#4a5568" }}>Login ID (email or username)</label>
+            <label className="text-[10px] uppercase tracking-widest block mb-1" style={{ color: "var(--color-text-dim)" }}>Login ID (email or username)</label>
             <input type="text" placeholder="Login ID" value={loginId}
               onInput={(e) => setLoginId((e.target as HTMLInputElement).value)}
               className="w-full px-3 py-2 rounded text-sm outline-none"
-              style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+              style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
           </div>
           <div>
-            <label className="text-[10px] uppercase tracking-widest block mb-1" style={{ color: "#4a5568" }}>Password</label>
+            <label className="text-[10px] uppercase tracking-widest block mb-1" style={{ color: "var(--color-text-dim)" }}>Password</label>
             <input type="password" placeholder="Password" value={pass}
               onInput={(e) => setPass((e.target as HTMLInputElement).value)}
               onKeyDown={(e) => e.key === "Enter" && doLogin()}
               className="w-full px-3 py-2 rounded text-sm outline-none"
-              style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+              style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
           </div>
         </div>
-        {error && <p className="mt-2 text-xs" style={{ color: "#e57373" }}>{error}</p>}
+        {error && <p className="mt-2 text-xs" style={{ color: "var(--color-danger)" }}>{error}</p>}
         <div className="flex gap-3 justify-end mt-5">
           <button onClick={onClose}
             className="px-4 py-2 rounded text-sm"
-            style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Cancel</button>
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
           <button onClick={doLogin} disabled={loading || !loginId || !pass}
             className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
-            style={{ background: "#e0534a", color: "#fff" }}>
+            style={{ background: "var(--color-danger-strong)", color: "var(--color-white)" }}>
             {loading && <span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />}
             Sign In
           </button>
@@ -575,25 +610,25 @@ function MetadataDiffModal({ oldMeta, newMeta, onConfirm, onClose }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.8)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="rounded-lg p-6 w-[480px] shadow-2xl" style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
-        <h2 className="text-lg font-bold mb-4" style={{ color: "#fff" }}>Metadata Update</h2>
+      <div className="rounded-lg p-6 w-[480px] shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <h2 className="text-lg font-bold mb-4" style={{ color: "var(--color-white)" }}>Metadata Update</h2>
 
         <div className="space-y-3 mb-6">
           {versionChanged ? (
-            <div className="p-3 rounded" style={{ background: "#2a3f54" }}>
-              <p className="text-sm" style={{ color: "#c6d4df" }}>
-                Version changed: <span className="font-mono text-[#e57373] line-through">{oldV}</span> → <span className="font-mono text-[#6dbf6d] font-bold">{newV}</span>
+            <div className="p-3 rounded" style={{ background: "var(--color-panel-3)" }}>
+              <p className="text-sm" style={{ color: "var(--color-text)" }}>
+                Version changed: <span className="font-mono text-[var(--color-danger)] line-through">{oldV}</span> → <span className="font-mono text-[var(--color-success)] font-bold">{newV}</span>
               </p>
             </div>
           ) : (
-            <div className="p-3 rounded" style={{ background: "#152232" }}>
-              <p className="text-sm" style={{ color: "#8f98a0" }}>
+            <div className="p-3 rounded" style={{ background: "var(--color-panel-2)" }}>
+              <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
                 No version change detected (remains <span className="font-mono">{newV}</span>). The metadata fields will be refreshed.
               </p>
             </div>
           )}
 
-          <label className="flex items-center gap-2 text-sm" style={{ color: "#c6d4df" }}>
+          <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text)" }}>
             <input type="checkbox" checked={wantsToLog} onChange={(e) => setWantsToLog(e.currentTarget.checked)} />
             Log this update in the game's version history
           </label>
@@ -601,7 +636,7 @@ function MetadataDiffModal({ oldMeta, newMeta, onConfirm, onClose }: {
           {wantsToLog && (
             <textarea
               className="w-full h-20 p-2 rounded text-sm outline-none resize-none"
-              style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }}
+              style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
               placeholder={`Notes for version ${newV} update (e.g. "Downloaded from F95", "Added new route")...`}
               value={note}
               onInput={(e) => setNote((e.target as HTMLTextAreaElement).value)}
@@ -612,10 +647,10 @@ function MetadataDiffModal({ oldMeta, newMeta, onConfirm, onClose }: {
         <div className="flex gap-3 justify-end">
           <button onClick={onClose}
             className="px-4 py-2 rounded text-sm hover:opacity-80 transition-opacity"
-            style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Cancel</button>
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
           <button onClick={() => onConfirm(wantsToLog ? note : null)}
             className="px-5 py-2 rounded text-sm font-semibold hover:opacity-80 transition-opacity"
-            style={{ background: "#66c0f4", color: "#1a1a1a" }}>
+            style={{ background: "var(--color-accent)", color: "var(--color-black-strong)" }}>
             Apply Update
           </button>
         </div>
@@ -673,18 +708,18 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
     <div className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.8)" }}
       onClick={(e) => { if (e.target === e.currentTarget && !loading) onClose(); }}>
-      <div className="rounded-lg p-6 w-[480px] shadow-2xl" style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
-        <h2 className="text-lg font-bold mb-1" style={{ color: "#fff" }}>Link a Game Page</h2>
-        <p className="text-xs mb-4" style={{ color: "#8f98a0" }}>
+      <div className="rounded-lg p-6 w-[480px] shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <h2 className="text-lg font-bold mb-1" style={{ color: "var(--color-white)" }}>Link a Game Page</h2>
+        <p className="text-xs mb-4" style={{ color: "var(--color-text-muted)" }}>
           Paste an F95zone thread URL or DLsite product page URL to fetch cover art,
-          description and tags for <b style={{ color: "#c6d4df" }}>{gameName}</b>.
+          description and tags for <b style={{ color: "var(--color-text)" }}>{gameName}</b>.
         </p>
         <div className="flex gap-2 mb-4">
           {(["f95", "dlsite"] as const).map((s) => (
             <span key={s} className="px-2 py-0.5 rounded text-xs font-semibold"
               style={{
-                background: src === s ? (s === "f95" ? "#c8a951" : "#e0534a") : "#1e3a50",
-                color: src === s ? (s === "f95" ? "#1a1a1a" : "#fff") : "#8f98a0",
+                background: src === s ? (s === "f95" ? "var(--color-warning)" : "var(--color-danger-strong)") : "var(--color-border-soft)",
+                color: src === s ? (s === "f95" ? "var(--color-black-strong)" : "var(--color-white)") : "var(--color-text-muted)",
               }}>
               {s === "f95" ? "F95zone" : "DLsite"}
             </span>
@@ -696,66 +731,66 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
           onInput={(e) => { setUrl((e.target as HTMLInputElement).value); setError(""); }}
           onKeyDown={(e) => e.key === "Enter" && doFetch()}
           className="w-full px-3 py-2 rounded text-sm outline-none mb-3"
-          style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+          style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
         {src === "f95" && !f95LoggedIn && (
           <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded"
-            style={{ background: "#2a1f00", border: "1px solid #5a4200" }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#c8a951" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            style={{ background: "var(--color-warning-bg-2)", border: "1px solid var(--color-warning-border)" }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
             </svg>
-            <span className="text-xs flex-1" style={{ color: "#c8a951" }}>Some F95zone content requires login.</span>
-            <button onClick={onOpenF95Login} className="text-xs underline" style={{ color: "#c8a951" }}>Sign in</button>
+            <span className="text-xs flex-1" style={{ color: "var(--color-warning)" }}>Some F95zone content requires login.</span>
+            <button onClick={onOpenF95Login} className="text-xs underline" style={{ color: "var(--color-warning)" }}>Sign in</button>
           </div>
         )}
         {!url && (
           <div className="mb-4">
             <div className="flex items-center gap-2 mb-2">
-              <p className="text-[10px] uppercase text-[#8f98a0] font-bold tracking-widest flex-1">Auto-Link Suggestions</p>
+              <p className="text-[10px] uppercase text-[var(--color-text-muted)] font-bold tracking-widest flex-1">Auto-Link Suggestions</p>
               <input type="text" value={query} onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
-                className="bg-[#152232] border border-[#2a475e] text-[11px] px-2 py-0.5 rounded outline-none text-[#c6d4df]"
+                className="bg-[var(--color-panel-2)] border border-[var(--color-border)] text-[11px] px-2 py-0.5 rounded outline-none text-[var(--color-text)]"
                 placeholder="Search query..."
                 onKeyDown={(e) => e.key === "Enter" && fetchSuggestions()} />
-              <button onClick={fetchSuggestions} disabled={isLoadingSuggestions} className="bg-[#2a475e] hover:bg-[#3d5a73] text-[11px] px-2 py-0.5 rounded text-[#c6d4df] disabled:opacity-50">
+              <button onClick={fetchSuggestions} disabled={isLoadingSuggestions} className="bg-[var(--color-border)] hover:bg-[var(--color-border-strong)] text-[11px] px-2 py-0.5 rounded text-[var(--color-text)] disabled:opacity-50">
                 {isLoadingSuggestions ? "Searching…" : "Search"}
               </button>
             </div>
             {isLoadingSuggestions ? (
-              <p className="text-xs text-[#8f98a0]">Searching for matches...</p>
+              <p className="text-xs text-[var(--color-text-muted)]">Searching for matches...</p>
             ) : suggestions && suggestions.length > 0 ? (
               <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
                 {suggestions.map((s) => (
                   <div key={s.url} onClick={() => doFetch(s.url)}
                     className="group flex gap-3 p-2 rounded cursor-pointer transition-colors"
-                    style={{ background: "#152232", border: "1px solid #1e3a50" }}
-                    onMouseEnter={e => e.currentTarget.style.background = "#1b2838"}
-                    onMouseLeave={e => e.currentTarget.style.background = "#152232"}>
+                    style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "var(--color-bg)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "var(--color-panel-2)"}>
                     {s.cover_url ? (
                       <img src={s.cover_url} alt="" className="w-10 h-10 object-cover rounded" />
                     ) : (
-                      <div className="w-10 h-10 rounded flex items-center justify-center font-bold" style={{ background: "#1e2d3d", color: "#66c0f4" }}>
+                      <div className="w-10 h-10 rounded flex items-center justify-center font-bold" style={{ background: "var(--color-panel)", color: "var(--color-accent)" }}>
                         {s.source[0]}
                       </div>
                     )}
                     <div className="flex flex-col flex-1 min-w-0 justify-center">
-                      <p className="text-xs text-[#c6d4df] truncate font-medium group-hover:text-[#fff]" title={s.title}>{s.title}</p>
-                      <p className="text-[10px] text-[#8f98a0] uppercase">{s.source}</p>
+                      <p className="text-xs text-[var(--color-text)] truncate font-medium group-hover:text-[var(--color-white)]" title={s.title}>{s.title}</p>
+                      <p className="text-[10px] text-[var(--color-text-muted)] uppercase">{s.source}</p>
                     </div>
                   </div>
                 ))}
               </div>
             ) : suggestions && suggestions.length === 0 ? (
-              <p className="text-xs text-[#8f98a0]">No suggestions found.</p>
+              <p className="text-xs text-[var(--color-text-muted)]">No suggestions found.</p>
             ) : null}
           </div>
         )}
-        {error && <p className="text-xs mb-2" style={{ color: "#e57373" }}>{error}</p>}
+        {error && <p className="text-xs mb-2" style={{ color: "var(--color-danger)" }}>{error}</p>}
         <div className="flex gap-3 justify-end mt-2">
           <button onClick={onClose} disabled={loading}
             className="px-4 py-2 rounded text-sm"
-            style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Cancel</button>
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
           <button onClick={() => doFetch()} disabled={loading || !url.trim()}
             className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
-            style={{ background: "#2a6db5", color: "#fff" }}>
+            style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>
             {loading
               ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Fetching…</>
               : "Fetch Metadata"}
@@ -839,17 +874,17 @@ function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
       style={{ background: "rgba(0,0,0,0.85)" }}
       onClick={(e) => { if (e.target === e.currentTarget && phase !== "updating") onClose(); }}>
       <div className="rounded-lg shadow-2xl w-[520px] max-h-[90vh] overflow-y-auto"
-        style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+        style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
 
         {/* Header */}
-        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b" style={{ borderColor: "#1b3a50" }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b" style={{ borderColor: "var(--color-border-card)" }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" />
             <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
           </svg>
           <div>
-            <h2 className="font-bold text-base" style={{ color: "#fff" }}>Update Game</h2>
-            <p className="text-xs" style={{ color: "#8f98a0" }}>{game.name}</p>
+            <h2 className="font-bold text-base" style={{ color: "var(--color-white)" }}>Update Game</h2>
+            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>{game.name}</p>
           </div>
         </div>
 
@@ -858,19 +893,19 @@ function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
           {/* Step 1: pick source */}
           {phase === "idle" && (
             <>
-              <p className="text-sm" style={{ color: "#8f98a0" }}>
+              <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
                 Point to the folder or <code>.zip</code> archive containing the new version.
                 Save files and configs will be preserved automatically.
               </p>
               <div className="flex gap-3">
                 <button onClick={pickFolder}
                   className="flex-1 py-2.5 rounded font-semibold text-sm"
-                  style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d6b8e" }}>
+                  style={{ background: "var(--color-border)", color: "var(--color-text)", border: "1px solid var(--color-accent-dark)" }}>
                   📁 Select Folder
                 </button>
                 <button onClick={pickSource}
                   className="flex-1 py-2.5 rounded font-semibold text-sm"
-                  style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d6b8e" }}>
+                  style={{ background: "var(--color-border)", color: "var(--color-text)", border: "1px solid var(--color-accent-dark)" }}>
                   🗜 Select ZIP
                 </button>
               </div>
@@ -881,18 +916,18 @@ function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
           {phase === "previewing" && (
             <div className="flex items-center gap-3 py-4">
               <span className="w-5 h-5 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
-              <span className="text-sm" style={{ color: "#8f98a0" }}>Analysing…</span>
+              <span className="text-sm" style={{ color: "var(--color-text-muted)" }}>Analysing…</span>
             </div>
           )}
 
           {/* Preview ready — show plan */}
           {phase === "ready" && preview && (
             <>
-              <div className="rounded p-3 space-y-1 text-xs" style={{ background: "#152232", border: "1px solid #2a3f54" }}>
-                <p className="text-xs font-mono break-all mb-2" style={{ color: "#66c0f4" }}>{sourcePath}</p>
+              <div className="rounded p-3 space-y-1 text-xs" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-panel-3)" }}>
+                <p className="text-xs font-mono break-all mb-2" style={{ color: "var(--color-accent)" }}>{sourcePath}</p>
                 <div className="flex gap-4">
-                  <span style={{ color: "#8f98a0" }}>Files to update</span>
-                  <span className="font-semibold" style={{ color: "#c6d4df" }}>
+                  <span style={{ color: "var(--color-text-muted)" }}>Files to update</span>
+                  <span className="font-semibold" style={{ color: "var(--color-text)" }}>
                     {preview.source_is_zip
                       ? `~${preview.zip_entry_count ?? "?"} (archive)`
                       : `${preview.files_to_update} existing + ${preview.new_files} new`}
@@ -902,7 +937,7 @@ function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
 
               {preview.protected_dirs.length > 0 && (
                 <div className="rounded p-3" style={{ background: "#1a2e1a", border: "1px solid #2a4a2a" }}>
-                  <p className="text-xs font-semibold mb-2" style={{ color: "#6dbf6d" }}>🛡 Protected (will NOT be overwritten)</p>
+                  <p className="text-xs font-semibold mb-2" style={{ color: "var(--color-success)" }}>🛡 Protected (will NOT be overwritten)</p>
                   <ul className="space-y-0.5">
                     {preview.protected_dirs.map((d) => (
                       <li key={d} className="text-xs font-mono" style={{ color: "#8bc48b" }}>↳ {d}</li>
@@ -915,8 +950,8 @@ function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
               )}
 
               {preview.protected_dirs.length === 0 && (
-                <div className="rounded p-3" style={{ background: "#1e2d3d", border: "1px solid #4a3a1a" }}>
-                  <p className="text-xs" style={{ color: "#c8a951" }}>
+                <div className="rounded p-3" style={{ background: "var(--color-panel)", border: "1px solid #4a3a1a" }}>
+                  <p className="text-xs" style={{ color: "var(--color-warning)" }}>
                     ⚠ No save directories detected. The update will overwrite all files.
                     Make sure you have a manual backup if needed.
                   </p>
@@ -926,10 +961,10 @@ function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
               <div className="flex gap-3 justify-end pt-1">
                 <button onClick={() => { setPhase("idle"); setPreview(null); setSourcePath(""); }}
                   className="px-4 py-2 rounded text-sm"
-                  style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Back</button>
+                  style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Back</button>
                 <button onClick={doUpdate}
                   className="px-5 py-2 rounded text-sm font-bold"
-                  style={{ background: "#4c6b22", color: "#d2e885" }}>Apply Update</button>
+                  style={{ background: "var(--color-play-bg)", color: "var(--color-play-text)" }}>Apply Update</button>
               </div>
             </>
           )}
@@ -938,7 +973,7 @@ function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
           {phase === "updating" && (
             <div className="flex flex-col items-center gap-3 py-6">
               <span className="w-8 h-8 rounded-full border-4 border-blue-400 border-t-transparent animate-spin" />
-              <p className="text-sm" style={{ color: "#8f98a0" }}>Updating… please wait</p>
+              <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>Updating… please wait</p>
             </div>
           )}
 
@@ -946,7 +981,7 @@ function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
           {phase === "done" && result && (
             <>
               <div className="rounded p-4" style={{ background: "#1a2e1a", border: "1px solid #2a4a2a" }}>
-                <p className="font-semibold mb-3" style={{ color: "#6dbf6d" }}>✓ Update complete</p>
+                <p className="font-semibold mb-3" style={{ color: "var(--color-success)" }}>✓ Update complete</p>
                 <div className="space-y-1 text-xs">
                   <p style={{ color: "#8bc48b" }}>Files updated: <b>{result.files_updated}</b></p>
                   <p style={{ color: "#8bc48b" }}>Files skipped (protected): <b>{result.files_skipped}</b></p>
@@ -958,15 +993,15 @@ function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
                 </div>
               </div>
               {result.warnings.length > 0 && (
-                <div className="rounded p-3" style={{ background: "#2a1f00", border: "1px solid #5a4200" }}>
-                  <p className="text-xs font-semibold mb-1" style={{ color: "#c8a951" }}>Warnings</p>
+                <div className="rounded p-3" style={{ background: "var(--color-warning-bg-2)", border: "1px solid var(--color-warning-border)" }}>
+                  <p className="text-xs font-semibold mb-1" style={{ color: "var(--color-warning)" }}>Warnings</p>
                   {result.warnings.map((w, i) => <p key={i} className="text-xs font-mono" style={{ color: "#a08030" }}>{w}</p>)}
                 </div>
               )}
               <div className="flex justify-end">
                 <button onClick={onClose}
                   className="px-5 py-2 rounded text-sm font-semibold"
-                  style={{ background: "#2a475e", color: "#c6d4df" }}>Close</button>
+                  style={{ background: "var(--color-border)", color: "var(--color-text)" }}>Close</button>
               </div>
             </>
           )}
@@ -974,17 +1009,17 @@ function UpdateModal({ game, onClose }: { game: Game; onClose: () => void }) {
           {/* Error */}
           {phase === "error" && (
             <>
-              <div className="rounded p-3" style={{ background: "#3a1010", border: "1px solid #8b2020" }}>
-                <p className="text-xs font-semibold mb-1" style={{ color: "#e57373" }}>Error</p>
+              <div className="rounded p-3" style={{ background: "var(--color-danger-bg)", border: "1px solid #8b2020" }}>
+                <p className="text-xs font-semibold mb-1" style={{ color: "var(--color-danger)" }}>Error</p>
                 <p className="text-xs font-mono break-all" style={{ color: "#c89090" }}>{errMsg}</p>
               </div>
               <div className="flex gap-3 justify-end">
                 <button onClick={() => { setPhase("idle"); setErrMsg(""); setPreview(null); setSourcePath(""); }}
                   className="px-4 py-2 rounded text-sm"
-                  style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Back</button>
+                  style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Back</button>
                 <button onClick={onClose}
                   className="px-4 py-2 rounded text-sm"
-                  style={{ background: "#2a3f54", color: "#c6d4df" }}>Close</button>
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>Close</button>
               </div>
             </>
           )}
@@ -1017,29 +1052,29 @@ function NotesModal({ displayTitle, initialNote, onSave, onClose }: {
       style={{ background: "rgba(0,0,0,0.85)" }}
       onClick={(e) => { if (e.target === e.currentTarget) { onSave(text); onClose(); } }}>
       <div className="rounded-lg shadow-2xl flex flex-col"
-        style={{ background: "#1e2d3d", border: "1px solid #2a475e", width: "760px", height: "76vh" }}>
+        style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)", width: "760px", height: "76vh" }}>
 
         {/* Header */}
-        <div className="flex items-center gap-3 px-5 pt-4 pb-3 flex-shrink-0 border-b" style={{ borderColor: "#1b3a50" }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <div className="flex items-center gap-3 px-5 pt-4 pb-3 flex-shrink-0 border-b" style={{ borderColor: "var(--color-border-card)" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
           </svg>
-          <span className="font-bold flex-1" style={{ color: "#fff" }}>Notes — {displayTitle}</span>
-          <div className="flex rounded overflow-hidden" style={{ border: "1px solid #2a475e" }}>
+          <span className="font-bold flex-1" style={{ color: "var(--color-white)" }}>Notes — {displayTitle}</span>
+          <div className="flex rounded overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
             <button onClick={() => setPreview(false)}
               className="px-3 py-1 text-xs"
-              style={{ background: !preview ? "#2a6db5" : "#152232", color: !preview ? "#fff" : "#8f98a0" }}>
+              style={{ background: !preview ? "var(--color-accent-dark)" : "var(--color-panel-2)", color: !preview ? "var(--color-white)" : "var(--color-text-muted)" }}>
               Edit
             </button>
             <button onClick={() => setPreview(true)}
               className="px-3 py-1 text-xs"
-              style={{ background: preview ? "#2a6db5" : "#152232", color: preview ? "#fff" : "#8f98a0" }}>
+              style={{ background: preview ? "var(--color-accent-dark)" : "var(--color-panel-2)", color: preview ? "var(--color-white)" : "var(--color-text-muted)" }}>
               Preview
             </button>
           </div>
           <button onClick={() => { onSave(text); onClose(); }}
             className="ml-1 text-xs px-3 py-1.5 rounded"
-            style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}>Close</button>
+            style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}>Close</button>
         </div>
 
         {/* Body */}
@@ -1048,8 +1083,8 @@ function NotesModal({ displayTitle, initialNote, onSave, onClose }: {
             <textarea
               className="w-full h-full p-4 text-sm outline-none resize-none font-mono"
               style={{
-                background: "#131d28", color: "#c6d4df",
-                scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent",
+                background: "var(--color-panel-deep)", color: "var(--color-text)",
+                scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent",
                 lineHeight: "1.65",
               }}
               placeholder={"# Game Notes\n\nWrite anything here — Markdown is supported.\n\n- Quest progress\n- Tips & secrets\n- Save locations\n"}
@@ -1059,15 +1094,15 @@ function NotesModal({ displayTitle, initialNote, onSave, onClose }: {
           ) : (
             <div
               className="w-full h-full overflow-y-auto p-5 text-sm markdown-body"
-              style={{ background: "#131d28", color: "#c6d4df", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}
+              style={{ background: "var(--color-panel-deep)", color: "var(--color-text)", scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}
               dangerouslySetInnerHTML={{ __html: renderedHtml || "<p style=\"opacity:0.3\">Nothing to preview yet.</p>" }}
             />
           )}
         </div>
 
         {/* Footer hint */}
-        <div className="flex items-center px-5 py-2 flex-shrink-0 border-t" style={{ borderColor: "#1b3a50" }}>
-          <span className="text-[10px]" style={{ color: "#4a5568" }}>
+        <div className="flex items-center px-5 py-2 flex-shrink-0 border-t" style={{ borderColor: "var(--color-border-card)" }}>
+          <span className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
             Supports Markdown · Auto-saved as you type · {text.length} chars
           </span>
         </div>
@@ -1173,25 +1208,25 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
       style={{ background: "rgba(0,0,0,0.85)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="rounded-lg shadow-2xl w-[520px] max-h-[90vh] overflow-y-auto"
-        style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
-        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b" style={{ borderColor: "#1b3a50" }}>
+        style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b" style={{ borderColor: "var(--color-border-card)" }}>
           <span style={{ fontSize: "20px" }}>🎨</span>
           <div>
-            <h2 className="font-bold text-base" style={{ color: "#fff" }}>Customise Game</h2>
-            <p className="text-xs" style={{ color: "#8f98a0" }}>{game.name}</p>
+            <h2 className="font-bold text-base" style={{ color: "var(--color-white)" }}>Customise Game</h2>
+            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>{game.name}</p>
           </div>
         </div>
         <div className="px-6 py-5 space-y-5">
           {/* Display name */}
           <div>
-            <label className="block text-xs font-semibold mb-1.5" style={{ color: "#8f98a0" }}>
-              Display Name <span style={{ fontWeight: "normal", color: "#4a5568" }}>(used in list &amp; search)</span>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
+              Display Name <span style={{ fontWeight: "normal", color: "var(--color-text-dim)" }}>(used in list &amp; search)</span>
             </label>
             <div className="flex gap-2">
               <input type="text" value={displayName}
                 onInput={(e) => setDisplayName((e.target as HTMLInputElement).value)}
                 className="flex-1 px-3 py-2 rounded text-sm outline-none"
-                style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+                style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
               {/* Quick-fill: use the parent folder name as the game title */}
               <button
                 title="Use the parent folder name as the game title"
@@ -1201,9 +1236,9 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
                   setDisplayName(folderName);
                 }}
                 className="px-2.5 py-2 rounded text-xs flex-shrink-0 flex items-center gap-1"
-                style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3d5a73" }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}>
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-accent-deep)"; e.currentTarget.style.color = "var(--color-accent)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-panel-3)"; e.currentTarget.style.color = "var(--color-text-muted)"; }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                 </svg>
@@ -1212,7 +1247,7 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
             </div>
             {/* Hint when the exe name is generic */}
             {GENERIC_EXE_NAMES.has((game.path.replace(/\\/g, "/").split("/").pop() ?? "").replace(/\.[^.]+$/, "").toLowerCase()) && (
-              <p className="mt-1 text-[10px]" style={{ color: "#c8a951" }}>
+              <p className="mt-1 text-[10px]" style={{ color: "var(--color-warning)" }}>
                 ⚠ Generic exe detected — folder name was used as the title automatically during scan.
               </p>
             )}
@@ -1220,17 +1255,17 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
 
           {/* ── Executable Override ───────────────────────────────────── */}
           <div>
-            <label className="block text-xs font-semibold mb-1" style={{ color: "#8f98a0" }}>
+            <label className="block text-xs font-semibold mb-1" style={{ color: "var(--color-text-muted)" }}>
               Launch Executable
-              <span style={{ fontWeight: "normal", color: "#4a5568" }}> (override scanned .exe)</span>
+              <span style={{ fontWeight: "normal", color: "var(--color-text-dim)" }}> (override scanned .exe)</span>
             </label>
             {/* current / override path */}
             <div className="rounded px-3 py-2 mb-2 text-xs font-mono break-all"
-              style={{ background: "#0d1b2a", border: "1px solid #1e3a50", color: exeOverride ? "#c8a951" : "#4a5568" }}>
+              style={{ background: "var(--color-bg-code)", border: "1px solid var(--color-border-soft)", color: exeOverride ? "var(--color-warning)" : "var(--color-text-dim)" }}>
               {exeOverride || game.path}
               {exeOverride && (
                 <span className="ml-2 font-sans"
-                  style={{ color: "#4a5568", fontSize: "10px" }}>
+                  style={{ color: "var(--color-text-dim)", fontSize: "10px" }}>
                   (override active)
                 </span>
               )}
@@ -1238,9 +1273,9 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
             <div className="flex gap-2 mb-2">
               <button onClick={pickExe}
                 className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
-                style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#c6d4df"; }}>
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-accent-deep)"; e.currentTarget.style.color = "var(--color-accent)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-panel-3)"; e.currentTarget.style.color = "var(--color-text)"; }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
                 </svg>
@@ -1248,9 +1283,9 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
               </button>
               <button onClick={detectSiblings} disabled={detectingExes}
                 className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
-                style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
-                onMouseEnter={(e) => { if (!detectingExes) { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; } }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#c6d4df"; }}>
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}
+                onMouseEnter={(e) => { if (!detectingExes) { e.currentTarget.style.background = "var(--color-accent-deep)"; e.currentTarget.style.color = "var(--color-accent)"; } }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-panel-3)"; e.currentTarget.style.color = "var(--color-text)"; }}>
                 {detectingExes
                   ? <span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />
                   : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1261,8 +1296,8 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
               {exeOverride && (
                 <button onClick={() => { setExeOverride(""); setSiblingExes([]); }}
                   className="px-3 py-1.5 rounded text-xs flex-shrink-0"
-                  style={{ background: "transparent", color: "#e57373", border: "1px solid #3a1010" }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = "#3a1010"; }}
+                  style={{ background: "transparent", color: "var(--color-danger)", border: "1px solid var(--color-danger-bg)" }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-danger-bg)"; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                   title="Clear override — use the originally scanned exe">
                   ✕ Clear
@@ -1271,9 +1306,9 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
             </div>
             {/* Sibling exe picker list */}
             {siblingExes.length > 0 && (
-              <div className="rounded border overflow-hidden" style={{ borderColor: "#1e3a50" }}>
+              <div className="rounded border overflow-hidden" style={{ borderColor: "var(--color-border-soft)" }}>
                 <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest"
-                  style={{ background: "#0d1b2a", color: "#4a5568" }}>
+                  style={{ background: "var(--color-bg-code)", color: "var(--color-text-dim)" }}>
                   Executables found in game folder — click to select
                 </p>
                 {siblingExes.map((exe) => {
@@ -1283,19 +1318,19 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
                     <button key={exe} onClick={() => setExeOverride(exe)}
                       className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
                       style={{
-                        background: isActive ? "#1a3a5c" : "#131d28",
-                        color: isActive ? "#66c0f4" : "#8f98a0",
-                        borderTop: "1px solid #1e3a50",
+                        background: isActive ? "var(--color-accent-deeper)" : "var(--color-panel-deep)",
+                        color: isActive ? "var(--color-accent)" : "var(--color-text-muted)",
+                        borderTop: "1px solid var(--color-border-soft)",
                       }}
-                      onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "#1b2d3d"; }}
-                      onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "#131d28"; }}>
+                      onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--color-panel-alt)"; }}
+                      onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "var(--color-panel-deep)"; }}>
                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
-                        stroke={isActive ? "#66c0f4" : "#4a5568"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        stroke={isActive ? "var(--color-accent)" : "var(--color-text-dim)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
                       </svg>
                       <span className="font-mono flex-1 truncate">{fname}</span>
                       {isActive && (
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                           <polyline points="20 6 9 17 4 12" />
                         </svg>
                       )}
@@ -1303,31 +1338,31 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
                   );
                 })}
                 {siblingExes.length === 0 && (
-                  <p className="px-3 py-3 text-xs text-center" style={{ color: "#4a5568", background: "#131d28" }}>
+                  <p className="px-3 py-3 text-xs text-center" style={{ color: "var(--color-text-dim)", background: "var(--color-panel-deep)" }}>
                     No other executables found in this folder.
                   </p>
                 )}
               </div>
             )}
             {!detectingExes && siblingExes.length === 0 && exeOverride === "" && (
-              <p className="text-[10px]" style={{ color: "#4a5568" }}>
+              <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
                 By default the game launches the scanned .exe above. Use this to pick a different launcher in the same folder.
               </p>
             )}
 
             <div className="mt-4">
-              <label className="block text-xs font-semibold mb-1" style={{ color: "#8f98a0" }}>
+              <label className="block text-xs font-semibold mb-1" style={{ color: "var(--color-text-muted)" }}>
                 Launch Arguments
               </label>
               <input type="text" placeholder="e.g. -fullscreen -w 1920" value={launchArgs}
                 onInput={(e) => setLaunchArgs((e.target as HTMLInputElement).value)}
                 className="w-full px-3 py-2 rounded text-sm outline-none font-mono"
-                style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+                style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
             </div>
 
             {platform !== "windows" && (
-              <div className="mt-4 rounded-lg p-3" style={{ background: "#152232", border: "1px solid #2a475e" }}>
-                <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer" style={{ color: "#8f98a0" }}>
+              <div className="mt-4 rounded-lg p-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+                <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer" style={{ color: "var(--color-text-muted)" }}>
                   <input
                     type="checkbox"
                     checked={runnerOverrideEnabled}
@@ -1336,7 +1371,7 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
                   Per-game runner override
                 </label>
                 {!runnerOverrideEnabled && (
-                  <p className="text-[10px] mt-1" style={{ color: "#4a5568" }}>
+                  <p className="text-[10px] mt-1" style={{ color: "var(--color-text-dim)" }}>
                     Uses global Wine/Proton settings.
                   </p>
                 )}
@@ -1350,9 +1385,9 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
                           onClick={() => setRunnerOverride((prev) => ({ ...prev, runner: r }))}
                           className="flex-1 py-1.5 rounded text-xs capitalize"
                           style={{
-                            background: runnerOverride.runner === r ? "#2a6db5" : "#1b2d3d",
-                            color: runnerOverride.runner === r ? "#fff" : "#8f98a0",
-                            border: `1px solid ${runnerOverride.runner === r ? "#3d7dc8" : "#2a475e"}`,
+                            background: runnerOverride.runner === r ? "var(--color-accent-dark)" : "var(--color-panel-alt)",
+                            color: runnerOverride.runner === r ? "var(--color-white)" : "var(--color-text-muted)",
+                            border: `1px solid ${runnerOverride.runner === r ? "var(--color-accent-mid)" : "var(--color-border)"}`,
                           }}
                         >
                           {r === "wine" ? "Wine" : r === "proton" ? "Proton" : "Custom"}
@@ -1366,7 +1401,7 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
                       value={runnerOverride.runnerPath}
                       onInput={(e) => setRunnerOverride((prev) => ({ ...prev, runnerPath: (e.target as HTMLInputElement).value }))}
                       className="w-full px-2 py-1.5 rounded text-xs font-mono outline-none"
-                      style={{ background: "#0d1b2a", color: "#c6d4df", border: "1px solid #2a475e" }}
+                      style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
                     />
                     <input
                       type="text"
@@ -1374,10 +1409,10 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
                       value={runnerOverride.prefixPath}
                       onInput={(e) => setRunnerOverride((prev) => ({ ...prev, prefixPath: (e.target as HTMLInputElement).value }))}
                       className="w-full px-2 py-1.5 rounded text-xs font-mono outline-none"
-                      style={{ background: "#0d1b2a", color: "#c6d4df", border: "1px solid #2a475e" }}
+                      style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
                     />
                     {detectedRunners.length > 0 && (
-                      <div className="max-h-32 overflow-y-auto rounded border" style={{ borderColor: "#2a475e" }}>
+                      <div className="max-h-32 overflow-y-auto rounded border" style={{ borderColor: "var(--color-border)" }}>
                         {detectedRunners.map((d) => (
                           <button
                             key={d.path}
@@ -1390,19 +1425,19 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
                             }
                             className="w-full text-left px-2 py-1.5 text-[10px] border-b last:border-b-0 flex items-center gap-2"
                             style={{
-                              background: runnerOverride.runnerPath === d.path ? "#1a3a5c" : "#0d1b2a",
-                              borderColor: "#1e3a50",
-                              color: runnerOverride.runnerPath === d.path ? "#66c0f4" : "#8f98a0",
+                              background: runnerOverride.runnerPath === d.path ? "var(--color-accent-deeper)" : "var(--color-bg-code)",
+                              borderColor: "var(--color-border-soft)",
+                              color: runnerOverride.runnerPath === d.path ? "var(--color-accent)" : "var(--color-text-muted)",
                             }}
                           >
                             <span>{d.name}</span>
-                            {d.flavor === "ge" && <span className="ml-auto text-[9px]" style={{ color: "#c8a951" }}>GE</span>}
+                            {d.flavor === "ge" && <span className="ml-auto text-[9px]" style={{ color: "var(--color-warning)" }}>GE</span>}
                           </button>
                         ))}
                       </div>
                     )}
-                    {detectingRunners && <p className="text-[10px]" style={{ color: "#4a5568" }}>Detecting runners…</p>}
-                    <p className="text-[10px]" style={{ color: "#4a5568" }}>
+                    {detectingRunners && <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>Detecting runners…</p>}
+                    <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
                       Tip: leave runner path empty with `Custom` to force direct launch for this game.
                     </p>
                   </div>
@@ -1411,8 +1446,8 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
             )}
 
             <div className="mt-4">
-              <label className="block text-xs font-semibold mb-1" style={{ color: "#8f98a0" }}>
-                Pinned Executables <span style={{ fontWeight: "normal", color: "#4a5568" }}>(e.g. Server, Config)</span>
+              <label className="block text-xs font-semibold mb-1" style={{ color: "var(--color-text-muted)" }}>
+                Pinned Executables <span style={{ fontWeight: "normal", color: "var(--color-text-dim)" }}>(e.g. Server, Config)</span>
               </label>
               <div className="space-y-2">
                 {pinnedExes.map((pe, i) => (
@@ -1423,11 +1458,11 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
                         next[i].name = (e.target as HTMLInputElement).value;
                         setPinnedExes(next);
                       }}
-                      className="w-1/3 px-2 py-1.5 rounded text-xs outline-none bg-[#152232] border border-[#2a475e] text-[#c6d4df]" />
+                      className="w-1/3 px-2 py-1.5 rounded text-xs outline-none bg-[var(--color-panel-2)] border border-[var(--color-border)] text-[var(--color-text)]" />
                     <input type="text" placeholder="Exe path" value={pe.path} readOnly
-                      className="flex-1 px-2 py-1.5 rounded text-[10px] outline-none bg-[#0d1b2a] border border-[#1e3a50] text-[#8f98a0] font-mono break-all" />
+                      className="flex-1 px-2 py-1.5 rounded text-[10px] outline-none bg-[var(--color-bg-code)] border border-[var(--color-border-soft)] text-[var(--color-text-muted)] font-mono break-all" />
                     <button onClick={() => setPinnedExes(pinnedExes.filter((_, idx) => idx !== i))}
-                      className="px-2 rounded text-xs text-[#e57373] hover:bg-[#3a1010]" title="Remove pin">✕</button>
+                      className="px-2 rounded text-xs text-[var(--color-danger)] hover:bg-[var(--color-danger-bg)]" title="Remove pin">✕</button>
                   </div>
                 ))}
               </div>
@@ -1439,7 +1474,7 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
                     setPinnedExes([...pinnedExes, { name: fname, path: sel }]);
                   }
                 }}
-                className="mt-2 px-3 py-1.5 rounded text-xs" style={{ background: "#2a3f54", color: "#66c0f4", border: "1px dashed #3d5a73" }}>
+                className="mt-2 px-3 py-1.5 rounded text-xs" style={{ background: "var(--color-panel-3)", color: "var(--color-accent)", border: "1px dashed var(--color-border-strong)" }}>
                 + Add pinned executable
               </button>
             </div>
@@ -1447,56 +1482,56 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
 
           {/* Cover image */}
           <div>
-            <label className="block text-xs font-semibold mb-1.5" style={{ color: "#8f98a0" }}>
-              Custom Cover <span style={{ fontWeight: "normal", color: "#4a5568" }}>(thumbnail in sidebar)</span>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
+              Custom Cover <span style={{ fontWeight: "normal", color: "var(--color-text-dim)" }}>(thumbnail in sidebar)</span>
             </label>
             <div className="flex gap-2">
               <input type="text" placeholder="Paste URL or pick a file…" value={coverUrl}
                 onInput={(e) => setCoverUrl((e.target as HTMLInputElement).value)}
                 className="flex-1 px-3 py-2 rounded text-sm outline-none"
-                style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+                style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
               <button onClick={() => pickImage(setCoverUrl)}
                 className="px-3 py-2 rounded text-xs flex-shrink-0"
-                style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d5a73" }}>Browse</button>
+                style={{ background: "var(--color-border)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}>Browse</button>
             </div>
             {coverUrl && (
               <img src={coverUrl} alt="" className="mt-2 rounded h-20 w-auto object-cover"
-                style={{ border: "1px solid #2a475e", maxWidth: "100%" }} />
+                style={{ border: "1px solid var(--color-border)", maxWidth: "100%" }} />
             )}
           </div>
           {/* Hero background */}
           <div>
-            <label className="block text-xs font-semibold mb-1.5" style={{ color: "#8f98a0" }}>
-              Hero Background <span style={{ fontWeight: "normal", color: "#4a5568" }}>(banner on detail page)</span>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
+              Hero Background <span style={{ fontWeight: "normal", color: "var(--color-text-dim)" }}>(banner on detail page)</span>
             </label>
             <div className="flex gap-2">
               <input type="text" placeholder="Paste URL or pick a file…" value={bgUrl}
                 onInput={(e) => setBgUrl((e.target as HTMLInputElement).value)}
                 className="flex-1 px-3 py-2 rounded text-sm outline-none"
-                style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
+                style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
               <button onClick={() => pickImage(setBgUrl)}
                 className="px-3 py-2 rounded text-xs flex-shrink-0"
-                style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d5a73" }}>Browse</button>
+                style={{ background: "var(--color-border)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}>Browse</button>
             </div>
             {bgUrl && (
               <img src={bgUrl} alt="" className="mt-2 rounded h-20 w-full object-cover"
-                style={{ border: "1px solid #2a475e" }} />
+                style={{ border: "1px solid var(--color-border)" }} />
             )}
           </div>
         </div>
         <div className="flex items-center justify-between px-6 pb-5">
           <button onClick={() => { onSave({}); onClose(); }}
             className="px-4 py-2 rounded text-xs"
-            style={{ background: "transparent", color: "#4a5568", border: "1px solid #2a3f54" }}>
+            style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px solid var(--color-panel-3)" }}>
             Reset to defaults
           </button>
           <div className="flex gap-2">
             <button onClick={onClose}
               className="px-4 py-2 rounded text-sm"
-              style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Cancel</button>
+              style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
             <button onClick={doSave}
               className="px-5 py-2 rounded text-sm font-semibold"
-              style={{ background: "#2a6db5", color: "#fff" }}>Save</button>
+              style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>Save</button>
           </div>
         </div>
       </div>
@@ -1608,13 +1643,13 @@ function WineSettingsModal({ config, onSave, onClose }: {
     <div className="fixed inset-0 flex items-center justify-center z-50"
       style={{ background: "rgba(0,0,0,0.8)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="rounded-xl shadow-2xl w-[500px] flex flex-col" style={{ background: "#1e2d3d", border: "1px solid #3d5a73", maxHeight: "80vh" }}>
+      <div className="rounded-xl shadow-2xl w-[500px] flex flex-col" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-strong)", maxHeight: "80vh" }}>
 
         {/* Header */}
-        <div className="flex items-center gap-2.5 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: "#0d1117" }}>
+        <div className="flex items-center gap-2.5 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: "var(--color-bg-deep)" }}>
           <span className="text-lg">🍷</span>
-          <span className="font-bold flex-1" style={{ color: "#fff" }}>Wine / Proton Settings</span>
-          <button onClick={onClose} style={{ color: "#8f98a0", fontSize: "18px" }}>✕</button>
+          <span className="font-bold flex-1" style={{ color: "var(--color-white)" }}>Wine / Proton Settings</span>
+          <button onClick={onClose} style={{ color: "var(--color-text-muted)", fontSize: "18px" }}>✕</button>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
@@ -1624,28 +1659,28 @@ function WineSettingsModal({ config, onSave, onClose }: {
               <input type="checkbox" className="sr-only" checked={cfg.enabled}
                 onChange={(e) => upd({ enabled: e.currentTarget.checked })} />
               <div className="w-10 h-5 rounded-full transition-colors"
-                style={{ background: cfg.enabled ? "#2a6db5" : "#2a3f54", border: "1px solid #3d5a73" }} />
+                style={{ background: cfg.enabled ? "var(--color-accent-dark)" : "var(--color-panel-3)", border: "1px solid var(--color-border-strong)" }} />
               <div className="absolute top-0.5 rounded-full w-4 h-4 transition-transform"
-                style={{ background: "#fff", left: cfg.enabled ? "22px" : "2px", transition: "left 0.15s" }} />
+                style={{ background: "var(--color-white)", left: cfg.enabled ? "22px" : "2px", transition: "left 0.15s" }} />
             </div>
             <div>
-              <p className="text-sm font-semibold" style={{ color: "#c6d4df" }}>Run via Wine / Proton</p>
-              <p className="text-[11px]" style={{ color: "#4a5568" }}>When disabled, games launch directly (use on Linux-native builds)</p>
+              <p className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>Run via Wine / Proton</p>
+              <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>When disabled, games launch directly (use on Linux-native builds)</p>
             </div>
           </label>
 
           {cfg.enabled && (<>
             {/* Runner type */}
             <div>
-              <p className="text-xs font-semibold mb-2" style={{ color: "#8f98a0" }}>Runner type</p>
+              <p className="text-xs font-semibold mb-2" style={{ color: "var(--color-text-muted)" }}>Runner type</p>
               <div className="flex gap-2">
                 {(["wine", "proton", "custom"] as const).map((r) => (
                   <button key={r} onClick={() => upd({ runner: r })}
                     className="flex-1 py-2 rounded text-xs font-semibold capitalize"
                     style={{
-                      background: cfg.runner === r ? "#2a6db5" : "#1b2d3d",
-                      color: cfg.runner === r ? "#fff" : "#5a6a7a",
-                      border: `1px solid ${cfg.runner === r ? "#3d7dc8" : "#253545"}`,
+                      background: cfg.runner === r ? "var(--color-accent-dark)" : "var(--color-panel-alt)",
+                      color: cfg.runner === r ? "var(--color-white)" : "var(--color-text-muted)",
+                      border: `1px solid ${cfg.runner === r ? "var(--color-accent-mid)" : "var(--color-border-subtle)"}`,
                     }}>{r === "wine" ? "🍷 Wine" : r === "proton" ? "⚙ Proton" : "🔧 Custom"}</button>
                 ))}
               </div>
@@ -1654,38 +1689,38 @@ function WineSettingsModal({ config, onSave, onClose }: {
             {/* Auto-detected runners */}
             {detected.length > 0 && (
               <div>
-                <p className="text-xs font-semibold mb-1.5" style={{ color: "#8f98a0" }}>Detected on this system</p>
+                <p className="text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>Detected on this system</p>
                 <div className="space-y-1">
                   {detected.map((d) => (
                     <button key={d.path}
                       onClick={() => upd({ runnerPath: d.path, runner: d.kind })}
                       className="w-full flex items-center gap-2 px-3 py-2 rounded text-xs text-left"
                       style={{
-                        background: cfg.runnerPath === d.path ? "#1a3a5c" : "#1b2d3d",
-                        border: `1px solid ${cfg.runnerPath === d.path ? "#3d7dc8" : "#253545"}`,
-                        color: "#c6d4df",
+                        background: cfg.runnerPath === d.path ? "var(--color-accent-deeper)" : "var(--color-panel-alt)",
+                        border: `1px solid ${cfg.runnerPath === d.path ? "var(--color-accent-mid)" : "var(--color-border-subtle)"}`,
+                        color: "var(--color-text)",
                       }}>
                       <span>{d.kind === "wine" ? "🍷" : "⚙"}</span>
                       <span className="font-semibold">{d.name}</span>
                       {d.flavor === "ge" && (
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold" style={{ background: "#3a2800", color: "#c8a951" }}>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold" style={{ background: "#3a2800", color: "var(--color-warning)" }}>
                           GE
                         </span>
                       )}
-                      <span className="ml-auto font-mono text-[10px] truncate max-w-[220px]" style={{ color: "#4a5568" }}>{d.path}</span>
+                      <span className="ml-auto font-mono text-[10px] truncate max-w-[220px]" style={{ color: "var(--color-text-dim)" }}>{d.path}</span>
                     </button>
                   ))}
                 </div>
               </div>
             )}
-            {detecting && <p className="text-xs" style={{ color: "#4a5568" }}>Detecting runners…</p>}
+            {detecting && <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>Detecting runners…</p>}
             {!detecting && detected.length === 0 && (
-              <p className="text-xs" style={{ color: "#4a5568" }}>No Wine or Proton installations detected automatically.</p>
+              <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>No Wine or Proton installations detected automatically.</p>
             )}
 
             {/* Runner path */}
             <div>
-              <p className="text-xs font-semibold mb-1.5" style={{ color: "#8f98a0" }}>
+              <p className="text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
                 {cfg.runner === "wine" ? "Wine executable path" : cfg.runner === "proton" ? "Proton executable path" : "Runner executable path"}
               </p>
               <input
@@ -1693,15 +1728,15 @@ function WineSettingsModal({ config, onSave, onClose }: {
                 value={cfg.runnerPath}
                 onInput={(e) => upd({ runnerPath: (e.target as HTMLInputElement).value })}
                 className="w-full px-3 py-1.5 rounded text-xs font-mono outline-none"
-                style={{ background: "#0d1b2a", color: "#c6d4df", border: "1px solid #2a3f54" }} />
-              <p className="text-[10px] mt-0.5" style={{ color: "#4a5568" }}>
+                style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-panel-3)" }} />
+              <p className="text-[10px] mt-0.5" style={{ color: "var(--color-text-dim)" }}>
                 Leave blank to use system-wide binary from PATH
               </p>
             </div>
 
             {/* Prefix path */}
             <div>
-              <p className="text-xs font-semibold mb-1.5" style={{ color: "#8f98a0" }}>
+              <p className="text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
                 {cfg.runner === "proton" ? "Steam Compat Data Path (STEAM_COMPAT_DATA_PATH)" : "Wine Prefix (WINEPREFIX)"}
               </p>
               <input
@@ -1709,28 +1744,28 @@ function WineSettingsModal({ config, onSave, onClose }: {
                 value={cfg.prefixPath}
                 onInput={(e) => upd({ prefixPath: (e.target as HTMLInputElement).value })}
                 className="w-full px-3 py-1.5 rounded text-xs font-mono outline-none"
-                style={{ background: "#0d1b2a", color: "#c6d4df", border: "1px solid #2a3f54" }} />
-              <p className="text-[10px] mt-0.5" style={{ color: "#4a5568" }}>
+                style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-panel-3)" }} />
+              <p className="text-[10px] mt-0.5" style={{ color: "var(--color-text-dim)" }}>
                 Leave blank to use the default prefix
               </p>
             </div>
 
             {/* Proton hint */}
             {cfg.runner === "proton" && (
-              <div className="rounded-lg px-3 py-2.5 text-xs" style={{ background: "#1a2636", border: "1px solid #2a3f54", color: "#8f98a0", lineHeight: 1.6 }}>
-                <p className="font-semibold mb-1" style={{ color: "#66c0f4" }}>Proton notes</p>
-                <p>The <code style={{ color: "#f88379" }}>proton</code> script requires <strong>python3</strong> and a Steam installation.</p>
+              <div className="rounded-lg px-3 py-2.5 text-xs" style={{ background: "#1a2636", border: "1px solid var(--color-panel-3)", color: "var(--color-text-muted)", lineHeight: 1.6 }}>
+                <p className="font-semibold mb-1" style={{ color: "var(--color-accent)" }}>Proton notes</p>
+                <p>The <code style={{ color: "var(--color-code-accent)" }}>proton</code> script requires <strong>python3</strong> and a Steam installation.</p>
                 <p>Set the data path to a folder that will hold the Proton prefix (Wine bottle) for your games.</p>
               </div>
             )}
 
-            <div className="rounded-lg p-3 space-y-3" style={{ background: "#152232", border: "1px solid #2a475e" }}>
+            <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
               <div className="flex items-center gap-2">
-                <p className="text-xs font-semibold" style={{ color: "#8f98a0" }}>Wine Prefix Manager</p>
+                <p className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>Wine Prefix Manager</p>
                 <button
                   onClick={refreshPrefixes}
                   className="ml-auto px-2 py-1 rounded text-[10px]"
-                  style={{ background: "#2a3f54", color: "#8f98a0" }}
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
                   disabled={prefixLoading}
                 >
                   Refresh
@@ -1744,44 +1779,44 @@ function WineSettingsModal({ config, onSave, onClose }: {
                   onInput={(e) => setNewPrefixPath((e.target as HTMLInputElement).value)}
                   placeholder="New prefix path"
                   className="flex-1 px-2 py-1.5 rounded text-xs font-mono outline-none"
-                  style={{ background: "#0d1b2a", color: "#c6d4df", border: "1px solid #2a3f54" }}
+                  style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-panel-3)" }}
                 />
                 <button
                   onClick={createPrefix}
                   disabled={toolBusy === "create" || !newPrefixPath.trim()}
                   className="px-3 py-1.5 rounded text-xs disabled:opacity-50"
-                  style={{ background: "#2a6db5", color: "#fff" }}
+                  style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
                 >
                   Create
                 </button>
               </div>
 
-              {prefixError && <p className="text-[10px]" style={{ color: "#e57373" }}>{prefixError}</p>}
-              {prefixLoading && <p className="text-[10px]" style={{ color: "#4a5568" }}>Loading prefixes…</p>}
+              {prefixError && <p className="text-[10px]" style={{ color: "var(--color-danger)" }}>{prefixError}</p>}
+              {prefixLoading && <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>Loading prefixes…</p>}
 
-              <div className="space-y-2 max-h-56 overflow-y-auto" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+              <div className="space-y-2 max-h-56 overflow-y-auto" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
                 {prefixes.length === 0 && !prefixLoading && (
-                  <p className="text-[10px]" style={{ color: "#4a5568" }}>No Wine/Proton prefixes found.</p>
+                  <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>No Wine/Proton prefixes found.</p>
                 )}
                 {prefixes.map((pfx) => (
-                  <div key={pfx.path} className="rounded p-2" style={{ background: "#0d1b2a", border: "1px solid #1e3a50" }}>
+                  <div key={pfx.path} className="rounded p-2" style={{ background: "var(--color-bg-code)", border: "1px solid var(--color-border-soft)" }}>
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-semibold" style={{ color: "#c6d4df" }}>{pfx.name}</span>
-                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "#1e2d3d", color: "#8f98a0" }}>{pfx.kind}</span>
-                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: pfx.has_dxvk ? "#1a3a1a" : "#3a2a00", color: pfx.has_dxvk ? "#6dbf6d" : "#c8a951" }}>
+                      <span className="text-[10px] font-semibold" style={{ color: "var(--color-text)" }}>{pfx.name}</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "var(--color-panel)", color: "var(--color-text-muted)" }}>{pfx.kind}</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: pfx.has_dxvk ? "var(--color-success-bg)" : "var(--color-warning-bg)", color: pfx.has_dxvk ? "var(--color-success)" : "var(--color-warning)" }}>
                         DXVK {pfx.has_dxvk ? "ok" : "missing"}
                       </span>
-                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: pfx.has_vkd3d ? "#1a3a1a" : "#3a2a00", color: pfx.has_vkd3d ? "#6dbf6d" : "#c8a951" }}>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: pfx.has_vkd3d ? "var(--color-success-bg)" : "var(--color-warning-bg)", color: pfx.has_vkd3d ? "var(--color-success)" : "var(--color-warning)" }}>
                         VKD3D {pfx.has_vkd3d ? "ok" : "missing"}
                       </span>
                     </div>
-                    <p className="text-[9px] mt-1 font-mono break-all" style={{ color: "#4a5568" }}>{pfx.path}</p>
+                    <p className="text-[9px] mt-1 font-mono break-all" style={{ color: "var(--color-text-dim)" }}>{pfx.path}</p>
                     <div className="flex items-center gap-2 mt-2">
                       <button
                         onClick={() => installGraphics(pfx)}
                         disabled={toolBusy === `gfx:${pfx.path}` || (pfx.has_dxvk && pfx.has_vkd3d)}
                         className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
-                        style={{ background: "#2a3f54", color: "#8cb4d5" }}
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)" }}
                       >
                         Install DXVK/VKD3D
                       </button>
@@ -1789,7 +1824,7 @@ function WineSettingsModal({ config, onSave, onClose }: {
                         value={selectedVerb}
                         onChange={(e) => setSelectedVerb((e.target as HTMLSelectElement).value)}
                         className="px-2 py-1 rounded text-[10px] outline-none"
-                        style={{ background: "#1b2d3d", color: "#c6d4df", border: "1px solid #2a475e" }}
+                        style={{ background: "var(--color-panel-alt)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
                       >
                         {winetricksVerbs.map((v) => (
                           <option key={v} value={v}>{v}</option>
@@ -1799,7 +1834,7 @@ function WineSettingsModal({ config, onSave, onClose }: {
                         onClick={() => runVerb(pfx)}
                         disabled={toolBusy === `verb:${pfx.path}`}
                         className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
-                        style={{ background: "#2a3f54", color: "#66c0f4" }}
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-accent)" }}
                       >
                         Run Winetricks
                       </button>
@@ -1807,7 +1842,7 @@ function WineSettingsModal({ config, onSave, onClose }: {
                         onClick={() => deletePrefix(pfx.path)}
                         disabled={toolBusy === `del:${pfx.path}`}
                         className="ml-auto px-2 py-1 rounded text-[10px] disabled:opacity-40"
-                        style={{ background: "#3a2020", color: "#e88585" }}
+                        style={{ background: "#3a2020", color: "var(--color-danger-soft)" }}
                       >
                         Delete
                       </button>
@@ -1820,13 +1855,13 @@ function WineSettingsModal({ config, onSave, onClose }: {
         </div>
 
         {/* Footer */}
-        <div className="flex gap-2 justify-end px-5 py-3 border-t flex-shrink-0" style={{ borderColor: "#0d1117" }}>
+        <div className="flex gap-2 justify-end px-5 py-3 border-t flex-shrink-0" style={{ borderColor: "var(--color-bg-deep)" }}>
           <button onClick={onClose}
             className="px-4 py-2 rounded text-sm"
-            style={{ background: "#152232", color: "#c6d4df", border: "1px solid #3d5a73" }}>Cancel</button>
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}>Cancel</button>
           <button onClick={() => { onSave(cfg); onClose(); }}
             className="px-5 py-2 rounded text-sm font-semibold"
-            style={{ background: "#2a6db5", color: "#fff" }}>Save</button>
+            style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>Save</button>
         </div>
       </div>
     </div>
@@ -1853,27 +1888,27 @@ function ManageCollectionsModal({ gamePath, displayTitle, collections, onToggle,
     <div className="fixed inset-0 flex items-center justify-center z-50"
       style={{ background: "rgba(0,0,0,0.75)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="rounded-xl shadow-2xl w-96 flex flex-col" style={{ background: "#1e2d3d", border: "1px solid #3d5a73", maxHeight: "72vh" }}>
-        <div className="flex items-center gap-2 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: "#0d1117" }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <div className="rounded-xl shadow-2xl w-96 flex flex-col" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-strong)", maxHeight: "72vh" }}>
+        <div className="flex items-center gap-2 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: "var(--color-bg-deep)" }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
           </svg>
-          <span className="font-bold flex-1 text-sm truncate" style={{ color: "#fff" }}>Collections — {displayTitle}</span>
-          <button onClick={onClose} className="text-lg leading-none" style={{ color: "#8f98a0" }}>✕</button>
+          <span className="font-bold flex-1 text-sm truncate" style={{ color: "var(--color-white)" }}>Collections — {displayTitle}</span>
+          <button onClick={onClose} className="text-lg leading-none" style={{ color: "var(--color-text-muted)" }}>✕</button>
         </div>
         <div className="flex-1 overflow-y-auto py-1" style={{ scrollbarWidth: "thin" }}>
           {collections.length === 0 && !creating && (
-            <p className="px-5 py-5 text-sm text-center" style={{ color: "#8f98a0" }}>No collections yet.</p>
+            <p className="px-5 py-5 text-sm text-center" style={{ color: "var(--color-text-muted)" }}>No collections yet.</p>
           )}
           {collections.map((col) => {
             const inCol = col.gamePaths.includes(gamePath);
             return (
               <label key={col.id} className="flex items-center gap-3 px-5 py-2.5 cursor-pointer"
-                onMouseEnter={(e) => (e.currentTarget.style.background = "#253545")}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-border-subtle)")}
                 onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
                 <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: col.color }} />
-                <span className="flex-1 text-sm" style={{ color: "#c6d4df" }}>{col.name}</span>
-                <span className="text-[10px] mr-1" style={{ color: "#4a5568" }}>{col.gamePaths.length}</span>
+                <span className="flex-1 text-sm" style={{ color: "var(--color-text)" }}>{col.name}</span>
+                <span className="text-[10px] mr-1" style={{ color: "var(--color-text-dim)" }}>{col.gamePaths.length}</span>
                 <input type="checkbox" checked={inCol}
                   onChange={(e) => onToggle(col.id, gamePath, e.currentTarget.checked)}
                   style={{ accentColor: col.color, width: "14px", height: "14px", cursor: "pointer" }} />
@@ -1881,21 +1916,21 @@ function ManageCollectionsModal({ gamePath, displayTitle, collections, onToggle,
             );
           })}
         </div>
-        <div className="px-5 py-3 border-t flex-shrink-0" style={{ borderColor: "#0d1117" }}>
+        <div className="px-5 py-3 border-t flex-shrink-0" style={{ borderColor: "var(--color-bg-deep)" }}>
           {creating ? (
             <div className="space-y-2">
               <input autoFocus placeholder="Collection name…" value={newName}
                 onInput={(e) => setNewName((e.target as HTMLInputElement).value)}
                 onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); if (e.key === "Escape") setCreating(false); }}
                 className="w-full px-3 py-1.5 rounded text-xs outline-none"
-                style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }} />
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }} />
               <div className="flex items-center gap-2">
-                <span className="text-[10px]" style={{ color: "#8f98a0" }}>Color:</span>
+                <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>Color:</span>
                 {COLLECTION_COLORS.map((c) => (
                   <button key={c} onClick={() => setNewColor(c)}
                     className="w-4 h-4 rounded-full flex-shrink-0"
                     style={{
-                      background: c, outline: newColor === c ? "2px solid #fff" : "none", outlineOffset: "1px",
+                      background: c, outline: newColor === c ? "2px solid var(--color-white)" : "none", outlineOffset: "1px",
                       transform: newColor === c ? "scale(1.25)" : "scale(1)", transition: "transform 0.1s"
                     }} />
                 ))}
@@ -1903,18 +1938,18 @@ function ManageCollectionsModal({ gamePath, displayTitle, collections, onToggle,
               <div className="flex gap-2">
                 <button onClick={handleCreate}
                   className="flex-1 py-1.5 rounded text-xs font-semibold"
-                  style={{ background: "#2a6db5", color: "#fff" }}>Create</button>
+                  style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>Create</button>
                 <button onClick={() => setCreating(false)}
                   className="px-3 py-1.5 rounded text-xs"
-                  style={{ background: "#2a3f54", color: "#8f98a0" }}>Cancel</button>
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}>Cancel</button>
               </div>
             </div>
           ) : (
             <button onClick={() => setCreating(true)}
               className="w-full py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
-              style={{ background: "#1b2d3d", color: "#8f98a0", border: "1px dashed #3d5a73" }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#66c0f4"; e.currentTarget.style.color = "#66c0f4"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#3d5a73"; e.currentTarget.style.color = "#8f98a0"; }}>
+              style={{ background: "var(--color-panel-alt)", color: "var(--color-text-muted)", border: "1px dashed var(--color-border-strong)" }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--color-accent)"; e.currentTarget.style.color = "var(--color-accent)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--color-border-strong)"; e.currentTarget.style.color = "var(--color-text-muted)"; }}>
               + New Collection
             </button>
           )}
@@ -1940,27 +1975,27 @@ function SessionNoteModal({ session, gameName, onSave, onDismiss }: {
       style={{ pointerEvents: "none" }}>
       <div className="rounded-xl shadow-2xl w-80"
         style={{
-          background: "#1e2d3d", border: "1px solid #2a475e",
+          background: "var(--color-panel)", border: "1px solid var(--color-border)",
           pointerEvents: "all",
           animation: "slideInUp 0.25s ease-out",
         }}>
-        <div className="flex items-start gap-3 px-4 pt-4 pb-3 border-b" style={{ borderColor: "#1b3a50" }}>
+        <div className="flex items-start gap-3 px-4 pt-4 pb-3 border-b" style={{ borderColor: "var(--color-border-card)" }}>
           <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0"
-            style={{ background: "#0f1923" }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            style={{ background: "var(--color-bg-overlay)" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
             </svg>
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-semibold" style={{ color: "#fff" }}>Session complete</p>
-            <p className="text-[10px]" style={{ color: "#8f98a0" }}>
+            <p className="text-xs font-semibold" style={{ color: "var(--color-white)" }}>Session complete</p>
+            <p className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
               {gameName} · {formatTime(session.duration)}
             </p>
           </div>
-          <button onClick={onDismiss} style={{ color: "#4a5568" }} className="text-sm">✕</button>
+          <button onClick={onDismiss} style={{ color: "var(--color-text-dim)" }} className="text-sm">✕</button>
         </div>
         <div className="px-4 py-3">
-          <p className="text-[10px] mb-1.5" style={{ color: "#8f98a0" }}>Add a session note (optional)</p>
+          <p className="text-[10px] mb-1.5" style={{ color: "var(--color-text-muted)" }}>Add a session note (optional)</p>
           <textarea
             value={note}
             onInput={(e) => setNote((e.target as HTMLTextAreaElement).value)}
@@ -1968,16 +2003,16 @@ function SessionNoteModal({ session, gameName, onSave, onDismiss }: {
             rows={2}
             className="w-full rounded px-2 py-1.5 text-xs resize-none"
             style={{
-              background: "#0f1923", border: "1px solid #2a475e", color: "#c6d4df",
+              background: "var(--color-bg-overlay)", border: "1px solid var(--color-border)", color: "var(--color-text)",
               outline: "none", fontFamily: "inherit",
             }}
           />
           <div className="flex gap-2 justify-end mt-2">
             <button onClick={onDismiss} className="px-3 py-1 rounded text-xs"
-              style={{ background: "transparent", color: "#4a5568" }}>Skip</button>
+              style={{ background: "transparent", color: "var(--color-text-dim)" }}>Skip</button>
             <button onClick={() => onSave(note.trim())}
               className="px-4 py-1 rounded text-xs font-semibold"
-              style={{ background: "#2a6db5", color: "#fff" }}>Save</button>
+              style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>Save</button>
           </div>
         </div>
       </div>
@@ -2039,50 +2074,50 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
       style={{ background: "rgba(0,0,0,0.82)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="rounded-xl shadow-2xl w-[480px] max-h-[80vh] flex flex-col"
-        style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+        style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
         {/* Header */}
-        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b flex-shrink-0" style={{ borderColor: "#1b3a50" }}>
-          <div className="w-9 h-9 rounded flex items-center justify-center" style={{ background: "#171a21" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="#66c0f4">
+        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b flex-shrink-0" style={{ borderColor: "var(--color-border-card)" }}>
+          <div className="w-9 h-9 rounded flex items-center justify-center" style={{ background: "var(--color-panel-2)" }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--color-accent)">
               <path d="M12 2C6.48 2 2 6.48 2 12l5.84 2.41c.53-.32 1.14-.51 1.8-.51.07 0 .14 0 .21.01L12 10.5V10.42c0-2.52 2.04-4.58 4.56-4.58 2.52 0 4.56 2.04 4.56 4.58 0 2.52-2.04 4.56-4.56 4.56h-.1l-3.5 2.53c0 .06.01.12.01.18 0 1.89-1.53 3.42-3.42 3.42-1.67 0-3.07-1.2-3.36-2.79L2.17 14C3.14 18.55 7.15 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2z" />
             </svg>
           </div>
           <div>
-            <h2 className="font-bold text-base" style={{ color: "#fff" }}>Import from Steam</h2>
-            <p className="text-xs" style={{ color: "#8f98a0" }}>Pre-fill playtime from localconfig.vdf</p>
+            <h2 className="font-bold text-base" style={{ color: "var(--color-white)" }}>Import from Steam</h2>
+            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Pre-fill playtime from localconfig.vdf</p>
           </div>
-          <button onClick={onClose} className="ml-auto text-xl" style={{ color: "#4a5568" }}>✕</button>
+          <button onClick={onClose} className="ml-auto text-xl" style={{ color: "var(--color-text-dim)" }}>✕</button>
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-4"
-          style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+          style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
           {loading && (
             <div className="flex items-center justify-center h-24 gap-3">
-              <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: "#66c0f4" }} />
-              <span className="text-sm" style={{ color: "#8f98a0" }}>Reading Steam data…</span>
+              <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: "var(--color-accent)" }} />
+              <span className="text-sm" style={{ color: "var(--color-text-muted)" }}>Reading Steam data…</span>
             </div>
           )}
-          {error && <p className="text-sm" style={{ color: "#e57373" }}>{error}</p>}
+          {error && <p className="text-sm" style={{ color: "var(--color-danger)" }}>{error}</p>}
           {!loading && !error && steamEntries.length === 0 && (
-            <p className="text-sm text-center py-8" style={{ color: "#8f98a0" }}>
+            <p className="text-sm text-center py-8" style={{ color: "var(--color-text-muted)" }}>
               No Steam data found. Make sure Steam is installed and you've launched at least one game.
             </p>
           )}
           {!loading && !error && matched.length > 0 && (
             <div>
-              <p className="text-xs mb-3" style={{ color: "#8f98a0" }}>
+              <p className="text-xs mb-3" style={{ color: "var(--color-text-muted)" }}>
                 Found {matched.length} matching game{matched.length !== 1 ? "s" : ""}. Select which to import:
               </p>
               <div className="space-y-2">
                 {matched.map(m => (
                   <label key={m.path} className="flex items-center gap-3 rounded-lg px-3 py-2 cursor-pointer"
-                    style={{ background: "#152232" }}>
+                    style={{ background: "var(--color-panel-2)" }}>
                     <input type="checkbox" checked={m.checked} onChange={() => toggle(m.path)}
-                      className="rounded" style={{ accentColor: "#66c0f4" }} />
+                      className="rounded" style={{ accentColor: "var(--color-accent)" }} />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm truncate" style={{ color: "#c6d4df" }}>{m.name}</p>
-                      <p className="text-[10px]" style={{ color: "#4a5568" }}>
+                      <p className="text-sm truncate" style={{ color: "var(--color-text)" }}>{m.name}</p>
+                      <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
                         Steam: "{m.steamName}" · {formatTime(m.addSecs)}
                       </p>
                     </div>
@@ -2092,7 +2127,7 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
             </div>
           )}
           {!loading && !error && steamEntries.length > 0 && matched.length === 0 && (
-            <p className="text-sm text-center py-4" style={{ color: "#8f98a0" }}>
+            <p className="text-sm text-center py-4" style={{ color: "var(--color-text-muted)" }}>
               Found {steamEntries.length} Steam entries but none match your library by name.
             </p>
           )}
@@ -2100,12 +2135,12 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
 
         {/* Footer */}
         {!loading && matched.length > 0 && (
-          <div className="flex gap-3 justify-end px-6 py-4 border-t flex-shrink-0" style={{ borderColor: "#1b3a50" }}>
+          <div className="flex gap-3 justify-end px-6 py-4 border-t flex-shrink-0" style={{ borderColor: "var(--color-border-card)" }}>
             <button onClick={onClose} className="px-4 py-2 rounded text-sm"
-              style={{ background: "transparent", color: "#8f98a0", border: "1px solid #2a475e" }}>Cancel</button>
+              style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
             <button onClick={handleApply}
               className="px-5 py-2 rounded text-sm font-semibold"
-              style={{ background: "#2a6db5", color: "#fff" }}>
+              style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>
               Apply {matched.filter(m => m.checked).length} import{matched.filter(m => m.checked).length !== 1 ? "s" : ""}
             </button>
           </div>
@@ -2156,26 +2191,26 @@ function LutrisImportModal({ games, onImport, onClose }: {
       style={{ background: "rgba(0,0,0,0.82)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="rounded-xl shadow-2xl w-[680px] max-h-[82vh] flex flex-col"
-        style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
-        <div className="flex items-center gap-3 px-5 py-3 border-b" style={{ borderColor: "#1b3a50" }}>
-          <h2 className="font-bold text-sm" style={{ color: "#fff" }}>Import from Lutris</h2>
+        style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center gap-3 px-5 py-3 border-b" style={{ borderColor: "var(--color-border-card)" }}>
+          <h2 className="font-bold text-sm" style={{ color: "var(--color-white)" }}>Import from Lutris</h2>
           <div className="flex-1" />
-          <button onClick={onClose} className="text-sm" style={{ color: "#4a5568" }}>✕</button>
+          <button onClick={onClose} className="text-sm" style={{ color: "var(--color-text-dim)" }}>✕</button>
         </div>
-        <div className="px-5 py-3 text-xs" style={{ color: "#8f98a0" }}>
+        <div className="px-5 py-3 text-xs" style={{ color: "var(--color-text-muted)" }}>
           Selected entries will be added to library (if missing) and receive per-game Wine/Proton override.
         </div>
         <div className="flex-1 overflow-y-auto px-5 pb-4"
-          style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
-          {loading && <p style={{ color: "#8f98a0" }}>Reading Lutris database…</p>}
-          {error && <p style={{ color: "#e57373" }}>{error}</p>}
+          style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+          {loading && <p style={{ color: "var(--color-text-muted)" }}>Reading Lutris database…</p>}
+          {error && <p style={{ color: "var(--color-danger)" }}>{error}</p>}
           {!loading && !error && rows.length === 0 && (
-            <p style={{ color: "#8f98a0" }}>No Lutris games found.</p>
+            <p style={{ color: "var(--color-text-muted)" }}>No Lutris games found.</p>
           )}
           {!loading && !error && rows.length > 0 && (
             <div className="space-y-2">
               {rows.map((r) => (
-                <label key={r.entry.exe} className="block rounded p-2 cursor-pointer" style={{ background: "#152232", border: "1px solid #1e3a50" }}>
+                <label key={r.entry.exe} className="block rounded p-2 cursor-pointer" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
                   <div className="flex items-start gap-2">
                     <input
                       type="checkbox"
@@ -2185,19 +2220,19 @@ function LutrisImportModal({ games, onImport, onClose }: {
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <p className="text-sm truncate" style={{ color: "#c6d4df" }}>{r.entry.name}</p>
-                        <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: r.exists ? "#1a3a1a" : "#1e2d3d", color: r.exists ? "#6dbf6d" : "#8f98a0" }}>
+                        <p className="text-sm truncate" style={{ color: "var(--color-text)" }}>{r.entry.name}</p>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: r.exists ? "var(--color-success-bg)" : "var(--color-panel)", color: r.exists ? "var(--color-success)" : "var(--color-text-muted)" }}>
                           {r.exists ? "Exists" : "New"}
                         </span>
                         {r.entry.runner && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "#2a3f54", color: "#8cb4d5" }}>
+                          <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)" }}>
                             {r.entry.runner}
                           </span>
                         )}
                       </div>
-                      <p className="text-[10px] mt-0.5 break-all font-mono" style={{ color: "#4a5568" }}>{r.entry.exe}</p>
+                      <p className="text-[10px] mt-0.5 break-all font-mono" style={{ color: "var(--color-text-dim)" }}>{r.entry.exe}</p>
                       {r.entry.prefix && (
-                        <p className="text-[10px] mt-0.5 break-all font-mono" style={{ color: "#8f98a0" }}>prefix: {r.entry.prefix}</p>
+                        <p className="text-[10px] mt-0.5 break-all font-mono" style={{ color: "var(--color-text-muted)" }}>prefix: {r.entry.prefix}</p>
                       )}
                     </div>
                   </div>
@@ -2207,11 +2242,11 @@ function LutrisImportModal({ games, onImport, onClose }: {
           )}
         </div>
         {!loading && rows.length > 0 && (
-          <div className="flex gap-3 justify-end px-5 py-3 border-t" style={{ borderColor: "#1b3a50" }}>
-            <button onClick={onClose} className="px-3 py-1.5 rounded text-xs" style={{ background: "transparent", color: "#8f98a0", border: "1px solid #2a475e" }}>
+          <div className="flex gap-3 justify-end px-5 py-3 border-t" style={{ borderColor: "var(--color-border-card)" }}>
+            <button onClick={onClose} className="px-3 py-1.5 rounded text-xs" style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
               Cancel
             </button>
-            <button onClick={apply} className="px-4 py-1.5 rounded text-xs font-semibold" style={{ background: "#2a6db5", color: "#fff" }}>
+            <button onClick={apply} className="px-4 py-1.5 rounded text-xs font-semibold" style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>
               Apply {rows.filter((r) => r.checked).length}
             </button>
           </div>
@@ -2254,16 +2289,16 @@ function SettingsModal({
       style={{ background: "rgba(0,0,0,0.75)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="rounded-xl shadow-2xl flex flex-col overflow-hidden"
-        style={{ width: 480, maxHeight: "80vh", background: "#1b2838", border: "1px solid #2a475e" }}>
+        style={{ width: 480, maxHeight: "80vh", background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
 
         {/* Header */}
-        <div className="flex items-center gap-3 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: "#1e3a50" }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <div className="flex items-center gap-3 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: "var(--color-border-soft)" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
-          <h2 className="font-bold text-base flex-1" style={{ color: "#fff" }}>Settings</h2>
-          <button onClick={onClose} style={{ color: "#4a5568", fontSize: 18, lineHeight: 1 }}>✕</button>
+          <h2 className="font-bold text-base flex-1" style={{ color: "var(--color-white)" }}>Settings</h2>
+          <button onClick={onClose} style={{ color: "var(--color-text-dim)", fontSize: 18, lineHeight: 1 }}>✕</button>
         </div>
 
         {/* Tab bar */}
@@ -2272,9 +2307,9 @@ function SettingsModal({
             <button key={t.id} onClick={() => setTab(t.id)}
               className="px-3 py-1.5 rounded-t text-xs font-medium"
               style={{
-                background: tab === t.id ? "#16202d" : "transparent",
-                color: tab === t.id ? "#66c0f4" : "#4a5568",
-                borderBottom: tab === t.id ? "2px solid #66c0f4" : "2px solid transparent",
+                background: tab === t.id ? "var(--color-bg-elev)" : "transparent",
+                color: tab === t.id ? "var(--color-accent)" : "var(--color-text-dim)",
+                borderBottom: tab === t.id ? "2px solid var(--color-accent)" : "2px solid transparent",
               }}>
               {t.label}
             </button>
@@ -2283,30 +2318,30 @@ function SettingsModal({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4"
-          style={{ background: "#16202d", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+          style={{ background: "var(--color-bg-elev)", scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
 
           {tab === "general" && (
             <>
               <section className="space-y-2">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>F95zone</h3>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>F95zone</h3>
                 {f95LoggedIn ? (
                   <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
-                    style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+                    style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
                     <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ background: "#c8a951" }} />
-                      <span className="text-sm" style={{ color: "#c8a951" }}>Logged in</span>
+                      <span className="w-2 h-2 rounded-full" style={{ background: "var(--color-warning)" }} />
+                      <span className="text-sm" style={{ color: "var(--color-warning)" }}>Logged in</span>
                     </div>
                     <button onClick={onF95Logout}
                       className="text-xs px-3 py-1 rounded"
-                      style={{ background: "#3a2a00", color: "#c8a951", border: "1px solid #5a4200" }}>
+                      style={{ background: "var(--color-warning-bg)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>
                       Sign out
                     </button>
                   </div>
                 ) : (
                   <button onClick={() => { onClose(); onF95Login(); }}
                     className="w-full py-2 rounded-lg text-sm text-left px-3 flex items-center gap-2"
-                    style={{ background: "#1e2d3d", color: "#8f98a0", border: "1px solid #2a475e" }}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    style={{ background: "var(--color-panel)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /><polyline points="10 17 15 12 10 7" /><line x1="15" y1="12" x2="3" y2="12" />
                     </svg>
                     Sign in to F95zone
@@ -2316,140 +2351,243 @@ function SettingsModal({
 
               {/* DLsite */}
               <section className="space-y-2">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>DLsite</h3>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>DLsite</h3>
                 {dlsiteLoggedIn ? (
                   <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
-                    style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+                    style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
                     <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ background: "#e0534a" }} />
-                      <span className="text-sm" style={{ color: "#e0534a" }}>Logged in</span>
+                      <span className="w-2 h-2 rounded-full" style={{ background: "var(--color-danger-strong)" }} />
+                      <span className="text-sm" style={{ color: "var(--color-danger-strong)" }}>Logged in</span>
                     </div>
                     <button onClick={onDLsiteLogout}
                       className="text-xs px-3 py-1 rounded"
-                      style={{ background: "#3a1010", color: "#e0534a", border: "1px solid #6a2020" }}>
+                      style={{ background: "var(--color-danger-bg)", color: "var(--color-danger-strong)", border: "1px solid #6a2020" }}>
                       Sign out
                     </button>
                   </div>
                 ) : (
                   <button onClick={() => { onClose(); onDLsiteLogin(); }}
                     className="w-full py-2 rounded-lg text-sm text-left px-3 flex items-center gap-2"
-                    style={{ background: "#1e2d3d", color: "#8f98a0", border: "1px solid #2a475e" }}>
+                    style={{ background: "var(--color-panel)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
                     <div className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0"
-                      style={{ background: "#e0534a", color: "#fff" }}>DL</div>
+                      style={{ background: "var(--color-danger-strong)", color: "var(--color-white)" }}>DL</div>
                     Sign in to DLsite
-                    <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }}>age-gate bypass</span>
+                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>age-gate bypass</span>
                   </button>
                 )}
               </section>
 
-              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>System & Notifications</h3>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }}>
+              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>System & Notifications</h3>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.startupWithWindows}
                     onChange={(e) => onSaveSettings({ ...appSettings, startupWithWindows: e.currentTarget.checked })} />
                   Start minimized in tray with Windows
                 </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }}>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.updateCheckerEnabled}
                     onChange={(e) => onSaveSettings({ ...appSettings, updateCheckerEnabled: e.currentTarget.checked })} />
                   Check for game updates (F95/DLsite)
                 </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }}>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.sessionToastEnabled}
                     onChange={(e) => onSaveSettings({ ...appSettings, sessionToastEnabled: e.currentTarget.checked })} />
                   Show system notification on session end
                 </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }}>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.trayTooltipEnabled}
                     onChange={(e) => onSaveSettings({ ...appSettings, trayTooltipEnabled: e.currentTarget.checked })} />
                   Live session duration in tray tooltip
                 </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }}>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.blurNsfwContent}
                     onChange={(e) => onSaveSettings({ ...appSettings, blurNsfwContent: e.currentTarget.checked })} />
                   Blur adult/NSFW covers (Click to reveal)
                 </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }} title="Automatically take a screenshot while a game is running">
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="Automatically take a screenshot while a game is running">
                   Auto-screenshot interval (mins)
                   <input type="number" min="0" className="w-12 px-1 py-1 bg-transparent border rounded outline-none text-center ml-2"
-                    style={{ color: "#c6d4df", borderColor: "#2a475e" }}
+                    style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
                     value={appSettings.autoScreenshotInterval || 0}
                     onChange={e => onSaveSettings({ ...appSettings, autoScreenshotInterval: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
-                  <span className="text-[10px] ml-2" style={{ color: "#4a5568" }}>(0 to disable)</span>
+                  <span className="text-[10px] ml-2" style={{ color: "var(--color-text-dim)" }}>(0 to disable)</span>
                 </label>
               </section>
 
-              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Panic Button (Boss Key)</h3>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "#8f98a0" }} title="Press a global hotkey to instantly hide the game and open something else.">
+              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Appearance</h3>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                  Theme schedule
+                  <select
+                    className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
+                    style={{ borderColor: "var(--color-border)" }}
+                    value={appSettings.themeScheduleMode || "manual"}
+                    onChange={(e) => onSaveSettings({ ...appSettings, themeScheduleMode: e.currentTarget.value as "manual" | "os" | "time" })}
+                  >
+                    <option value="manual" style={{ background: "var(--color-panel-2)" }}>Manual</option>
+                    <option value="os" style={{ background: "var(--color-panel-2)" }}>Follow OS</option>
+                    <option value="time" style={{ background: "var(--color-panel-2)" }}>By Time</option>
+                  </select>
+                </label>
+                {(appSettings.themeScheduleMode || "manual") === "manual" && (
+                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                    Theme
+                    <select
+                      className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
+                      style={{ borderColor: "var(--color-border)" }}
+                      value={appSettings.themeMode || "dark"}
+                      onChange={(e) => onSaveSettings({ ...appSettings, themeMode: e.currentTarget.value as "dark" | "light" | "oled" })}
+                    >
+                      <option value="dark" style={{ background: "var(--color-panel-2)" }}>Dark</option>
+                      <option value="light" style={{ background: "var(--color-panel-2)" }}>Light</option>
+                      <option value="oled" style={{ background: "var(--color-panel-2)" }}>OLED Black</option>
+                    </select>
+                  </label>
+                )}
+                {(appSettings.themeScheduleMode || "manual") === "time" && (
+                  <>
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      Day theme
+                      <select
+                        className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
+                        style={{ borderColor: "var(--color-border)" }}
+                        value={appSettings.dayThemeMode || "light"}
+                        onChange={(e) => onSaveSettings({ ...appSettings, dayThemeMode: e.currentTarget.value as "light" | "dark" })}
+                      >
+                        <option value="light" style={{ background: "var(--color-panel-2)" }}>Light</option>
+                        <option value="dark" style={{ background: "var(--color-panel-2)" }}>Dark</option>
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      Night theme
+                      <select
+                        className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
+                        style={{ borderColor: "var(--color-border)" }}
+                        value={appSettings.nightThemeMode || "dark"}
+                        onChange={(e) => onSaveSettings({ ...appSettings, nightThemeMode: e.currentTarget.value as "dark" | "oled" })}
+                      >
+                        <option value="dark" style={{ background: "var(--color-panel-2)" }}>Dark</option>
+                        <option value="oled" style={{ background: "var(--color-panel-2)" }}>OLED Black</option>
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      Light starts at
+                      <input
+                        type="number"
+                        min="0"
+                        max="23"
+                        className="ml-2 w-14 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
+                        style={{ borderColor: "var(--color-border)" }}
+                        value={Math.max(0, Math.min(23, appSettings.lightStartHour ?? DEFAULT_SETTINGS.lightStartHour))}
+                        onChange={(e) => onSaveSettings({ ...appSettings, lightStartHour: Math.max(0, Math.min(23, parseInt(e.currentTarget.value) || 0)) })}
+                      />
+                      <span className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>00-23</span>
+                    </label>
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      Dark starts at
+                      <input
+                        type="number"
+                        min="0"
+                        max="23"
+                        className="ml-2 w-14 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
+                        style={{ borderColor: "var(--color-border)" }}
+                        value={Math.max(0, Math.min(23, appSettings.darkStartHour ?? DEFAULT_SETTINGS.darkStartHour))}
+                        onChange={(e) => onSaveSettings({ ...appSettings, darkStartHour: Math.max(0, Math.min(23, parseInt(e.currentTarget.value) || 0)) })}
+                      />
+                      <span className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>00-23</span>
+                    </label>
+                  </>
+                )}
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                  Accent color
+                  <input
+                    type="color"
+                    className="ml-2 w-8 h-6 border rounded cursor-pointer"
+                    style={{ borderColor: "var(--color-border)", background: "transparent" }}
+                    value={normalizeHexColor(appSettings.accentColor || DEFAULT_SETTINGS.accentColor, DEFAULT_SETTINGS.accentColor)}
+                    onChange={(e) => onSaveSettings({ ...appSettings, accentColor: e.currentTarget.value })}
+                  />
+                  <input
+                    type="text"
+                    className="ml-1 w-24 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)] font-mono text-xs"
+                    style={{ borderColor: "var(--color-border)" }}
+                    value={normalizeHexColor(appSettings.accentColor || DEFAULT_SETTINGS.accentColor, DEFAULT_SETTINGS.accentColor)}
+                    onChange={(e) => onSaveSettings({ ...appSettings, accentColor: normalizeHexColor(e.currentTarget.value, DEFAULT_SETTINGS.accentColor) })}
+                  />
+                </label>
+              </section>
+
+              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Panic Button (Boss Key)</h3>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="Press a global hotkey to instantly hide the game and open something else.">
                   <input type="checkbox" checked={appSettings.bossKeyEnabled}
                     onChange={(e) => onSaveSettings({ ...appSettings, bossKeyEnabled: e.currentTarget.checked })} />
                   Enable Panic Button
                 </label>
                 {appSettings.bossKeyEnabled && (
                   <div className="pl-6 space-y-3 mt-2">
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "#8f98a0" }}>
+                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
                       Hotkey:
                       <select value={appSettings.bossKeyCode || 0x7A}
                         onChange={(e) => onSaveSettings({ ...appSettings, bossKeyCode: parseInt(e.currentTarget.value) })}
-                        className="bg-transparent border rounded px-2 py-1 outline-none text-[#c6d4df]" style={{ borderColor: "#2a475e" }}>
+                        className="bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]" style={{ borderColor: "var(--color-border)" }}>
                         {[...Array(11)].map((_, i) => (
-                          <option key={i} value={0x70 + i} style={{ background: "#152232" }}>F{i + 1}</option>
+                          <option key={i} value={0x70 + i} style={{ background: "var(--color-panel-2)" }}>F{i + 1}</option>
                         ))}
                       </select>
                     </label>
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "#8f98a0" }}>
+                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
                       Action:
                       <select value={appSettings.bossKeyAction || "hide"}
                         onChange={(e) => onSaveSettings({ ...appSettings, bossKeyAction: e.currentTarget.value as "hide" | "kill" })}
-                        className="bg-transparent border rounded px-2 py-1 outline-none text-[#c6d4df]" style={{ borderColor: "#2a475e" }}>
-                        <option value="hide" style={{ background: "#152232" }}>Hide Window (Smooth, but audio keeps playing)</option>
-                        <option value="kill" style={{ background: "#152232" }}>Force Close Game (Stops audio instantly)</option>
+                        className="bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]" style={{ borderColor: "var(--color-border)" }}>
+                        <option value="hide" style={{ background: "var(--color-panel-2)" }}>Hide Window (Smooth, but audio keeps playing)</option>
+                        <option value="kill" style={{ background: "var(--color-panel-2)" }}>Force Close Game (Stops audio instantly)</option>
                       </select>
                     </label>
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "#8f98a0" }}>
+                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
                       <input type="checkbox" checked={appSettings.bossKeyMuteSystem}
                         onChange={(e) => onSaveSettings({ ...appSettings, bossKeyMuteSystem: e.currentTarget.checked })} />
                       Also mute system volume (Shows Windows volume overlay)
                     </label>
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "#8f98a0" }}>
+                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
                       Fallback App / URL:
-                      <input type="text" placeholder="e.g. notepad.exe or https://google.com" className="bg-transparent border rounded px-2 py-1 outline-none flex-1 text-[#c6d4df]"
-                        style={{ borderColor: "#2a475e" }} value={appSettings.bossKeyFallbackUrl || ""}
+                      <input type="text" placeholder="e.g. notepad.exe or https://google.com" className="bg-transparent border rounded px-2 py-1 outline-none flex-1 text-[var(--color-text)]"
+                        style={{ borderColor: "var(--color-border)" }} value={appSettings.bossKeyFallbackUrl || ""}
                         onChange={(e) => onSaveSettings({ ...appSettings, bossKeyFallbackUrl: e.currentTarget.value })} />
                     </label>
                   </div>
                 )}
               </section>
 
-              <section className="space-y-4 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Export Library</h3>
+              <section className="space-y-4 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Export Library</h3>
                 <div className="flex gap-2">
-                  <button onClick={onExportCSV} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "#2a3f54", color: "#c6d4df" }}>CSV Spreadsheet</button>
-                  <button onClick={onExportHTML} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "#2a3f54", color: "#c6d4df" }}>HTML Webpage</button>
+                  <button onClick={onExportCSV} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>CSV Spreadsheet</button>
+                  <button onClick={onExportHTML} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>HTML Webpage</button>
                 </div>
               </section>
 
-              <section className="space-y-2 mt-4 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Library Folders</h3>
-                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid #2a475e" }}>
+              <section className="space-y-2 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Library Folders</h3>
+                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
                   {libraryFolders.length === 0 ? (
-                    <p className="px-3 py-3 text-xs" style={{ color: "#4a5568" }}>No folders added yet.</p>
+                    <p className="px-3 py-3 text-xs" style={{ color: "var(--color-text-dim)" }}>No folders added yet.</p>
                   ) : (
                     libraryFolders.map((f) => {
                       const label = f.path.replace(/\\/g, "/").split("/").pop() ?? f.path;
                       return (
                         <div key={f.path} className="flex items-center gap-2 px-3 py-2 border-b last:border-0"
-                          style={{ borderColor: "#1e3a50" }}>
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a5568" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+                          style={{ borderColor: "var(--color-border-soft)" }}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
                             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                           </svg>
-                          <span className="flex-1 text-xs truncate" style={{ color: "#8f98a0" }} title={f.path}>{label}</span>
+                          <span className="flex-1 text-xs truncate" style={{ color: "var(--color-text-muted)" }} title={f.path}>{label}</span>
                           <button onClick={() => onRemoveFolder(f.path)}
                             className="text-[11px] px-1.5 rounded"
-                            style={{ color: "#4a5568" }}
-                            onMouseEnter={(e) => (e.currentTarget.style.color = "#e57373")}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = "#4a5568")}>×</button>
+                            style={{ color: "var(--color-text-dim)" }}
+                            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--color-danger)")}
+                            onMouseLeave={(e) => (e.currentTarget.style.color = "var(--color-text-dim)")}>×</button>
                         </div>
                       );
                     })
@@ -2459,10 +2597,10 @@ function SettingsModal({
 
               {appUpdate && (
                 <section className="space-y-2">
-                  <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Updates</h3>
+                  <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Updates</h3>
                   <button onClick={() => { onClose(); onAppUpdate(); }}
                     className="w-full py-2 rounded-lg text-sm px-3 flex items-center gap-2 font-semibold"
-                    style={{ background: "#1a3a1a", color: "#6dbf6d", border: "1px solid #2a5a2a" }}>
+                    style={{ background: "var(--color-success-bg)", color: "var(--color-success)", border: "1px solid var(--color-success-border)" }}>
                     ↑ v{appUpdate.version} available — click to install
                   </button>
                 </section>
@@ -2472,22 +2610,22 @@ function SettingsModal({
 
           {tab === "rss" && (
             <section className="space-y-4">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>RSS Feeds</h3>
-              <p className="text-xs" style={{ color: "#8f98a0" }}>Track game updates and discovering new releases.</p>
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>RSS Feeds</h3>
+              <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Track game updates and discovering new releases.</p>
 
               <div className="space-y-2">
                 {(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds).map((feed, idx) => (
-                  <div key={idx} className="flex gap-2 p-3 rounded" style={{ background: "#1b2d3d", border: "1px solid #2a475e" }}>
+                  <div key={idx} className="flex gap-2 p-3 rounded" style={{ background: "var(--color-panel-alt)", border: "1px solid var(--color-border)" }}>
                     <div className="flex-1 space-y-2">
                       <input type="text" value={feed.name} placeholder="Feed Name"
-                        className="w-full bg-transparent text-sm font-semibold outline-none" style={{ color: "#c6d4df" }}
+                        className="w-full bg-transparent text-sm font-semibold outline-none" style={{ color: "var(--color-text)" }}
                         onChange={(e) => {
                           const nextFeeds = [...(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds)];
                           nextFeeds[idx] = { ...feed, name: (e.target as HTMLInputElement).value };
                           onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
                         }} />
                       <input type="text" value={feed.url} placeholder="Feed URL"
-                        className="w-full bg-transparent text-xs w-full outline-none" style={{ color: "#8f98a0" }}
+                        className="w-full bg-transparent text-xs w-full outline-none" style={{ color: "var(--color-text-muted)" }}
                         onChange={(e) => {
                           const nextFeeds = [...(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds)];
                           nextFeeds[idx] = { ...feed, url: (e.target as HTMLInputElement).value };
@@ -2498,7 +2636,7 @@ function SettingsModal({
                       const nextFeeds = (appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds).filter((_, i) => i !== idx);
                       onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
                     }}
-                      className="text-[#e57373] hover:text-white mt-1" style={{ width: 24, height: 24 }}>✕</button>
+                      className="text-[var(--color-danger)] hover:text-white mt-1" style={{ width: 24, height: 24 }}>✕</button>
                   </div>
                 ))}
 
@@ -2506,8 +2644,8 @@ function SettingsModal({
                   const nextFeeds = [...(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds), { name: "New Feed", url: "" }];
                   onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
                 }}
-                  className="w-full py-2 flex items-center justify-center gap-2 rounded text-sm text-[#c6d4df] hover:text-white"
-                  style={{ border: "1px dashed #2a475e" }}>
+                  className="w-full py-2 flex items-center justify-center gap-2 rounded text-sm text-[var(--color-text)] hover:text-white"
+                  style={{ border: "1px dashed var(--color-border)" }}>
                   + Add RSS Feed
                 </button>
               </div>
@@ -2517,14 +2655,14 @@ function SettingsModal({
           {tab === "scanner" && (
             <section className="space-y-6">
               <div className="space-y-3">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Library Scanner</h3>
-                <p className="text-xs leading-relaxed" style={{ color: "#8f98a0" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Library Scanner</h3>
+                <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
                   Force a full re-scan of all library folders. Use this if new games were added to the folders outside of LIBMALY, or if some entries are missing.
                 </p>
                 <button onClick={() => { onRescanAll(); onClose(); }}
                   disabled={syncState !== "idle"}
                   className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
-                  style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d7a9b" }}>
+                  style={{ background: "var(--color-border)", color: "var(--color-text)", border: "1px solid #3d7a9b" }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
                     <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
@@ -2533,20 +2671,20 @@ function SettingsModal({
                 </button>
               </div>
 
-              <div className="space-y-3 border-t pt-4" style={{ borderColor: "#1e3a50" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Metadata Refetch</h3>
-                <p className="text-xs leading-relaxed" style={{ color: "#8f98a0" }}>
+              <div className="space-y-3 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Metadata Refetch</h3>
+                <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
                   Update metadata for all currently linked games (runs in the background).
                 </p>
                 <button onClick={onBatchMetadataRefresh} disabled={!!batchRefreshStatus}
                   className="w-full py-2.5 rounded text-sm font-semibold disabled:opacity-50"
-                  style={{ background: "#2a6db5", color: "#fff", border: "1px solid #3d7dc8" }}>
+                  style={{ background: "var(--color-accent-dark)", color: "var(--color-white)", border: "1px solid var(--color-accent-mid)" }}>
                   {batchRefreshStatus || "Refetch All Linked Games"}
                 </button>
-                <label className="flex items-center gap-2 text-sm mt-3" style={{ color: "#8f98a0" }}>
+                <label className="flex items-center gap-2 text-sm mt-3" style={{ color: "var(--color-text-muted)" }}>
                   Auto-refetch metadata older than
                   <input type="number" min="0" className="w-12 px-1 py-1 bg-transparent border rounded outline-none text-center"
-                    style={{ color: "#c6d4df", borderColor: "#2a475e" }}
+                    style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
                     value={appSettings.metadataAutoRefetchDays || 0}
                     onChange={e => onSaveSettings({ ...appSettings, metadataAutoRefetchDays: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
                   days (0 to disable)
@@ -2557,13 +2695,13 @@ function SettingsModal({
 
           {tab === "import" && (
             <section className="space-y-3">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Steam Playtime Import</h3>
-              <p className="text-xs leading-relaxed" style={{ color: "#8f98a0" }}>
-                Read playtime data from Steam's <code style={{ color: "#f88379" }}>localconfig.vdf</code> and pre-fill hours for games that match titles in your library. Only overrides your tracked time if Steam's value is higher.
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Steam Playtime Import</h3>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                Read playtime data from Steam's <code style={{ color: "var(--color-code-accent)" }}>localconfig.vdf</code> and pre-fill hours for games that match titles in your library. Only overrides your tracked time if Steam's value is higher.
               </p>
               <button onClick={() => { onSteamImport(); onClose(); }}
                 className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
-                style={{ background: "#1a3050", color: "#66c0f4", border: "1px solid #2a5080" }}
+                style={{ background: "#1a3050", color: "var(--color-accent)", border: "1px solid #2a5080" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = "#1e3a60")}
                 onMouseLeave={(e) => (e.currentTarget.style.background = "#1a3050")}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
@@ -2572,9 +2710,9 @@ function SettingsModal({
                 Import from Steam…
               </button>
 
-              <div className="pt-3 border-t" style={{ borderColor: "#1e3a50" }}>
-                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "#4a5568" }}>Lutris Import</h3>
-                <p className="text-xs leading-relaxed mb-2" style={{ color: "#8f98a0" }}>
+              <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>Lutris Import</h3>
+                <p className="text-xs leading-relaxed mb-2" style={{ color: "var(--color-text-muted)" }}>
                   Import Lutris game entries and apply their Wine prefix/runner as per-game override.
                 </p>
                 <button
@@ -2590,16 +2728,16 @@ function SettingsModal({
 
           {tab === "wine" && platform !== "windows" && (
             <section className="space-y-3">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "#4a5568" }}>Wine / Proton</h3>
-              <p className="text-xs leading-relaxed" style={{ color: "#8f98a0" }}>
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Wine / Proton</h3>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
                 Configure the Wine or Proton runtime used to launch Windows games on Linux or macOS.
               </p>
               <button onClick={() => { onWineSettings(); onClose(); }}
                 className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
                 style={{
-                  background: launchConfig.enabled ? "#2a1f3a" : "#1e2d3d",
-                  color: launchConfig.enabled ? "#b08ee8" : "#8f98a0",
-                  border: `1px solid ${launchConfig.enabled ? "#5a3a8a" : "#2a475e"}`,
+                  background: launchConfig.enabled ? "#2a1f3a" : "var(--color-panel)",
+                  color: launchConfig.enabled ? "#b08ee8" : "var(--color-text-muted)",
+                  border: `1px solid ${launchConfig.enabled ? "#5a3a8a" : "var(--color-border)"}`,
                 }}>
                 🍷 {launchConfig.enabled ? `${launchConfig.runner.charAt(0).toUpperCase() + launchConfig.runner.slice(1)} active — Change…` : "Configure Wine / Proton…"}
               </button>
@@ -2632,6 +2770,20 @@ export default function App() {
   const [metadata, setMetadata] = useState<Record<string, GameMetadata>>(() => loadCache(SK_META, {}));
   const [selected, setSelected] = useState<Game | null>(null);
   const [activeMainTab, setActiveMainTab] = useState<"library" | "feed" | "stats">("library");
+  const [navHistory, setNavHistory] = useState<NavEntry[]>([]);
+  const [navIndex, setNavIndex] = useState(0);
+  const navIndexRef = useRef(0);
+  const isApplyingHistoryRef = useRef(false);
+  const isHistoryBootstrappedRef = useRef(false);
+  const [isMaximized, setIsMaximized] = useState(false);
+  const [osPrefersDark, setOsPrefersDark] = useState<boolean>(() => {
+    try {
+      return typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    } catch {
+      return true;
+    }
+  });
+  const [themeClockTick, setThemeClockTick] = useState(Date.now());
   const [search, setSearch] = useState("");
   const [syncState, setSyncState] = useState<"idle" | "syncing" | "full-scan">("idle");
   const [deleteTarget, setDeleteTarget] = useState<Game | null>(null);
@@ -2686,9 +2838,9 @@ export default function App() {
 
   const handleExportHTML = async () => {
     let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
-      body { background: #1b2838; color: #c6d4df; font-family: sans-serif; }
+      body { background: var(--color-bg); color: var(--color-text); font-family: sans-serif; }
       .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 20px; padding: 20px; }
-      .card { background: #1e2d3d; padding: 10px; border-radius: 8px; text-align: center; }
+      .card { background: var(--color-panel); padding: 10px; border-radius: 8px; text-align: center; }
       img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 4px; }
       h3 { font-size: 14px; margin: 10px 0 0 0; }
     </style></head><body><h1>LIBMALY Library</h1><div class="grid">`;
@@ -2698,13 +2850,13 @@ export default function App() {
       const pt = stats[g.path]?.totalTime || 0;
       const hours = pt >= 3600 ? Math.floor(pt / 3600) + "h " : "";
       const mins = Math.floor((pt % 3600) / 60) + "m";
-      const ptStr = pt > 0 ? `<div style="font-size: 11px; color: #8f98a0; margin-top: 5px;">🕓 ${hours}${mins}</div>` : "";
+      const ptStr = pt > 0 ? `<div style="font-size: 11px; color: var(--color-text-muted); margin-top: 5px;">🕓 ${hours}${mins}</div>` : "";
 
       const src = metadata[g.path]?.source;
       const url = metadata[g.path]?.source_url;
-      const sourceStr = src && url ? `<a href="${url}" target="_blank" style="display: inline-block; font-size: 10px; margin-top: 5px; color: #66c0f4; text-decoration: none; border: 1px solid #2a475e; padding: 2px 6px; border-radius: 4px;">↗ ${src}</a>` : "";
+      const sourceStr = src && url ? `<a href="${url}" target="_blank" style="display: inline-block; font-size: 10px; margin-top: 5px; color: var(--color-accent); text-decoration: none; border: 1px solid var(--color-border); padding: 2px 6px; border-radius: 4px;">↗ ${src}</a>` : "";
 
-      const img = cvr ? `<img src="${cvr}" />` : `<div style="aspect-ratio: 2/3; background: #2a475e; display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 12px; font-weight: bold; color: rgba(255,255,255,0.5);">NO COVER</div>`;
+      const img = cvr ? `<img src="${cvr}" />` : `<div style="aspect-ratio: 2/3; background: var(--color-border); display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 12px; font-weight: bold; color: rgba(255,255,255,0.5);">NO COVER</div>`;
       html += `<div class="card">${img}<h3>${name}</h3>${sourceStr}${ptStr}</div>`;
     }
     html += `</div></body></html>`;
@@ -2802,9 +2954,65 @@ export default function App() {
       return updated;
     });
   };
-  const [appSettings, setAppSettings] = useState<AppSettings>(() => loadCache(SK_SETTINGS, DEFAULT_SETTINGS));
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => ({ ...DEFAULT_SETTINGS, ...loadCache(SK_SETTINGS, DEFAULT_SETTINGS) }));
   const appSettingsRef = useRef(appSettings);
   useEffect(() => { appSettingsRef.current = appSettings; }, [appSettings]);
+  useEffect(() => {
+    navIndexRef.current = navIndex;
+  }, [navIndex]);
+  useEffect(() => {
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!mq) return;
+    const apply = () => setOsPrefersDark(mq.matches);
+    apply();
+    mq.addEventListener?.("change", apply);
+    return () => mq.removeEventListener?.("change", apply);
+  }, []);
+  useEffect(() => {
+    if (appSettings.themeScheduleMode !== "time") return;
+    const t = setInterval(() => setThemeClockTick(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, [appSettings.themeScheduleMode]);
+  const effectiveThemeMode = useMemo<"dark" | "light" | "oled">(() => {
+    if (appSettings.themeScheduleMode === "os") {
+      return osPrefersDark ? "dark" : "light";
+    }
+    if (appSettings.themeScheduleMode === "time") {
+      const lightStart = Math.max(0, Math.min(23, appSettings.lightStartHour ?? DEFAULT_SETTINGS.lightStartHour));
+      const darkStart = Math.max(0, Math.min(23, appSettings.darkStartHour ?? DEFAULT_SETTINGS.darkStartHour));
+      const h = new Date(themeClockTick).getHours();
+      const isLight = lightStart === darkStart
+        ? true
+        : lightStart < darkStart
+          ? h >= lightStart && h < darkStart
+          : !(h >= darkStart && h < lightStart);
+      return isLight
+        ? (appSettings.dayThemeMode || "light")
+        : (appSettings.nightThemeMode || "dark");
+    }
+    return appSettings.themeMode || "dark";
+  }, [
+    appSettings.themeScheduleMode,
+    appSettings.themeMode,
+    appSettings.dayThemeMode,
+    appSettings.nightThemeMode,
+    appSettings.lightStartHour,
+    appSettings.darkStartHour,
+    osPrefersDark,
+    themeClockTick,
+  ]);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = effectiveThemeMode;
+    const accent = normalizeHexColor(appSettings.accentColor, DEFAULT_SETTINGS.accentColor);
+    root.style.setProperty("--color-accent", accent);
+    root.style.setProperty("--color-accent-dark", shiftHexColor(accent, -0.42));
+    root.style.setProperty("--color-accent-mid", shiftHexColor(accent, -0.28));
+    root.style.setProperty("--color-accent-soft", shiftHexColor(accent, -0.08));
+    root.style.setProperty("--color-accent-deep", shiftHexColor(accent, -0.62));
+    root.style.setProperty("--color-accent-deeper", shiftHexColor(accent, -0.68));
+    root.style.setProperty("--color-accent-muted", shiftHexColor(accent, -0.46));
+  }, [effectiveThemeMode, appSettings.accentColor]);
 
   const [revealedNsfw, setRevealedNsfw] = useState<Record<string, boolean>>({});
   const revealNsfwPath = useCallback((path: string) => setRevealedNsfw(p => ({ ...p, [path]: true })), []);
@@ -2818,6 +3026,58 @@ export default function App() {
 
   const statsRef = useRef(stats);
   useEffect(() => { statsRef.current = stats; }, [stats]);
+  useEffect(() => {
+    if (!isHistoryBootstrappedRef.current) {
+      isHistoryBootstrappedRef.current = true;
+      setNavHistory([{ tab: activeMainTab, selectedPath: selected?.path ?? null }]);
+      setNavIndex(0);
+      navIndexRef.current = 0;
+      return;
+    }
+    if (isApplyingHistoryRef.current) {
+      isApplyingHistoryRef.current = false;
+      return;
+    }
+    const entry: NavEntry = { tab: activeMainTab, selectedPath: selected?.path ?? null };
+    setNavHistory((prev) => {
+      const idx = navIndexRef.current;
+      const current = prev[idx];
+      if (current && current.tab === entry.tab && current.selectedPath === entry.selectedPath) return prev;
+      const base = prev.slice(0, idx + 1);
+      const next = [...base, entry];
+      let nextIdx = next.length - 1;
+      if (next.length > 120) {
+        next.shift();
+        nextIdx = next.length - 1;
+      }
+      navIndexRef.current = nextIdx;
+      setNavIndex(nextIdx);
+      return next;
+    });
+  }, [activeMainTab, selected?.path]);
+  const currentLocationTitle = useMemo(() => {
+    if (selected) return gameDisplayName(selected);
+    if (activeMainTab === "feed") return "News & Updates";
+    if (activeMainTab === "stats") return "All-Time Stats";
+    return "Library";
+  }, [selected, activeMainTab, metadata, customizations]);
+  useEffect(() => {
+    const title = `libmaly - ${currentLocationTitle}`;
+    document.title = title;
+    getCurrentWindow().setTitle(title).catch(() => { });
+  }, [currentLocationTitle]);
+  useEffect(() => {
+    const w = getCurrentWindow();
+    w.isMaximized().then(setIsMaximized).catch(() => { });
+    const unlisten = w.onResized(async () => {
+      try {
+        setIsMaximized(await w.isMaximized());
+      } catch { }
+    });
+    return () => {
+      unlisten.then((f) => f()).catch(() => { });
+    };
+  }, []);
 
   const [runningGamePath, setRunningGamePath] = useState<string | null>(null);
   const [platform, setPlatform] = useState<string>("windows");
@@ -2854,6 +3114,11 @@ export default function App() {
     oldMeta: GameMetadata;
     newMeta: GameMetadata;
   } | null>(null);
+  const openGameView = useCallback((game: Game | null) => {
+    if (!game) return;
+    setActiveMainTab("library");
+    setSelected(game);
+  }, []);
 
   const handleToggleWishlist = useCallback((item: Omit<WishlistItem, 'addedAt'>) => {
     setWishlist(prev => {
@@ -3372,7 +3637,7 @@ export default function App() {
       saveCache(SK_GAMES, next);
       return next;
     });
-    setSelected(newGame);
+    openGameView(newGame);
   };
 
   // Remove a library folder (and its games from the list)
@@ -3443,7 +3708,7 @@ export default function App() {
       const wanted = normalizePathForMatch(requestedPath);
       const game = games.find((g) => normalizePathForMatch(g.path) === wanted);
       if (!game) return false;
-      setSelected(game);
+      openGameView(game);
       setActiveMainTab("library");
       launchGame(game.path);
       return true;
@@ -3466,7 +3731,7 @@ export default function App() {
         .sort((a, b) => a.score - b.score || a.g.name.localeCompare(b.g.name));
       if (ranked.length === 0) return false;
       const game = ranked[0].g;
-      setSelected(game);
+      openGameView(game);
       setActiveMainTab("library");
       launchGame(game.path);
       return true;
@@ -3978,10 +4243,10 @@ export default function App() {
 
         if (e.key === "ArrowDown") {
           const next = idx === -1 ? 0 : Math.min(idx + 1, actionable.length - 1);
-          setSelected(actionable[next]);
+          openGameView(actionable[next]);
         } else {
           const prev = idx === -1 ? actionable.length - 1 : Math.max(idx - 1, 0);
-          setSelected(actionable[prev]);
+          openGameView(actionable[prev]);
         }
       } else if (e.key === " ") {
         if (selected && !runningGamePath && syncState !== "syncing") {
@@ -4000,19 +4265,123 @@ export default function App() {
 
   /** Settings modal */
   const [showSettings, setShowSettings] = useState(false);
+  const canGoBack = navIndex > 0;
+  const canGoForward = navIndex < navHistory.length - 1;
+  const goBack = useCallback(() => {
+    if (navIndexRef.current <= 0) return;
+    const targetIndex = navIndexRef.current - 1;
+    const target = navHistory[targetIndex];
+    if (!target) return;
+    navIndexRef.current = targetIndex;
+    setNavIndex(targetIndex);
+    isApplyingHistoryRef.current = true;
+    setActiveMainTab(target.tab);
+    if (target.selectedPath) {
+      const g = gamesRef.current.find((x) => x.path === target.selectedPath) ?? null;
+      setSelected(g);
+    } else {
+      setSelected(null);
+    }
+  }, [navHistory]);
+  const goForward = useCallback(() => {
+    if (navIndexRef.current >= navHistory.length - 1) return;
+    const targetIndex = navIndexRef.current + 1;
+    const target = navHistory[targetIndex];
+    if (!target) return;
+    navIndexRef.current = targetIndex;
+    setNavIndex(targetIndex);
+    isApplyingHistoryRef.current = true;
+    setActiveMainTab(target.tab);
+    if (target.selectedPath) {
+      const g = gamesRef.current.find((x) => x.path === target.selectedPath) ?? null;
+      setSelected(g);
+    } else {
+      setSelected(null);
+    }
+  }, [navHistory]);
+  const handleMinimizeWindow = () => {
+    getCurrentWindow().minimize().catch(() => { });
+  };
+  const handleToggleMaximizeWindow = () => {
+    const w = getCurrentWindow();
+    w.isMaximized().then((maxed) => {
+      if (maxed) return w.unmaximize().then(() => setIsMaximized(false));
+      return w.maximize().then(() => setIsMaximized(true));
+    }).catch(() => { });
+  };
+  const handleCloseWindow = () => {
+    getCurrentWindow().close().catch(() => { });
+  };
+  const shouldShowWindowControls = platform !== "macos";
+  const topbarLocationTitle = selected
+    ? `Library / ${gameDisplayName(selected)}`
+    : activeMainTab === "feed"
+      ? "News & Updates"
+      : activeMainTab === "stats"
+        ? "All-Time Stats"
+        : "Library";
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && !e.shiftKey && e.key === "ArrowLeft") {
+        e.preventDefault();
+        goBack();
+      } else if (e.altKey && !e.shiftKey && e.key === "ArrowRight") {
+        e.preventDefault();
+        goForward();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [goBack, goForward]);
 
   if (!isAppReady) {
     return (
-      <div className="flex flex-col items-center justify-center w-screen h-screen select-none" style={{ background: "#0d1117" }}>
-        <h1 className="text-4xl font-black italic tracking-widest mb-6" style={{ background: "linear-gradient(90deg, #66c0f4, #c8a951)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>LIBMALY</h1>
-        <div className="w-8 h-8 rounded-full border-4 border-[#2a475e] border-t-[#66c0f4] animate-spin" />
-        <p className="mt-4 text-[10px] font-bold uppercase tracking-wider" style={{ color: "#8f98a0" }}>Building your library...</p>
+      <div className="flex flex-col items-center justify-center w-screen h-screen select-none" style={{ background: "var(--color-bg-deep)" }}>
+        <h1 className="text-4xl font-black italic tracking-widest mb-6" style={{ background: "linear-gradient(90deg, var(--color-accent), var(--color-warning))", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>LIBMALY</h1>
+        <div className="w-8 h-8 rounded-full border-4 border-[var(--color-border)] border-t-[var(--color-accent)] animate-spin" />
+        <p className="mt-4 text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--color-text-muted)" }}>Building your library...</p>
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: "#1b2838", color: "#c6d4df", fontFamily: "'Arial', sans-serif" }}>
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: "var(--color-bg)", color: "var(--color-text)", fontFamily: "'Arial', sans-serif" }}>
+      <header className="h-8 flex items-stretch border-b select-none" style={{ background: "var(--color-panel)", borderColor: "var(--color-border-soft)" }}>
+        <div className="flex items-center gap-1.5 px-2">
+          <button
+            onClick={goBack}
+            disabled={!canGoBack}
+            className="w-6 h-6 rounded text-xs disabled:opacity-40"
+            style={{ background: "transparent", color: "var(--color-text-muted)" }}
+            title="Back (Alt+Left)"
+          >
+            ←
+          </button>
+          <button
+            onClick={goForward}
+            disabled={!canGoForward}
+            className="w-6 h-6 rounded text-xs disabled:opacity-40"
+            style={{ background: "transparent", color: "var(--color-text-muted)" }}
+            title="Forward (Alt+Right)"
+          >
+            →
+          </button>
+        </div>
+        <div data-tauri-drag-region className="flex-1 flex items-center gap-2 px-2 overflow-hidden">
+          <span className="text-[11px] font-semibold truncate" style={{ color: "var(--color-text-soft)" }}>
+            {topbarLocationTitle}
+          </span>
+        </div>
+        {shouldShowWindowControls && (
+          <div className="flex items-center">
+            <button onClick={handleMinimizeWindow} className="w-10 h-8 text-xs" style={{ color: "var(--color-text-muted)" }} title="Minimize">_</button>
+            <button onClick={handleToggleMaximizeWindow} className="w-10 h-8 text-xs" style={{ color: "var(--color-text-muted)" }} title={isMaximized ? "Restore" : "Maximize"}>{isMaximized ? "❐" : "□"}</button>
+            <button onClick={handleCloseWindow} className="w-10 h-8 text-xs hover:bg-red-600 hover:text-white" style={{ color: "var(--color-text-muted)" }} title="Close">✕</button>
+          </div>
+        )}
+      </header>
+      <div className="flex flex-1 overflow-hidden">
 
       {/* ── Context menu (right-click on game) ── */}
       {ctxMenu && (
@@ -4022,43 +4391,43 @@ export default function App() {
             left: Math.min(ctxMenu.x, window.innerWidth - 200),
             top: Math.min(ctxMenu.y, window.innerHeight - 180),
             width: 192,
-            background: "#1e2d3d",
-            border: "1px solid #2a475e",
+            background: "var(--color-panel)",
+            border: "1px solid var(--color-border)",
           }}>
           {/* game name header */}
-          <div className="px-3 py-2 border-b" style={{ borderColor: "#1b3a50" }}>
-            <p className="text-[10px] font-semibold truncate" style={{ color: "#8f98a0" }}>
+          <div className="px-3 py-2 border-b" style={{ borderColor: "var(--color-border-card)" }}>
+            <p className="text-[10px] font-semibold truncate" style={{ color: "var(--color-text-muted)" }}>
               {gameDisplayName(ctxMenu.game)}
             </p>
           </div>
           {/* Open */}
           <button className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
-            style={{ color: "#c6d4df" }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+            style={{ color: "var(--color-text)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-            onClick={() => { setSelected(ctxMenu.game); setCtxMenu(null); }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            onClick={() => { openGameView(ctxMenu.game); setCtxMenu(null); }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
             </svg>
             Open
           </button>
           {/* Rescan folder */}
           <button className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
-            style={{ color: "#c6d4df" }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+            style={{ color: "var(--color-text)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
             onClick={() => rescanGameFolder(ctxMenu.game)}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21.5 2v6h-6" /><path d="M2.5 22v-6h6" />
               <path d="M22 11.5A10 10 0 0 0 3.2 7.2M2 12.5a10 10 0 0 0 18.8 4.2" />
             </svg>
             Rescan folder
           </button>
-          <div style={{ borderTop: "1px solid #1b3a50", margin: "4px 0" }} />
+          <div style={{ borderTop: "1px solid var(--color-border-card)", margin: "4px 0" }} />
           {/* Fav toggle */}
           <button className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
-            style={{ color: favGames[ctxMenu.game.path] ? "#c8a951" : "#c6d4df" }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+            style={{ color: favGames[ctxMenu.game.path] ? "var(--color-warning)" : "var(--color-text)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
             onClick={() => {
               const next = { ...favGames };
@@ -4068,16 +4437,16 @@ export default function App() {
               setCtxMenu(null);
             }}>
             <svg width="12" height="12" viewBox="0 0 24 24"
-              fill={favGames[ctxMenu.game.path] ? "#c8a951" : "none"}
-              stroke="#c8a951" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              fill={favGames[ctxMenu.game.path] ? "var(--color-warning)" : "none"}
+              stroke="var(--color-warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
             </svg>
             {favGames[ctxMenu.game.path] ? "Remove from favourites" : "Add to favourites"}
           </button>
           {/* Hide toggle */}
           <button className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
-            style={{ color: "#c6d4df" }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+            style={{ color: "var(--color-text)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
             onClick={() => {
               const next = { ...hiddenGames };
@@ -4086,7 +4455,7 @@ export default function App() {
               setHiddenGames(next); saveCache(SK_HIDDEN, next);
               setCtxMenu(null);
             }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               {hiddenGames[ctxMenu.game.path]
                 ? <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>
                 : <><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></>}
@@ -4098,9 +4467,9 @@ export default function App() {
 
       {/* ── Sidebar ── */}
       {!isKioskMode && (
-        <aside className="flex flex-col flex-shrink-0 h-full relative" style={{ width: sidebarWidth, background: "#171a21", borderRight: "1px solid #0d1117" }}>
+        <aside className="flex flex-col flex-shrink-0 h-full relative" style={{ width: sidebarWidth, background: "var(--color-panel-2)", borderRight: "1px solid var(--color-bg-deep)" }}>
           <div
-            className="absolute top-0 bottom-0 right-0 w-1 cursor-col-resize hover:bg-[#3d7dc8] transition-colors z-[100]"
+            className="absolute top-0 bottom-0 right-0 w-1 cursor-col-resize hover:bg-[var(--color-accent-mid)] transition-colors z-[100]"
             style={{ transform: "translateX(50%)" }}
             onMouseDown={() => { isDraggingSidebar.current = true; }}
           />
@@ -4108,61 +4477,61 @@ export default function App() {
             onClick={() => { setActiveMainTab("library"); setSelected(null); }}
             title="Library Home"
             className="flex items-center gap-2.5 px-4 py-3 border-b border-t-0 border-l-0 border-r-0 w-full text-left transition-colors"
-            style={{ borderColor: "#0d1117", background: activeMainTab === "library" && selected === null ? "#1b2838" : "transparent", cursor: "pointer" }}
-            onMouseEnter={(e) => { if (activeMainTab !== "library" || selected !== null) e.currentTarget.style.background = "#1b2838" }}
+            style={{ borderColor: "var(--color-bg-deep)", background: activeMainTab === "library" && selected === null ? "var(--color-bg)" : "transparent", cursor: "pointer" }}
+            onMouseEnter={(e) => { if (activeMainTab !== "library" || selected !== null) e.currentTarget.style.background = "var(--color-bg)" }}
             onMouseLeave={(e) => { if (activeMainTab !== "library" || selected !== null) e.currentTarget.style.background = "transparent" }}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-              stroke={selected === null && activeMainTab === "library" ? "#66c0f4" : "#4a7a9b"}
+              stroke={selected === null && activeMainTab === "library" ? "var(--color-accent)" : "var(--color-text-dim)"}
               strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
               <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
             </svg>
             <span className="font-bold tracking-wide text-sm truncate"
-              style={{ color: selected === null && activeMainTab === "library" ? "#66c0f4" : "#c6d4df" }}>LIBMALY</span>
+              style={{ color: selected === null && activeMainTab === "library" ? "var(--color-accent)" : "var(--color-text)" }}>LIBMALY</span>
           </button>
           <button
             onClick={() => { setActiveMainTab("feed"); setSelected(null); }}
             title="News Feed"
             className="flex items-center gap-2.5 px-4 py-3 border-b border-t-0 border-l-0 border-r-0 w-full text-left transition-colors"
-            style={{ borderColor: "#0d1117", background: activeMainTab === "feed" && selected === null ? "#1b2838" : "transparent", cursor: "pointer" }}
-            onMouseEnter={(e) => { if (activeMainTab !== "feed" || selected !== null) e.currentTarget.style.background = "#1b2838" }}
+            style={{ borderColor: "var(--color-bg-deep)", background: activeMainTab === "feed" && selected === null ? "var(--color-bg)" : "transparent", cursor: "pointer" }}
+            onMouseEnter={(e) => { if (activeMainTab !== "feed" || selected !== null) e.currentTarget.style.background = "var(--color-bg)" }}
             onMouseLeave={(e) => { if (activeMainTab !== "feed" || selected !== null) e.currentTarget.style.background = "transparent" }}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-              stroke={activeMainTab === "feed" && selected === null ? "#66c0f4" : "#4a7a9b"}
+              stroke={activeMainTab === "feed" && selected === null ? "var(--color-accent)" : "var(--color-text-dim)"}
               strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
               <path d="M4 11a9 9 0 0 1 9 9" /><path d="M4 4a16 16 0 0 1 16 16" /><circle cx="5" cy="19" r="1" />
             </svg>
             <span className="font-bold tracking-wide text-sm truncate"
-              style={{ color: activeMainTab === "feed" && selected === null ? "#66c0f4" : "#c6d4df" }}>News & Updates</span>
+              style={{ color: activeMainTab === "feed" && selected === null ? "var(--color-accent)" : "var(--color-text)" }}>News & Updates</span>
           </button>
           <button
             onClick={() => { setActiveMainTab("stats"); setSelected(null); }}
             title="All-Time Stats"
             className="flex items-center gap-2.5 px-4 py-3 border-b border-t-0 border-l-0 border-r-0 w-full text-left transition-colors"
-            style={{ borderColor: "#0d1117", background: activeMainTab === "stats" && selected === null ? "#1b2838" : "transparent", cursor: "pointer" }}
-            onMouseEnter={(e) => { if (activeMainTab !== "stats" || selected !== null) e.currentTarget.style.background = "#1b2838" }}
+            style={{ borderColor: "var(--color-bg-deep)", background: activeMainTab === "stats" && selected === null ? "var(--color-bg)" : "transparent", cursor: "pointer" }}
+            onMouseEnter={(e) => { if (activeMainTab !== "stats" || selected !== null) e.currentTarget.style.background = "var(--color-bg)" }}
             onMouseLeave={(e) => { if (activeMainTab !== "stats" || selected !== null) e.currentTarget.style.background = "transparent" }}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-              stroke={activeMainTab === "stats" && selected === null ? "#66c0f4" : "#4a7a9b"}
+              stroke={activeMainTab === "stats" && selected === null ? "var(--color-accent)" : "var(--color-text-dim)"}
               strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
               <path d="M12 20V10" /><path d="M18 20V4" /><path d="M6 20v-4" />
             </svg>
             <span className="font-bold tracking-wide text-sm truncate"
-              style={{ color: activeMainTab === "stats" && selected === null ? "#66c0f4" : "#c6d4df" }}>All-Time Stats</span>
+              style={{ color: activeMainTab === "stats" && selected === null ? "var(--color-accent)" : "var(--color-text)" }}>All-Time Stats</span>
           </button>
-          <div className="px-3 py-2 border-b" style={{ borderColor: "#0d1117" }}>
+          <div className="px-3 py-2 border-b" style={{ borderColor: "var(--color-bg-deep)" }}>
             <div className="relative mb-2">
-              <svg className="absolute left-2 top-1/2 -translate-y-1/2" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg className="absolute left-2 top-1/2 -translate-y-1/2" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
               </svg>
               <input type="text" placeholder="Search games…" value={search}
                 onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
                 className="w-full pl-7 pr-3 py-1.5 rounded text-xs outline-none"
-                style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #1b3a50" }} />
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-card)" }} />
             </div>
             {/* Filter chips */}
             <div
-              className="flex items-center gap-1 mb-2 mt-1 cursor-pointer text-[10px] uppercase font-bold select-none transition-colors hover:text-[#c6d4df]"
-              style={{ color: showFilters ? "#c6d4df" : "#8f98a0" }}
+              className="flex items-center gap-1 mb-2 mt-1 cursor-pointer text-[10px] uppercase font-bold select-none transition-colors hover:text-[var(--color-text)]"
+              style={{ color: showFilters ? "var(--color-text)" : "var(--color-text-muted)" }}
               onClick={() => setShowFilters(p => !p)}
             >
               <svg
@@ -4188,9 +4557,9 @@ export default function App() {
                     <button key={mode} onClick={() => setFilterMode(mode)}
                       className="px-2 py-0.5 rounded text-[10px] font-semibold"
                       style={{
-                        background: filterMode === mode ? "#2a6db5" : "#1b2d3d",
-                        color: filterMode === mode ? "#fff" : "#5a6a7a",
-                        border: `1px solid ${filterMode === mode ? "#3d7dc8" : "#253545"}`,
+                        background: filterMode === mode ? "var(--color-accent-dark)" : "var(--color-panel-alt)",
+                        color: filterMode === mode ? "var(--color-white)" : "var(--color-text-muted)",
+                        border: `1px solid ${filterMode === mode ? "var(--color-accent-mid)" : "var(--color-border-subtle)"}`,
                       }}>{label}</button>
                   ))}
                 </div>
@@ -4205,9 +4574,9 @@ export default function App() {
                     <button key={mode} onClick={() => setFilterMode(mode)}
                       className="px-2 py-0.5 rounded text-[10px] font-semibold"
                       style={{
-                        background: filterMode === mode ? "#2a6db5" : "#1b2d3d",
-                        color: filterMode === mode ? "#fff" : "#5a6a7a",
-                        border: `1px solid ${filterMode === mode ? "#3d7dc8" : "#253545"}`,
+                        background: filterMode === mode ? "var(--color-accent-dark)" : "var(--color-panel-alt)",
+                        color: filterMode === mode ? "var(--color-white)" : "var(--color-text-muted)",
+                        border: `1px solid ${filterMode === mode ? "var(--color-accent-mid)" : "var(--color-border-subtle)"}`,
                       }}>{label}</button>
                   ))}
                 </div>
@@ -4217,9 +4586,9 @@ export default function App() {
                       <button key={`tag:${tag}`} onClick={() => setFilterMode(`tag:${tag}`)}
                         className="px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1"
                         style={{
-                          background: filterMode === `tag:${tag}` ? "#2a6db5" : "#1b2d3d",
-                          color: filterMode === `tag:${tag}` ? "#fff" : "#8cb4d5",
-                          border: `1px solid ${filterMode === `tag:${tag}` ? "#3d7dc8" : "#264d68"}`,
+                          background: filterMode === `tag:${tag}` ? "var(--color-accent-dark)" : "var(--color-panel-alt)",
+                          color: filterMode === `tag:${tag}` ? "var(--color-white)" : "var(--color-accent-soft)",
+                          border: `1px solid ${filterMode === `tag:${tag}` ? "var(--color-accent-mid)" : "var(--color-border-strong)"}`,
                         }}>
                         <span className="opacity-60 text-[9px]">#</span>
                         {tag}
@@ -4236,7 +4605,7 @@ export default function App() {
             )}
             {/* Sort */}
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] flex-shrink-0" style={{ color: "#4a5568" }}>Sort:</span>
+              <span className="text-[10px] flex-shrink-0" style={{ color: "var(--color-text-dim)" }}>Sort:</span>
               {([
                 ["lastPlayed", "Recent"],
                 ["playtime", "Time"],
@@ -4246,24 +4615,24 @@ export default function App() {
                 <button key={mode} onClick={() => setSortMode(mode)}
                   className="px-2 py-0.5 rounded text-[10px]"
                   style={{
-                    background: sortMode === mode ? "#2a3f54" : "transparent",
-                    color: sortMode === mode ? "#c6d4df" : "#4a5568",
-                    border: `1px solid ${sortMode === mode ? "#3d5a73" : "transparent"}`,
+                    background: sortMode === mode ? "var(--color-panel-3)" : "transparent",
+                    color: sortMode === mode ? "var(--color-text)" : "var(--color-text-dim)",
+                    border: `1px solid ${sortMode === mode ? "var(--color-border-strong)" : "transparent"}`,
                   }}>{label}</button>
               ))}
               {sortMode === "custom" && (
-                <span className="text-[9px]" style={{ color: "#4a5568" }} title="Drag rows to reorder">⠿ drag</span>
+                <span className="text-[9px]" style={{ color: "var(--color-text-dim)" }} title="Drag rows to reorder">⠿ drag</span>
               )}
               <div className="flex-1" />
-              <div className="flex bg-[#1b2d3d] rounded shrink-0 items-center" style={{ padding: "2px" }}>
-                <button title="List View" onClick={() => setViewMode("list")} className="p-1 rounded" style={{ background: viewMode === "list" ? "#2a475e" : "transparent" }}>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "list" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+              <div className="flex bg-[var(--color-panel-alt)] rounded shrink-0 items-center" style={{ padding: "2px" }}>
+                <button title="List View" onClick={() => setViewMode("list")} className="p-1 rounded" style={{ background: viewMode === "list" ? "var(--color-border)" : "transparent" }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "list" ? "var(--color-accent)" : "var(--color-text-dim)"} strokeWidth="2.5"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
                 </button>
-                <button title="Compact List" onClick={() => setViewMode("compact")} className="p-1 rounded" style={{ background: viewMode === "compact" ? "#2a475e" : "transparent" }}>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "compact" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="18" x2="20" y2="18"></line></svg>
+                <button title="Compact List" onClick={() => setViewMode("compact")} className="p-1 rounded" style={{ background: viewMode === "compact" ? "var(--color-border)" : "transparent" }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "compact" ? "var(--color-accent)" : "var(--color-text-dim)"} strokeWidth="2.5"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="18" x2="20" y2="18"></line></svg>
                 </button>
-                <button title="Grid View" onClick={() => setViewMode("grid")} className="p-1 rounded" style={{ background: viewMode === "grid" ? "#2a475e" : "transparent" }}>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "grid" ? "#66c0f4" : "#4a5568"} strokeWidth="2.5"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+                <button title="Grid View" onClick={() => setViewMode("grid")} className="p-1 rounded" style={{ background: viewMode === "grid" ? "var(--color-border)" : "transparent" }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={viewMode === "grid" ? "var(--color-accent)" : "var(--color-text-dim)"} strokeWidth="2.5"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
                 </button>
               </div>
 
@@ -4271,16 +4640,16 @@ export default function App() {
                 title="Fullscreen Cover Wall"
                 onClick={handleToggleKiosk}
                 className="px-2 py-0.5 ml-2 rounded text-[9px] uppercase font-bold tracking-wider hover:opacity-100 opacity-60 transition-opacity"
-                style={{ background: "#2a3f54", color: "#c6d4df" }}>
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>
                 Kiosk
               </button>
             </div>
           </div>
           {/* ── Collections ── */}
-          <div className="border-b" style={{ borderColor: "#0d1117" }}>
+          <div className="border-b" style={{ borderColor: "var(--color-bg-deep)" }}>
             <div
-              className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[#c6d4df]"
-              style={{ color: showCollections ? "#c6d4df" : "#4a5568" }}
+              className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[var(--color-text)]"
+              style={{ color: showCollections ? "var(--color-text)" : "var(--color-text-dim)" }}
               onClick={() => setShowCollections(p => !p)}
             >
               <svg className="transition-transform duration-200" style={{ transform: showCollections ? "rotate(90deg)" : "rotate(0deg)" }} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
@@ -4291,7 +4660,7 @@ export default function App() {
               {activeCollectionId && (
                 <button onClick={(e) => { e.stopPropagation(); setActiveCollectionId(null); }}
                   className="text-[9px] px-1.5 py-0.5 rounded mr-1"
-                  style={{ background: "#2a3f54", color: "#8f98a0" }}
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
                   title="Clear filter">✕ clear</button>
               )}
               <button onClick={(e) => { e.stopPropagation(); setCreatingCollection(true); setShowCollections(true); }}
@@ -4301,21 +4670,21 @@ export default function App() {
             {showCollections && (
               <>
                 {collections.length === 0 && !creatingCollection && (
-                  <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No collections yet</p>
+                  <p className="px-3 pb-2 text-[10px]" style={{ color: "var(--color-text-dim)" }}>No collections yet</p>
                 )}
                 {collections.length > 0 && (
-                  <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+                  <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
                     {collections.map((col) => (
                       <div key={col.id}
                         className="group flex items-center gap-2 px-3 py-1.5 cursor-pointer"
-                        style={{ background: activeCollectionId === col.id ? "#1a2e40" : "transparent" }}
+                        style={{ background: activeCollectionId === col.id ? "var(--color-accent-deep)" : "transparent" }}
                         onClick={() => setActiveCollectionId(activeCollectionId === col.id ? null : col.id)}
-                        onMouseEnter={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "#1b2838"; }}
+                        onMouseEnter={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "var(--color-bg)"; }}
                         onMouseLeave={(e) => { if (activeCollectionId !== col.id) e.currentTarget.style.background = "transparent"; }}>
                         <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: col.color }} />
                         {renamingCollectionId === col.id ? (
                           <input autoFocus className="flex-1 text-xs px-1 rounded outline-none"
-                            style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
+                            style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}
                             value={renamingCollectionName}
                             onInput={(e) => setRenamingCollectionName((e.target as HTMLInputElement).value)}
                             onKeyDown={(e) => {
@@ -4326,19 +4695,19 @@ export default function App() {
                             onClick={(e) => e.stopPropagation()} />
                         ) : (
                           <span className="flex-1 text-xs truncate"
-                            style={{ color: activeCollectionId === col.id ? "#66c0f4" : "#8f98a0" }}
+                            style={{ color: activeCollectionId === col.id ? "var(--color-accent)" : "var(--color-text-muted)" }}
                             onDblClick={(e) => { e.stopPropagation(); setRenamingCollectionId(col.id); setRenamingCollectionName(col.name); }}>
                             {col.name}
                           </span>
                         )}
-                        <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>
+                        <span className="text-[9px] flex-shrink-0" style={{ color: "var(--color-text-dim)" }}>
                           {col.gamePaths.filter((p) => games.some((g) => g.path === p)).length}
                         </span>
                         <button
                           className="opacity-0 group-hover:opacity-100 flex-shrink-0 w-4 h-4 flex items-center justify-center rounded"
-                          style={{ fontSize: "13px", color: "#4a5568" }}
-                          onMouseEnter={(e) => { e.currentTarget.style.color = "#e57373"; e.currentTarget.style.background = "#2a1f1f"; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.background = "transparent"; }}
+                          style={{ fontSize: "13px", color: "var(--color-text-dim)" }}
+                          onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-danger)"; e.currentTarget.style.background = "var(--color-danger-bg)"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-dim)"; e.currentTarget.style.background = "transparent"; }}
                           onClick={(e) => { e.stopPropagation(); handleDeleteCollection(col.id); }}
                           title="Delete collection">×</button>
                       </div>
@@ -4357,15 +4726,15 @@ export default function App() {
                         if (e.key === "Escape") { setCreatingCollection(false); setNewCollectionName(""); }
                       }}
                       className="w-full px-2.5 py-1 rounded text-xs outline-none"
-                      style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }} />
+                      style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }} />
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {COLLECTION_COLORS.map((c) => (
                         <button key={c} onClick={() => setNewCollectionColor(c)}
                           className="w-3.5 h-3.5 rounded-full flex-shrink-0"
-                          style={{ background: c, outline: newCollectionColor === c ? "2px solid #fff" : "none", outlineOffset: "1px" }} />
+                          style={{ background: c, outline: newCollectionColor === c ? "2px solid var(--color-white)" : "none", outlineOffset: "1px" }} />
                       ))}
                       <button className="ml-auto text-[10px] px-2 py-0.5 rounded font-semibold"
-                        style={{ background: "#2a6db5", color: "#fff" }}
+                        style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
                         onClick={() => {
                           if (newCollectionName.trim()) {
                             handleCreateCollection(newCollectionName.trim(), newCollectionColor);
@@ -4373,7 +4742,7 @@ export default function App() {
                           }
                         }}>✓</button>
                       <button className="text-[10px] px-2 py-0.5 rounded"
-                        style={{ background: "#2a3f54", color: "#8f98a0" }}
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
                         onClick={() => { setCreatingCollection(false); setNewCollectionName(""); }}>✗</button>
                     </div>
                   </div>
@@ -4382,10 +4751,10 @@ export default function App() {
             )}
           </div>
           {/* ── By Developer ── */}
-          <div className="border-b" style={{ borderColor: "#0d1117" }}>
+          <div className="border-b" style={{ borderColor: "var(--color-bg-deep)" }}>
             <div
-              className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[#c6d4df]"
-              style={{ color: showDevelopers ? "#c6d4df" : "#4a5568" }}
+              className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[var(--color-text)]"
+              style={{ color: showDevelopers ? "var(--color-text)" : "var(--color-text-dim)" }}
               onClick={() => setShowDevelopers(p => !p)}
             >
               <svg className="transition-transform duration-200" style={{ transform: showDevelopers ? "rotate(90deg)" : "rotate(0deg)" }} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
@@ -4398,26 +4767,26 @@ export default function App() {
               {filterMode.startsWith("dev:") && (
                 <button onClick={(e) => { e.stopPropagation(); setFilterMode("all"); }}
                   className="text-[9px] px-1.5 py-0.5 rounded mr-1"
-                  style={{ background: "#2a3f54", color: "#8f98a0" }}
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
                   title="Clear filter">✕ clear</button>
               )}
             </div>
             {showDevelopers && (
               developerBuckets.length === 0 ? (
-                <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No developers yet</p>
+                <p className="px-3 pb-2 text-[10px]" style={{ color: "var(--color-text-dim)" }}>No developers yet</p>
               ) : (
-                <div className="overflow-y-auto pb-1" style={{ maxHeight: "156px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+                <div className="overflow-y-auto pb-1" style={{ maxHeight: "156px", scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
                   {developerBuckets.map((dev) => {
                     const active = filterMode === `dev:${dev.name}`;
                     return (
                       <button key={dev.name}
                         className="w-full flex items-center gap-2 px-3 py-1.5 text-left"
-                        style={{ background: active ? "#1a2e40" : "transparent" }}
+                        style={{ background: active ? "var(--color-accent-deep)" : "transparent" }}
                         onClick={() => setFilterMode(active ? "all" : `dev:${dev.name}`)}
-                        onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "#1b2838"; }}
+                        onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--color-bg)"; }}
                         onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}>
-                        <span className="flex-1 text-xs truncate" style={{ color: active ? "#66c0f4" : "#8f98a0" }}>{dev.name}</span>
-                        <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>{dev.count}</span>
+                        <span className="flex-1 text-xs truncate" style={{ color: active ? "var(--color-accent)" : "var(--color-text-muted)" }}>{dev.name}</span>
+                        <span className="text-[9px] flex-shrink-0" style={{ color: "var(--color-text-dim)" }}>{dev.count}</span>
                       </button>
                     );
                   })}
@@ -4426,10 +4795,10 @@ export default function App() {
             )}
           </div>
           {/* ── Wishlist ── */}
-          <div className="border-b" style={{ borderColor: "#0d1117" }}>
+          <div className="border-b" style={{ borderColor: "var(--color-bg-deep)" }}>
             <div
-              className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[#c6d4df]"
-              style={{ color: showWishlist ? "#c6d4df" : "#4a5568" }}
+              className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[var(--color-text)]"
+              style={{ color: showWishlist ? "var(--color-text)" : "var(--color-text-dim)" }}
               onClick={() => setShowWishlist(p => !p)}
             >
               <svg className="transition-transform duration-200" style={{ transform: showWishlist ? "rotate(90deg)" : "rotate(0deg)" }} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
@@ -4441,25 +4810,25 @@ export default function App() {
             {showWishlist && (
               <>
                 {wishlist.length === 0 && (
-                  <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No wishlisted games</p>
+                  <p className="px-3 pb-2 text-[10px]" style={{ color: "var(--color-text-dim)" }}>No wishlisted games</p>
                 )}
                 {wishlist.length > 0 && (
-                  <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+                  <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
                     {wishlist.map((item) => (
                       <a key={item.id} href={item.id} target="_blank" rel="noreferrer" className="group flex items-center justify-between px-3 py-1.5 cursor-pointer"
-                        style={{ borderBottom: "1px solid #0d1117", textDecoration: "none" }}
-                        onMouseEnter={e => e.currentTarget.style.background = "#1b2838"}
+                        style={{ borderBottom: "1px solid var(--color-bg-deep)", textDecoration: "none" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "var(--color-bg)"}
                         onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                         title={item.title}>
                         <div className="flex flex-col overflow-hidden text-left flex-1 min-w-0 pr-2">
-                          <span className="text-xs truncate font-medium group-hover:underline" style={{ color: "#c6d4df" }}>{item.title}</span>
-                          <span className="text-[9px] truncate mt-0.5" style={{ color: "#8f98a0" }}>{item.source} • <span className={item.releaseStatus === "Completed" ? "text-[#6dbf6d]" : ""}>{item.releaseStatus}</span></span>
+                          <span className="text-xs truncate font-medium group-hover:underline" style={{ color: "var(--color-text)" }}>{item.title}</span>
+                          <span className="text-[9px] truncate mt-0.5" style={{ color: "var(--color-text-muted)" }}>{item.source} • <span className={item.releaseStatus === "Completed" ? "text-[var(--color-success)]" : ""}>{item.releaseStatus}</span></span>
                         </div>
                         <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRemoveWishlist(item.id); }}
                           className="opacity-0 group-hover:opacity-100 px-1 py-0.5 text-[12px] font-bold rounded flex-shrink-0 transition-opacity relative z-10"
-                          style={{ color: "#4a5568" }}
-                          onMouseEnter={e => { e.currentTarget.style.background = "#2a1f1f"; e.currentTarget.style.color = "#e57373"; }}
-                          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#4a5568"; }}
+                          style={{ color: "var(--color-text-dim)" }}
+                          onMouseEnter={e => { e.currentTarget.style.background = "var(--color-danger-bg)"; e.currentTarget.style.color = "var(--color-danger)"; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-text-dim)"; }}
                         >✕</button>
                       </a>
                     ))}
@@ -4471,15 +4840,15 @@ export default function App() {
           <div
             ref={sidebarListRefCb}
             className="flex-1 overflow-y-auto"
-            style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}
+            style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}
           >
             {syncState === "full-scan" ? (
               <div className="flex flex-col items-center justify-center h-32 gap-2">
-                <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2" style={{ borderColor: "#66c0f4" }} />
-                <span className="text-xs" style={{ color: "#8f98a0" }}>Scanning…</span>
+                <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2" style={{ borderColor: "var(--color-accent)" }} />
+                <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>Scanning…</span>
               </div>
             ) : sidebarItems.length === 0 ? (
-              <p className="px-4 py-6 text-xs text-center" style={{ color: "#8f98a0" }}>
+              <p className="px-4 py-6 text-xs text-center" style={{ color: "var(--color-text-muted)" }}>
                 {games.length === 0 ? "Add a library folder to get started" : "No games match"}
               </p>
             ) : (
@@ -4493,23 +4862,23 @@ export default function App() {
                         className="w-full flex items-center gap-1.5 px-2.5 py-1 text-left"
                         style={{
                           position: "absolute", top: offsetTop, left: 0, right: 0, height: 28,
-                          background: "#0d1117", borderBottom: "1px solid #1a2535"
+                          background: "var(--color-bg-deep)", borderBottom: "1px solid var(--color-border-subtle)"
                         }}
-                        onMouseEnter={(e) => (e.currentTarget.style.background = "#13202e")}
-                        onMouseLeave={(e) => (e.currentTarget.style.background = "#0d1117")}>
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#4a5568"
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-deep)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-bg-deep)")}>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-dim)"
                           strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
                           style={{ transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
                           <polyline points="6 9 12 15 18 9" />
                         </svg>
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4a7a9b"
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-dim)"
                           strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                         </svg>
-                        <span className="flex-1 text-[10px] font-semibold truncate" style={{ color: "#8f98a0" }}>
+                        <span className="flex-1 text-[10px] font-semibold truncate" style={{ color: "var(--color-text-muted)" }}>
                           {item.label}
                         </span>
-                        <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>{item.count}</span>
+                        <span className="text-[9px] flex-shrink-0" style={{ color: "var(--color-text-dim)" }}>{item.count}</span>
                       </button>
                     );
                   }
@@ -4529,7 +4898,7 @@ export default function App() {
                   const isFavItem = !!favGames[game.path];
                   const isHiddenItem = !!hiddenGames[game.path];
                   return (
-                    <button key={game.path} onClick={() => setSelected(game)}
+                    <button key={game.path} onClick={() => openGameView(game)}
                       onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, game }); }}
                       draggable={sortMode === "custom"}
                       onDragStart={(e) => {
@@ -4565,10 +4934,10 @@ export default function App() {
                       className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors"
                       style={{
                         position: "absolute", top: offsetTop, left: 0, right: 0, height: viewMode === "compact" ? 28 : 52,
-                        background: isSelected ? "#2a475e" : isDragOver ? "#1e3a52" : "transparent",
-                        borderLeft: `3px solid ${isSelected ? "#66c0f4" : isDragOver ? "#4a8ab5" : isFavItem ? "#c8a951" : "transparent"}`,
-                        borderTop: isDragOver ? "1px solid #4a8ab5" : undefined,
-                        color: isSelected ? "#fff" : "#8f98a0",
+                        background: isSelected ? "var(--color-border)" : isDragOver ? "var(--color-accent-deep)" : "transparent",
+                        borderLeft: `3px solid ${isSelected ? "var(--color-accent)" : isDragOver ? "var(--color-accent-mid)" : isFavItem ? "var(--color-warning)" : "transparent"}`,
+                        borderTop: isDragOver ? "1px solid var(--color-accent-mid)" : undefined,
+                        color: isSelected ? "var(--color-white)" : "var(--color-text-muted)",
                         opacity: isHiddenItem ? 0.6 : 1,
                         paddingLeft: isGrouped ? "1.75rem" : undefined,
                         cursor: sortMode === "custom" ? "grab" : undefined,
@@ -4584,17 +4953,17 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="w-9 h-9 rounded flex-shrink-0 overflow-hidden relative"
-                          style={{ background: (!coverSrc && syncState === "syncing") ? "#1e3a50" : heroGradient(game.name) }}>
+                          style={{ background: (!coverSrc && syncState === "syncing") ? "var(--color-border-soft)" : heroGradient(game.name) }}>
                           {coverSrc
                             ? <img src={coverSrc} alt="" className="w-full h-full object-cover" />
                             : syncState === "syncing"
-                              ? <div className="w-full h-full animate-pulse bg-[#2a475e]" />
+                              ? <div className="w-full h-full animate-pulse bg-[var(--color-border)]" />
                               : <div className="w-full h-full flex items-center justify-center text-sm font-bold text-white">
                                 {name.charAt(0).toUpperCase()}
                               </div>}
                           {isFavItem && (
                             <span className="absolute top-0 right-0 text-[8px] leading-none p-px"
-                              style={{ color: "#c8a951", textShadow: "0 0 3px #000", zIndex: 11 }}>★</span>
+                              style={{ color: "var(--color-warning)", textShadow: "0 0 3px var(--color-black)", zIndex: 11 }}>★</span>
                           )}
                           <NsfwOverlay gamePath={game.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
                         </div>
@@ -4603,17 +4972,17 @@ export default function App() {
                         <div className="flex items-center gap-1">
                           {sortMode === "custom" && (
                             <span className="text-[11px] flex-shrink-0 leading-none select-none"
-                              style={{ color: "#3a5068" }}>⠿</span>
+                              style={{ color: "var(--color-text-dim)" }}>⠿</span>
                           )}
                           <p className="text-xs font-medium truncate flex-1">{name}</p>
                           {isHiddenItem && (
                             <span className="text-[9px] px-1 rounded flex-shrink-0"
-                              style={{ background: "#2a3f54", color: "#4a5568" }}>hidden</span>
+                              style={{ background: "var(--color-panel-3)", color: "var(--color-text-dim)" }}>hidden</span>
                           )}
                         </div>
                         {viewMode !== "compact" && (
                           <>
-                            <p className="text-[10px] truncate" style={{ color: "#4a5568" }}>
+                            <p className="text-[10px] truncate" style={{ color: "var(--color-text-dim)" }}>
                               {stats[game.path]?.totalTime > 0
                                 ? `${formatTime(stats[game.path].totalTime)}${(stats[game.path].launchCount ?? 0) > 0
                                   ? ` · ${stats[game.path].launchCount}×`
@@ -4637,11 +5006,11 @@ export default function App() {
               </div>
             )}
           </div>
-          <div className="px-3 py-3 space-y-1.5 border-t" style={{ borderColor: "#0d1117" }}>
+          <div className="px-3 py-3 space-y-1.5 border-t" style={{ borderColor: "var(--color-bg-deep)" }}>
             {syncState === "syncing" && (
               <div className="flex items-center gap-2 px-1 py-1">
-                <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "#66c0f4" }} />
-                <span className="text-xs" style={{ color: "#66c0f4" }}>Checking changes…</span>
+                <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "var(--color-accent)" }} />
+                <span className="text-xs" style={{ color: "var(--color-accent)" }}>Checking changes…</span>
               </div>
             )}
 
@@ -4650,9 +5019,9 @@ export default function App() {
               <button
                 onClick={() => setShowAddMenu((p) => !p)}
                 className="w-full py-2 rounded text-xs font-semibold flex items-center justify-center gap-1.5"
-                style={{ background: showAddMenu ? "#3d6b8e" : "#2a475e", color: "#c6d4df", border: "1px solid #1b3a50" }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "#3d6b8e")}
-                onMouseLeave={(e) => { if (!showAddMenu) e.currentTarget.style.background = "#2a475e"; }}>
+                style={{ background: showAddMenu ? "var(--color-accent-dark)" : "var(--color-border)", color: "var(--color-text)", border: "1px solid var(--color-border-card)" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-accent-dark)")}
+                onMouseLeave={(e) => { if (!showAddMenu) e.currentTarget.style.background = "var(--color-border)"; }}>
                 {/* plus icon */}
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
@@ -4666,30 +5035,30 @@ export default function App() {
               </button>
               {showAddMenu && (
                 <div className="absolute bottom-full mb-1 left-0 right-0 rounded-lg py-1 shadow-2xl z-30"
-                  style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+                  style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
                   <button
                     onClick={handleAddFolder}
                     className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
-                    style={{ color: "#c6d4df" }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+                    style={{ color: "var(--color-text)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
                     onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                     </svg>
                     Add Library Folder
-                    <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }}>scan dir</span>
+                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>scan dir</span>
                   </button>
                   <button
                     onClick={handleAddGameManually}
                     className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
-                    style={{ color: "#c6d4df" }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3f54")}
+                    style={{ color: "var(--color-text)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
                     onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#c8a951" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
                     </svg>
                     Add Game Manually
-                    <span className="ml-auto text-[9px]" style={{ color: "#4a5568" }}>.exe / .sh</span>
+                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>.exe / .sh</span>
                   </button>
                 </div>
               )}
@@ -4699,9 +5068,9 @@ export default function App() {
             <div className="flex gap-1.5">
               <button onClick={() => setShowSettings(true)}
                 className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
-                style={{ background: "transparent", color: "#4a5568", border: "1px solid #2a3f54" }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = "#8f98a0"; e.currentTarget.style.borderColor = "#3d5a73"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.borderColor = "#2a3f54"; }}
+                style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px solid var(--color-panel-3)" }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-text-muted)"; e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-dim)"; e.currentTarget.style.borderColor = "var(--color-panel-3)"; }}
                 title="Settings">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="3" />
@@ -4711,9 +5080,9 @@ export default function App() {
               </button>
               <button onClick={() => setShowLogViewer(true)}
                 className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
-                style={{ background: "transparent", color: "#4a5568", border: "1px solid #2a3f54" }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = "#8f98a0"; e.currentTarget.style.borderColor = "#3d5a73"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.borderColor = "#2a3f54"; }}
+                style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px solid var(--color-panel-3)" }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-text-muted)"; e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-dim)"; e.currentTarget.style.borderColor = "var(--color-panel-3)"; }}
                 title="Rust logs">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M4 6h16" /><path d="M4 12h16" /><path d="M4 18h16" />
@@ -4723,9 +5092,9 @@ export default function App() {
               {appUpdate && (
                 <button onClick={() => setShowAppUpdateModal(true)}
                   className="flex-1 py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1"
-                  style={{ background: "#1a3a1a", color: "#6dbf6d", border: "1px solid #2a5a2a" }}
+                  style={{ background: "var(--color-success-bg)", color: "var(--color-success)", border: "1px solid var(--color-success-border)" }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "#1e4a1e")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "#1a3a1a")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-success-bg)")}
                   title={`v${appUpdate.version} is available — click to install`}>
                   ↑ v{appUpdate.version}
                 </button>
@@ -4743,39 +5112,39 @@ export default function App() {
         ) : selected === null && activeMainTab === "stats" ? (
           <StatsView games={games} stats={stats} sessions={sessionLog} customizations={customizations} metadata={metadata} totalPlaytimeSecs={totalPlaytimeLiveSecs} />
         ) : viewMode === "grid" && !selected ? (
-          <div className="flex-1 overflow-y-auto px-6 py-6" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+          <div className="flex-1 overflow-y-auto px-6 py-6" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
             <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
               {filtered.map(game => {
                 const isFavItem = !!favGames[game.path];
                 const cover = customizations[game.path]?.coverUrl ?? metadata[game.path]?.cover_url;
                 return (
-                  <button key={game.path} onClick={() => setSelected(game)} className="flex flex-col gap-2 group text-left relative transition-transform hover:scale-105">
-                    <div className="aspect-[2/3] w-full bg-[#1e2d3d] rounded-lg overflow-hidden border border-[#2a475e] group-hover:border-[#66c0f4] relative shadow-lg">
+                  <button key={game.path} onClick={() => openGameView(game)} className="flex flex-col gap-2 group text-left relative transition-transform hover:scale-105">
+                    <div className="aspect-[2/3] w-full bg-[var(--color-panel)] rounded-lg overflow-hidden border border-[var(--color-border)] group-hover:border-[var(--color-accent)] relative shadow-lg">
                       {cover ? (
                         <img src={cover} className="w-full h-full object-cover" alt="" />
                       ) : syncState === "syncing" ? (
-                        <div className="w-full h-full animate-pulse bg-[#2a475e]" />
+                        <div className="w-full h-full animate-pulse bg-[var(--color-border)]" />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center p-4 text-center text-sm font-bold text-white" style={{ background: heroGradient(game.name) }}>
                           {gameDisplayName(game)}
                         </div>
                       )}
                       {isFavItem && (
-                        <span className="absolute top-2 right-2 text-sm leading-none" style={{ color: "#c8a951", textShadow: "0 0 3px #000", zIndex: 11 }}>★</span>
+                        <span className="absolute top-2 right-2 text-sm leading-none" style={{ color: "var(--color-warning)", textShadow: "0 0 3px var(--color-black)", zIndex: 11 }}>★</span>
                       )}
 
                       <NsfwOverlay gamePath={game.path} meta={metadata[game.path]} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} />
                     </div>
-                    <p className="text-xs font-semibold text-[#c6d4df] truncate px-1">{gameDisplayName(game)}</p>
+                    <p className="text-xs font-semibold text-[var(--color-text)] truncate px-1">{gameDisplayName(game)}</p>
                   </button>
                 )
               })}
             </div>
-            {filtered.length === 0 && <div className="text-center py-12 text-[#8f98a0]">No games match the current filters</div>}
+            {filtered.length === 0 && <div className="text-center py-12 text-[var(--color-text-muted)]">No games match the current filters</div>}
           </div>
         ) : !selected ? (
           games.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center gap-4" style={{ color: "#8f98a0" }}>
+            <div className="flex-1 flex flex-col items-center justify-center gap-4" style={{ color: "var(--color-text-muted)" }}>
               <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.2 }}>
                 <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
               </svg>
@@ -4783,7 +5152,7 @@ export default function App() {
               <div className="flex gap-3">
                 <button onClick={handleAddFolder}
                   className="px-5 py-2.5 rounded font-semibold text-sm flex items-center gap-2"
-                  style={{ background: "#2a6db5", color: "#fff" }}>
+                  style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                   </svg>
@@ -4791,7 +5160,7 @@ export default function App() {
                 </button>
                 <button onClick={handleAddGameManually}
                   className="px-5 py-2.5 rounded font-semibold text-sm flex items-center gap-2"
-                  style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d5a73" }}>
+                  style={{ background: "var(--color-border)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
                   </svg>
@@ -4810,7 +5179,7 @@ export default function App() {
               notes={notes}
               runningGamePath={runningGamePath}
               totalPlaytimeSecs={totalPlaytimeLiveSecs}
-              onSelect={setSelected}
+              onSelect={openGameView}
               onPlay={launchGame}
               onStop={killGame}
             />
@@ -4894,6 +5263,8 @@ export default function App() {
           />
         )}
       </main>
+
+      </div>
 
       {/* ── Modals ── */}
       {
@@ -5067,24 +5438,24 @@ export default function App() {
           <div className="fixed inset-0 flex items-center justify-center z-50"
             style={{ background: "rgba(0,0,0,0.75)" }}
             onClick={(e) => { if (e.target === e.currentTarget && !isDeleting) setDeleteTarget(null); }}>
-            <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "#1e2d3d", border: "1px solid #3d5a73" }}>
-              <h2 className="text-lg font-bold mb-2" style={{ color: "#fff" }}>Uninstall Game</h2>
-              <p className="text-sm mb-1" style={{ color: "#c6d4df" }}>This will permanently delete:</p>
-              <p className="text-xs font-mono mb-4 break-all" style={{ color: "#e57373" }}>
+            <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-strong)" }}>
+              <h2 className="text-lg font-bold mb-2" style={{ color: "var(--color-white)" }}>Uninstall Game</h2>
+              <p className="text-sm mb-1" style={{ color: "var(--color-text)" }}>This will permanently delete:</p>
+              <p className="text-xs font-mono mb-4 break-all" style={{ color: "var(--color-danger)" }}>
                 {deleteTarget.path.replace(/[\\/][^\\/]+$/, "")}
               </p>
-              <p className="text-xs mb-3" style={{ color: "#8f98a0" }}>This action cannot be undone unless you reinstall the game later.</p>
-              <label className="flex items-center gap-2 text-xs mb-5 cursor-pointer select-none" style={{ color: "#c6d4df" }}>
+              <p className="text-xs mb-3" style={{ color: "var(--color-text-muted)" }}>This action cannot be undone unless you reinstall the game later.</p>
+              <label className="flex items-center gap-2 text-xs mb-5 cursor-pointer select-none" style={{ color: "var(--color-text)" }}>
                 <input type="checkbox" checked={keepDataOnDelete} onChange={(e) => setKeepDataOnDelete(e.currentTarget.checked)} />
                 Keep playtime and metadata (mark as uninstalled)
               </label>
               <div className="flex gap-3 justify-end">
                 <button onClick={() => setDeleteTarget(null)} disabled={isDeleting}
                   className="px-4 py-2 rounded text-sm disabled:opacity-50"
-                  style={{ background: "#152232", color: "#c6d4df", border: "1px solid #3d5a73" }}>Cancel</button>
+                  style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}>Cancel</button>
                 <button onClick={confirmDelete} disabled={isDeleting}
                   className="px-4 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
-                  style={{ background: "#c0392b", color: "#fff" }}>
+                  style={{ background: "#c0392b", color: "var(--color-white)" }}>
                   {isDeleting && <span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
                   Delete Files
                 </button>
@@ -5135,10 +5506,15 @@ export default function App() {
         games={games}
         metadata={metadata}
         notes={notes}
-        onSelect={(g) => setSelected(g)}
+        onSelect={openGameView}
+        onBack={goBack}
+        onForward={goForward}
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
       />
     </div >
   );
 
 }
+
 

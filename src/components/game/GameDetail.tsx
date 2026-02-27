@@ -110,7 +110,7 @@ function heroGradient(name: string) {
 
 function TagBadge({ text }: { text: string }) {
   return (
-    <span className="inline-block text-xs px-2 py-0.5 rounded" style={{ background: "#1e3a50", color: "#8cb4d5", border: "1px solid #264d68" }}>
+    <span className="inline-block text-xs px-2 py-0.5 rounded" style={{ background: "var(--color-border-soft)", color: "var(--color-accent-soft)", border: "1px solid #264d68" }}>
       {text}
     </span>
   );
@@ -120,8 +120,8 @@ function MetaRow({ label, value }: { label: string; value?: string }) {
   if (!value) return null;
   return (
     <div className="flex gap-2 text-xs">
-      <span className="flex-shrink-0 w-24 text-right" style={{ color: "#8f98a0" }}>{label}</span>
-      <span style={{ color: "#c6d4df" }}>{value}</span>
+      <span className="flex-shrink-0 w-24 text-right" style={{ color: "var(--color-text-muted)" }}>{label}</span>
+      <span style={{ color: "var(--color-text)" }}>{value}</span>
     </div>
   );
 }
@@ -134,7 +134,7 @@ function MenuEntry({ icon, label, color, onClick }: { icon: string; label: strin
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
-      style={{ color: color ?? "#c6d4df", background: hov ? "#2a3f54" : "transparent" }}
+      style={{ color: color ?? "var(--color-text)", background: hov ? "var(--color-panel-3)" : "transparent" }}
     >
       <span style={{ fontSize: "13px" }}>{icon}</span>
       <span>{label}</span>
@@ -176,15 +176,15 @@ function SettingsMenu({
       <button
         onClick={() => setOpen((p) => !p)}
         className="flex items-center gap-1 px-3 py-2 rounded text-sm"
-        style={{ background: open ? "#3d5a73" : "#2a3f54", color: open ? "#c6d4df" : "#8f98a0", border: "1px solid #3d5a73" }}
+        style={{ background: open ? "var(--color-border-strong)" : "var(--color-panel-3)", color: open ? "var(--color-text)" : "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.background = "#3d5a73";
-          e.currentTarget.style.color = "#c6d4df";
+          e.currentTarget.style.background = "var(--color-border-strong)";
+          e.currentTarget.style.color = "var(--color-text)";
         }}
         onMouseLeave={(e) => {
           if (!open) {
-            e.currentTarget.style.background = "#2a3f54";
-            e.currentTarget.style.color = "#8f98a0";
+            e.currentTarget.style.background = "var(--color-panel-3)";
+            e.currentTarget.style.color = "var(--color-text-muted)";
           }
         }}
         title="Game settings"
@@ -195,13 +195,13 @@ function SettingsMenu({
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-30 rounded-lg py-1 shadow-2xl" style={{ background: "#1e2d3d", border: "1px solid #2a475e", minWidth: "180px" }}>
-          <MenuEntry icon="⭐" label={isFav ? "Remove from Favorites" : "Add to Favorites"} color={isFav ? "#c8a951" : undefined} onClick={() => { setOpen(false); onToggleFav(); }} />
+        <div className="absolute right-0 top-full mt-1 z-30 rounded-lg py-1 shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)", minWidth: "180px" }}>
+          <MenuEntry icon="⭐" label={isFav ? "Remove from Favorites" : "Add to Favorites"} color={isFav ? "var(--color-warning)" : undefined} onClick={() => { setOpen(false); onToggleFav(); }} />
           <MenuEntry icon={isHidden ? "👁" : "🙈"} label={isHidden ? "Unhide Game" : "Hide Game"} onClick={() => { setOpen(false); onToggleHide(); }} />
           <MenuEntry icon="🎨" label="Customise…" onClick={() => { setOpen(false); onCustomize(); }} />
           <MenuEntry icon="📁" label="Collections…" onClick={() => { setOpen(false); onManageCollections(); }} />
-          <div style={{ borderTop: "1px solid #2a3f54", margin: "3px 0" }} />
-          <MenuEntry icon="🗑" label="Uninstall" color="#e57373" onClick={() => { setOpen(false); onDelete(); }} />
+          <div style={{ borderTop: "1px solid var(--color-panel-3)", margin: "3px 0" }} />
+          <MenuEntry icon="🗑" label="Uninstall" color="var(--color-danger)" onClick={() => { setOpen(false); onDelete(); }} />
         </div>
       )}
     </div>
@@ -224,9 +224,9 @@ function sessionsPerDay(sessions: SessionEntry[], gamePath: string | null, days 
 }
 
 const MILESTONES = [
-  { hours: 1, label: "1h", color: "#66c0f4" },
+  { hours: 1, label: "1h", color: "var(--color-accent)" },
   { hours: 5, label: "5h", color: "#4e9bd0" },
-  { hours: 10, label: "10h", color: "#c8a951" },
+  { hours: 10, label: "10h", color: "var(--color-warning)" },
   { hours: 25, label: "25h", color: "#e8904a" },
   { hours: 50, label: "50h", color: "#e05050" },
   { hours: 100, label: "100h", color: "#a060d8" },
@@ -248,10 +248,10 @@ function PlayChart({ sessions, gamePath, days = 7 }: { sessions: SessionEntry[];
           const barWPct = wPct - gapPct;
           return (
             <g key={i}>
-              <rect x={`${xPct}%`} y={H - barH} width={`${barWPct}%`} height={barH} rx="2" fill={d.secs > 0 ? "#2a6db5" : "#1a2d3d"} style={{ transition: "height 0.3s" }}>
+              <rect x={`${xPct}%`} y={H - barH} width={`${barWPct}%`} height={barH} rx="2" fill={d.secs > 0 ? "var(--color-accent-dark)" : "var(--color-panel-low)"} style={{ transition: "height 0.3s" }}>
                 {d.secs > 0 && <title>{formatTime(d.secs)}</title>}
               </rect>
-              <text x={`${i * wPct + wPct / 2}%`} y={H + 14} textAnchor="middle" fontSize="9" fill="#4a5568">
+              <text x={`${i * wPct + wPct / 2}%`} y={H + 14} textAnchor="middle" fontSize="9" fill="var(--color-text-dim)">
                 {d.label}
               </text>
             </g>
@@ -269,7 +269,7 @@ function Milestones({ totalSecs }: { totalSecs: number }) {
   if (achieved.length === 0 && !next) return null;
   return (
     <div>
-      <p className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Milestones</p>
+      <p className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Milestones</p>
       <div className="flex flex-wrap gap-1.5 mb-1">
         {achieved.map((m) => (
           <span key={m.label} className="px-2 py-0.5 rounded-full text-[10px] font-bold" style={{ background: m.color + "22", color: m.color, border: `1px solid ${m.color}55` }} title={`${m.hours}h played`}>
@@ -279,11 +279,11 @@ function Milestones({ totalSecs }: { totalSecs: number }) {
       </div>
       {next && (
         <div className="mt-1">
-          <div className="flex justify-between text-[9px] mb-0.5" style={{ color: "#4a5568" }}>
+          <div className="flex justify-between text-[9px] mb-0.5" style={{ color: "var(--color-text-dim)" }}>
             <span>Next: {next.label}</span>
             <span>{Math.round((totalH / next.hours) * 100)}%</span>
           </div>
-          <div className="h-1 rounded-full overflow-hidden" style={{ background: "#1a2d3d" }}>
+          <div className="h-1 rounded-full overflow-hidden" style={{ background: "var(--color-panel-low)" }}>
             <div className="h-full rounded-full" style={{ width: `${Math.min(100, (totalH / next.hours) * 100)}%`, background: next.color, transition: "width 0.4s" }} />
           </div>
         </div>
@@ -295,25 +295,25 @@ function Milestones({ totalSecs }: { totalSecs: number }) {
 function SessionTimeline({ sessions, gamePath, onEditNote }: { sessions: SessionEntry[]; gamePath: string; onEditNote: (entry: SessionEntry) => void }) {
   const entries = useMemo(() => sessions.filter((s) => s.path === gamePath).sort((a, b) => b.startedAt - a.startedAt).slice(0, 50), [sessions, gamePath]);
   if (entries.length === 0) {
-    return <div className="rounded px-3 py-4 text-center text-xs" style={{ background: "#0f1923", color: "#4a5568" }}>No sessions recorded yet — play the game to see history here.</div>;
+    return <div className="rounded px-3 py-4 text-center text-xs" style={{ background: "var(--color-bg-overlay)", color: "var(--color-text-dim)" }}>No sessions recorded yet — play the game to see history here.</div>;
   }
   return (
-    <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+    <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
       {entries.map((s) => {
         const d = new Date(s.startedAt);
         const dateStr = d.toLocaleDateString("en", { month: "short", day: "numeric" });
         const timeStr = d.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" });
         return (
-          <div key={s.id} className="flex items-start gap-2 rounded px-2.5 py-2 group" style={{ background: "#0f1923" }}>
-            <div className="flex flex-col items-center flex-shrink-0 mt-0.5"><div className="w-1.5 h-1.5 rounded-full" style={{ background: "#2a6db5" }} /></div>
+          <div key={s.id} className="flex items-start gap-2 rounded px-2.5 py-2 group" style={{ background: "var(--color-bg-overlay)" }}>
+            <div className="flex flex-col items-center flex-shrink-0 mt-0.5"><div className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--color-accent-dark)" }} /></div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[10px]" style={{ color: "#66c0f4" }}>{dateStr} {timeStr}</span>
-                <span className="text-[10px] font-semibold" style={{ color: "#c6d4df" }}>{formatTime(s.duration)}</span>
+                <span className="text-[10px]" style={{ color: "var(--color-accent)" }}>{dateStr} {timeStr}</span>
+                <span className="text-[10px] font-semibold" style={{ color: "var(--color-text)" }}>{formatTime(s.duration)}</span>
               </div>
-              {s.note && <p className="text-xs mt-0.5 italic" style={{ color: "#8f98a0" }}>"{s.note}"</p>}
+              {s.note && <p className="text-xs mt-0.5 italic" style={{ color: "var(--color-text-muted)" }}>"{s.note}"</p>}
             </div>
-            <button onClick={() => onEditNote(s)} className="text-[9px] flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded" style={{ color: "#66c0f4", background: "#1a2d3d" }} title={s.note ? "Edit note" : "Add note"}>
+            <button onClick={() => onEditNote(s)} className="text-[9px] flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded" style={{ color: "var(--color-accent)", background: "var(--color-panel-low)" }} title={s.note ? "Edit note" : "Add note"}>
               {s.note ? "✎" : " note"}
             </button>
           </div>
@@ -337,30 +337,30 @@ function VersionTimeline({ history, onAddHistory }: { history: HistoryEntry[]; o
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center mb-2">
-        <h2 className="text-xs uppercase tracking-widest text-[#8f98a0]">Version History</h2>
-        <button onClick={() => setIsAdding(!isAdding)} className="text-xs text-[#66c0f4] hover:underline">{isAdding ? "Cancel" : " Log update"}</button>
+        <h2 className="text-xs uppercase tracking-widest text-[var(--color-text-muted)]">Version History</h2>
+        <button onClick={() => setIsAdding(!isAdding)} className="text-xs text-[var(--color-accent)] hover:underline">{isAdding ? "Cancel" : " Log update"}</button>
       </div>
       {isAdding && (
-        <div className="p-3 rounded mb-4" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
+        <div className="p-3 rounded mb-4" style={{ background: "var(--color-panel-3)", border: "1px solid var(--color-border-strong)" }}>
           <div className="flex gap-2 mb-2">
-            <input type="text" placeholder="Vers" value={draftV} onChange={(e) => setDraftV(e.currentTarget.value)} className="w-16 px-2 py-1 bg-[#152232] border border-[#1b3a50] rounded text-xs outline-none focus:border-[#66c0f4] text-white" />
-            <input type="text" placeholder="Update notes (e.g. Added patch)" value={draftN} onChange={(e) => setDraftN(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && submit()} className="flex-1 px-2 py-1 bg-[#152232] border border-[#1b3a50] rounded text-xs outline-none focus:border-[#66c0f4] text-white" />
-            <button onClick={submit} className="px-3 py-1 bg-[#66c0f4] text-black text-xs font-semibold rounded">Log</button>
+            <input type="text" placeholder="Vers" value={draftV} onChange={(e) => setDraftV(e.currentTarget.value)} className="w-16 px-2 py-1 bg-[var(--color-panel-2)] border border-[var(--color-border-card)] rounded text-xs outline-none focus:border-[var(--color-accent)] text-white" />
+            <input type="text" placeholder="Update notes (e.g. Added patch)" value={draftN} onChange={(e) => setDraftN(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && submit()} className="flex-1 px-2 py-1 bg-[var(--color-panel-2)] border border-[var(--color-border-card)] rounded text-xs outline-none focus:border-[var(--color-accent)] text-white" />
+            <button onClick={submit} className="px-3 py-1 bg-[var(--color-accent)] text-black text-xs font-semibold rounded">Log</button>
           </div>
         </div>
       )}
       {history.length === 0 ? (
-        <p className="text-xs text-[#4a5568] italic">No version history logged yet.</p>
+        <p className="text-xs text-[var(--color-text-dim)] italic">No version history logged yet.</p>
       ) : (
-        <div className="relative border-l border-[#2a475e] ml-2 pl-4 pb-1">
+        <div className="relative border-l border-[var(--color-border)] ml-2 pl-4 pb-1">
           {history.map((h) => (
             <div key={h.id} className="relative mb-5 last:mb-0 group">
-              <div className="absolute w-2 h-2 rounded-full bg-[#66c0f4] -left-[21px] top-1 transition-transform group-hover:scale-125" />
+              <div className="absolute w-2 h-2 rounded-full bg-[var(--color-accent)] -left-[21px] top-1 transition-transform group-hover:scale-125" />
               <div className="flex items-baseline gap-2 mb-0.5">
-                <span className="font-mono text-sm font-bold text-[#e57373]">{h.version}</span>
-                <span className="text-[10px] text-[#4a5568]" title={new Date(h.date).toLocaleString()}>{timeAgo(h.date)}</span>
+                <span className="font-mono text-sm font-bold text-[var(--color-danger)]">{h.version}</span>
+                <span className="text-[10px] text-[var(--color-text-dim)]" title={new Date(h.date).toLocaleString()}>{timeAgo(h.date)}</span>
               </div>
-              <p className="text-xs text-[#b8c8d4] leading-relaxed">{h.note}</p>
+              <p className="text-xs text-[var(--color-text-soft)] leading-relaxed">{h.note}</p>
             </div>
           ))}
         </div>
@@ -453,18 +453,18 @@ export function GameDetail({
       <div className="relative flex-shrink-0 overflow-hidden" style={{ height: "240px" }}>
         {heroBg ? <img src={heroBg} alt={displayTitle} className="absolute inset-0 w-full h-full object-cover" style={{ filter: "brightness(0.5)" }} /> : <div className="absolute inset-0" style={{ background: heroGradient(game.name) }} />}
         <NsfwOverlay gamePath={game.path} meta={meta} appSettings={appSettings} revealed={revealedNsfw} onReveal={onRevealNsfw} />
-        <div className="absolute inset-0" style={{ background: "linear-gradient(to top,#1b2838 0%,rgba(27,40,56,0.15) 60%,transparent 100%)" }} />
+        <div className="absolute inset-0" style={{ background: "linear-gradient(to top,var(--color-bg) 0%,rgba(27,40,56,0.15) 60%,transparent 100%)" }} />
         <div className="absolute bottom-0 left-0 right-0 px-8 pb-5">
           <div className="flex items-end justify-between">
             <div>
               <div className="flex gap-2 mb-1.5">
                 {meta?.source && (
-                  <span className="inline-block text-xs px-2 py-0.5 rounded font-semibold" style={{ background: meta.source === "f95" ? "#c8a951" : "#e0534a", color: meta.source === "f95" ? "#1a1a1a" : "#fff" }}>
+                  <span className="inline-block text-xs px-2 py-0.5 rounded font-semibold" style={{ background: meta.source === "f95" ? "var(--color-warning)" : "var(--color-danger-strong)", color: meta.source === "f95" ? "var(--color-black-strong)" : "var(--color-white)" }}>
                     {meta.source === "f95" ? "F95zone" : "DLsite"}
                   </span>
                 )}
                 {isHidden && (
-                  <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-semibold" style={{ background: "rgba(0,0,0,0.6)", color: "#8f98a0", border: "1px solid #3d5a73" }}>
+                  <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-semibold" style={{ background: "rgba(0,0,0,0.6)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /><line x1="1" y1="1" x2="23" y2="23" />
                     </svg>
@@ -472,28 +472,28 @@ export function GameDetail({
                   </span>
                 )}
               </div>
-              <h1 className="text-3xl font-bold" style={{ color: "#fff", textShadow: "0 2px 8px rgba(0,0,0,.9)" }}>{displayTitle}</h1>
-              {meta?.version && <span className="text-sm mt-0.5 block" style={{ color: "#8cb4d5" }}>{meta.version}</span>}
+              <h1 className="text-3xl font-bold" style={{ color: "var(--color-white)", textShadow: "0 2px 8px rgba(0,0,0,.9)" }}>{displayTitle}</h1>
+              {meta?.version && <span className="text-sm mt-0.5 block" style={{ color: "var(--color-accent-soft)" }}>{meta.version}</span>}
             </div>
             {meta?.rating && (
               <div className="text-right mb-1">
-                <p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Rating</p>
-                <p className="font-bold" style={{ color: "#c8a951" }}>★ {meta.rating}</p>
+                <p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>Rating</p>
+                <p className="font-bold" style={{ color: "var(--color-warning)" }}>★ {meta.rating}</p>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-2 px-8 py-3 flex-shrink-0" style={{ background: "#16202d", borderBottom: "1px solid #0d1117" }}>
+      <div className="flex items-center gap-2 px-8 py-3 flex-shrink-0" style={{ background: "var(--color-bg-elev)", borderBottom: "1px solid var(--color-bg-deep)" }}>
         <button
           onClick={game.uninstalled ? undefined : isRunning ? onStop : () => onPlay()}
           disabled={game.uninstalled}
           title={game.uninstalled ? "Reinstall the game or check folder to play" : ""}
           className="flex items-center gap-2 px-7 py-2 rounded font-bold text-sm uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ background: game.uninstalled ? "#3a3a3a" : isRunning ? "#6b2222" : "#4c6b22", color: game.uninstalled ? "#8f98a0" : isRunning ? "#e88585" : "#d2e885" }}
-          onMouseEnter={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "#8a1e1e" : "#5c8a1e"; }}
-          onMouseLeave={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "#6b2222" : "#4c6b22"; }}
+          style={{ background: game.uninstalled ? "#3a3a3a" : isRunning ? "var(--color-stop-bg)" : "var(--color-play-bg)", color: game.uninstalled ? "var(--color-text-muted)" : isRunning ? "var(--color-danger-soft)" : "var(--color-play-text)" }}
+          onMouseEnter={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "var(--color-stop-hover)" : "var(--color-play-hover)"; }}
+          onMouseLeave={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "var(--color-stop-bg)" : "var(--color-play-bg)"; }}
         >
           {game.uninstalled ? (
             "Folder missing"
@@ -514,33 +514,33 @@ export function GameDetail({
             onClick={() => onPlay(ex.path, undefined)}
             disabled={isRunning}
             className="flex items-center gap-1.5 px-3 py-2 rounded text-sm disabled:opacity-50"
-            style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
+            style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
             {ex.name}
           </button>
         ))}
-        <button onClick={onLinkPage} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3d5a73" }}>
+        <button onClick={onLinkPage} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
           </svg>
           {meta ? "Re-link" : "Link Page"}
         </button>
-        <button onClick={onUpdate} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3d5a73" }} title="Install a new version safely (preserves saves)">
+        <button onClick={onUpdate} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }} title="Install a new version safely (preserves saves)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" /><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
           </svg>
           Update
         </button>
-        <button onClick={onOpenNotes} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: hasNotes ? "#1e2d1a" : "#2a3f54", color: hasNotes ? "#6dbf6d" : "#8f98a0", border: `1px solid ${hasNotes ? "#2a5a2a" : "#3d5a73"}` }} title="Game notes (Markdown supported)">
+        <button onClick={onOpenNotes} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: hasNotes ? "#1e2d1a" : "var(--color-panel-3)", color: hasNotes ? "var(--color-success)" : "var(--color-text-muted)", border: `1px solid ${hasNotes ? "var(--color-success-border)" : "var(--color-border-strong)"}` }} title="Game notes (Markdown supported)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
           </svg>
           Notes{hasNotes && <span className="w-1.5 h-1.5 rounded-full bg-current ml-0.5" />}
         </button>
         {meta && (
-          <a href={meta.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "#152232", color: "#66c0f4", border: "1px solid #2a475e" }}>
+          <a href={meta.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "var(--color-panel-2)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
             </svg>
@@ -548,7 +548,7 @@ export function GameDetail({
           </a>
         )}
         {!f95LoggedIn && (
-          <button onClick={onOpenF95Login} className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "#2a1f00", color: "#c8a951", border: "1px solid #5a4200" }}>
+          <button onClick={onOpenF95Login} className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "var(--color-warning-bg-2)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
             </svg>
@@ -556,20 +556,20 @@ export function GameDetail({
           </button>
         )}
         <div className="flex-1" />
-        {meta && <button onClick={onClearMeta} className="px-3 py-2 rounded text-xs" style={{ background: "transparent", color: "#4a5568" }} title="Remove linked metadata">✕ Unlink</button>}
+        {meta && <button onClick={onClearMeta} className="px-3 py-2 rounded text-xs" style={{ background: "transparent", color: "var(--color-text-dim)" }} title="Remove linked metadata">✕ Unlink</button>}
         <SettingsMenu isHidden={isHidden} isFav={isFav} onDelete={onDelete} onToggleHide={onToggleHide} onToggleFav={onToggleFav} onCustomize={onOpenCustomize} onManageCollections={onManageCollections} />
       </div>
 
-      <div className="flex-1 overflow-y-auto px-8 py-5" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+      <div className="flex-1 overflow-y-auto px-8 py-5" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
         <div className="flex gap-6 max-w-5xl">
           <div className="flex-1 min-w-0 space-y-5">
             {(meta?.overview_html || meta?.overview) && (
               <section>
-                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Overview</h2>
+                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Overview</h2>
                 {meta.overview_html ? (
-                  <div className="text-sm leading-relaxed dlsite-overview" style={{ color: "#b8c8d4" }} dangerouslySetInnerHTML={{ __html: meta.overview_html }} />
+                  <div className="text-sm leading-relaxed dlsite-overview" style={{ color: "var(--color-text-soft)" }} dangerouslySetInnerHTML={{ __html: meta.overview_html }} />
                 ) : (
-                  <div className="text-sm leading-relaxed" style={{ color: "#b8c8d4" }}>
+                  <div className="text-sm leading-relaxed" style={{ color: "var(--color-text-soft)" }}>
                     {meta.overview!.split("\n\n").map((para, i) => <p key={i} className={i > 0 ? "mt-3" : ""}>{para}</p>)}
                   </div>
                 )}
@@ -577,13 +577,13 @@ export function GameDetail({
             )}
             {shots.length > 0 && (
               <section>
-                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Screenshots</h2>
-                <div className="rounded overflow-hidden mb-2" style={{ background: "#0d1117" }}>
+                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Screenshots</h2>
+                <div className="rounded overflow-hidden mb-2" style={{ background: "var(--color-bg-deep)" }}>
                   <img src={shots[activeShot]} alt="screenshot" className="w-full object-contain" style={{ maxHeight: "240px" }} />
                 </div>
                 <div className="flex gap-2 flex-wrap">
                   {shots.map((s, i) => (
-                    <button key={i} onClick={() => setActiveShot(i)} className="rounded overflow-hidden flex-shrink-0" style={{ width: "78px", height: "50px", opacity: i === activeShot ? 1 : 0.5, outline: i === activeShot ? "2px solid #66c0f4" : "none" }}>
+                    <button key={i} onClick={() => setActiveShot(i)} className="rounded overflow-hidden flex-shrink-0" style={{ width: "78px", height: "50px", opacity: i === activeShot ? 1 : 0.5, outline: i === activeShot ? "2px solid var(--color-accent)" : "none" }}>
                       <img src={s} alt="" className="w-full h-full object-cover" />
                     </button>
                   ))}
@@ -592,22 +592,22 @@ export function GameDetail({
             )}
             {meta?.tags && meta.tags.length > 0 && (
               <section>
-                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Tags</h2>
+                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Tags</h2>
                 <div className="flex flex-wrap gap-1.5">{meta.tags.map((t) => <TagBadge key={t} text={t} />)}</div>
               </section>
             )}
             <section>
-              <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center justify-between" style={{ color: "#8f98a0" }}><span>Custom Tags</span></h2>
+              <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center justify-between" style={{ color: "var(--color-text-muted)" }}><span>Custom Tags</span></h2>
               <div className="flex flex-wrap gap-1.5 items-center">
                 {customization.customTags?.map((t) => (
-                  <span key={t} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded cursor-pointer group" style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d5a73" }} onClick={() => { const tags = customization.customTags?.filter((x) => x !== t) || []; onSaveCustomization({ customTags: tags }); }}>
+                  <span key={t} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded cursor-pointer group" style={{ background: "var(--color-border)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }} onClick={() => { const tags = customization.customTags?.filter((x) => x !== t) || []; onSaveCustomization({ customTags: tags }); }}>
                     {t} <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">✕</span>
                   </span>
                 ))}
                 <input
                   type="text"
                   placeholder=" add tag"
-                  className="bg-transparent border border-dashed border-[#2a475e] text-[#8f98a0] hover:text-[#c6d4df] hover:border-[#3d5a73] transition-colors text-xs px-2 py-0.5 rounded outline-none w-24 focus:w-32 focus:border-solid focus:border-[#66c0f4] focus:text-[#fff]"
+                  className="bg-transparent border border-dashed border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)] transition-colors text-xs px-2 py-0.5 rounded outline-none w-24 focus:w-32 focus:border-solid focus:border-[var(--color-accent)] focus:text-[var(--color-white)]"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       const val = e.currentTarget.value.trim().toLowerCase();
@@ -623,15 +623,15 @@ export function GameDetail({
               </div>
             </section>
             {!meta && (
-              <div className="rounded-lg px-6 py-8 text-center" style={{ background: "#16202d", border: "2px dashed #2a3f54" }}>
-                <p className="text-sm mb-1" style={{ color: "#8f98a0" }}>No metadata linked yet.</p>
-                <p className="text-xs mb-4" style={{ color: "#4a5568" }}>Link an F95zone or DLsite page to get cover art, description, tags and more.</p>
-                <button onClick={onLinkPage} className="px-5 py-2 rounded text-sm font-semibold" style={{ background: "#2a6db5", color: "#fff" }}>Link a Page</button>
+              <div className="rounded-lg px-6 py-8 text-center" style={{ background: "var(--color-bg-elev)", border: "2px dashed var(--color-panel-3)" }}>
+                <p className="text-sm mb-1" style={{ color: "var(--color-text-muted)" }}>No metadata linked yet.</p>
+                <p className="text-xs mb-4" style={{ color: "var(--color-text-dim)" }}>Link an F95zone or DLsite page to get cover art, description, tags and more.</p>
+                <button onClick={onLinkPage} className="px-5 py-2 rounded text-sm font-semibold" style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>Link a Page</button>
               </div>
             )}
             <InGameGallery shots={screenshots} onTake={onTakeScreenshot} onOpenFolder={onOpenScreenshotsFolder} onExportZip={onExportGalleryZip} onUpdateTags={onUpdateScreenshotTags} />
             <section>
-              <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Play History</h2>
+              <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Play History</h2>
               <SessionTimeline sessions={sessions} gamePath={game.path} onEditNote={onEditSessionNote} />
             </section>
             <section>
@@ -639,51 +639,51 @@ export function GameDetail({
             </section>
           </div>
           <div className="flex-shrink-0 w-60 space-y-4">
-            <div className="rounded-lg p-4 space-y-3" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-              <h2 className="text-xs uppercase tracking-widest" style={{ color: "#8f98a0" }}>Your Stats</h2>
-              <div><p className="text-xs" style={{ color: "#8f98a0" }}>Total playtime</p><p className="text-base font-semibold" style={{ color: "#c6d4df" }}>{stat.totalTime > 0 ? formatTime(stat.totalTime) : "—"}</p></div>
-              <div><p className="text-xs" style={{ color: "#8f98a0" }}>Last played</p><p className="text-sm" style={{ color: "#c6d4df" }}>{timeAgo(stat.lastPlayed)}</p></div>
-              {stat.lastSession > 0 && <div><p className="text-xs" style={{ color: "#8f98a0" }}>Last session</p><p className="text-sm" style={{ color: "#c6d4df" }}>{formatTime(stat.lastSession)}</p></div>}
-              {(stat.launchCount ?? 0) > 0 && <div><p className="text-xs" style={{ color: "#8f98a0" }}>Times played</p><p className="text-sm font-semibold" style={{ color: "#66c0f4" }}>{stat.launchCount} {stat.launchCount === 1 ? "session" : "sessions"}</p></div>}
-              {sessions.some((s) => s.path === game.path) && <div><p className="text-xs mb-2" style={{ color: "#8f98a0" }}>This week</p><PlayChart sessions={sessions} gamePath={game.path} /></div>}
+            <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
+              <h2 className="text-xs uppercase tracking-widest" style={{ color: "var(--color-text-muted)" }}>Your Stats</h2>
+              <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Total playtime</p><p className="text-base font-semibold" style={{ color: "var(--color-text)" }}>{stat.totalTime > 0 ? formatTime(stat.totalTime) : "—"}</p></div>
+              <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Last played</p><p className="text-sm" style={{ color: "var(--color-text)" }}>{timeAgo(stat.lastPlayed)}</p></div>
+              {stat.lastSession > 0 && <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Last session</p><p className="text-sm" style={{ color: "var(--color-text)" }}>{formatTime(stat.lastSession)}</p></div>}
+              {(stat.launchCount ?? 0) > 0 && <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Times played</p><p className="text-sm font-semibold" style={{ color: "var(--color-accent)" }}>{stat.launchCount} {stat.launchCount === 1 ? "session" : "sessions"}</p></div>}
+              {sessions.some((s) => s.path === game.path) && <div><p className="text-xs mb-2" style={{ color: "var(--color-text-muted)" }}>This week</p><PlayChart sessions={sessions} gamePath={game.path} /></div>}
             </div>
-            <div className="rounded-lg p-4 space-y-4" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
+            <div className="rounded-lg p-4 space-y-4" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
               <div>
-                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "#8f98a0" }}>Completion Status</label>
-                <select value={customization.status || ""} onChange={(e) => onSaveCustomization({ status: ((e.target as HTMLSelectElement).value || undefined) as any })} className="w-full bg-[#1b2838] border border-[#2a475e] rounded px-2 py-1.5 text-xs outline-none text-[#c6d4df] cursor-pointer" style={{ backgroundImage: "none" }}>
+                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>Completion Status</label>
+                <select value={customization.status || ""} onChange={(e) => onSaveCustomization({ status: ((e.target as HTMLSelectElement).value || undefined) as any })} className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)] cursor-pointer" style={{ backgroundImage: "none" }}>
                   <option value="">- Not Set -</option><option value="Playing">▶ Playing</option><option value="Completed">✓ Completed</option><option value="On Hold">⏸ On Hold</option><option value="Dropped">⏹ Dropped</option><option value="Plan to Play">📅 Plan to Play</option>
                 </select>
               </div>
               <div>
-                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "#8f98a0" }} title="Show a toast warning when you exceed this time in a single launch">Time Budget (mins)</label>
-                <input type="number" min="0" placeholder="No limit" value={customization.timeLimitMins || ""} onChange={(e) => { const el = e.target as HTMLInputElement; onSaveCustomization({ timeLimitMins: el.value ? parseInt(el.value) : undefined }); }} className="w-full bg-[#1b2838] border border-[#2a475e] rounded px-2 py-1.5 text-xs outline-none text-[#c6d4df]" />
+                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }} title="Show a toast warning when you exceed this time in a single launch">Time Budget (mins)</label>
+                <input type="number" min="0" placeholder="No limit" value={customization.timeLimitMins || ""} onChange={(e) => { const el = e.target as HTMLInputElement; onSaveCustomization({ timeLimitMins: el.value ? parseInt(el.value) : undefined }); }} className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)]" />
               </div>
             </div>
-            {stat.totalTime > 0 && <div className="rounded-lg p-4" style={{ background: "#16202d", border: "1px solid #1e3a50" }}><Milestones totalSecs={stat.totalTime} /></div>}
+            {stat.totalTime > 0 && <div className="rounded-lg p-4" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}><Milestones totalSecs={stat.totalTime} /></div>}
             {meta && (
-              <div className="rounded-lg p-4 space-y-2" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-                <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "#8f98a0" }}>Game Info</h2>
+              <div className="rounded-lg p-4 space-y-2" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
+                <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "var(--color-text-muted)" }}>Game Info</h2>
                 <MetaRow label="Developer" value={meta.developer} /><MetaRow label="Version" value={meta.version} /><MetaRow label="Engine" value={meta.engine} /><MetaRow label="OS" value={meta.os} /><MetaRow label="Language" value={meta.language} /><MetaRow label="Censored" value={meta.censored} /><MetaRow label="Released" value={meta.release_date} /><MetaRow label="Updated" value={meta.last_updated} /><MetaRow label="Price" value={meta.price} />
                 <MetaRow label="Circle" value={meta.circle} /><MetaRow label="Series" value={meta.series} /><MetaRow label="Author" value={meta.author} /><MetaRow label="Illustration" value={meta.illustration} /><MetaRow label="Voice Actor" value={meta.voice_actor} /><MetaRow label="Music" value={meta.music} /><MetaRow label="Age Rating" value={meta.age_rating} /><MetaRow label="Format" value={meta.product_format} /><MetaRow label="File Format" value={meta.file_format} /><MetaRow label="File Size" value={meta.file_size} />
               </div>
             )}
-            <div className="rounded-lg p-4 space-y-2" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-              <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "#8f98a0" }}>Files</h2>
+            <div className="rounded-lg p-4 space-y-2" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
+              <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "var(--color-text-muted)" }}>Files</h2>
               {customization.exeOverride ? (
                 <>
                   <div>
                     <div className="flex items-center gap-1.5 mb-0.5">
-                      <p className="text-xs" style={{ color: "#c8a951" }}>Launch override</p>
-                      <span className="text-[9px] px-1.5 py-px rounded font-semibold" style={{ background: "#3a2800", color: "#c8a951", border: "1px solid #5a4200" }}>active</span>
+                      <p className="text-xs" style={{ color: "var(--color-warning)" }}>Launch override</p>
+                      <span className="text-[9px] px-1.5 py-px rounded font-semibold" style={{ background: "#3a2800", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>active</span>
                     </div>
-                    <p className="text-xs font-mono break-all" style={{ color: "#c8a951" }}>{customization.exeOverride}</p>
+                    <p className="text-xs font-mono break-all" style={{ color: "var(--color-warning)" }}>{customization.exeOverride}</p>
                   </div>
-                  <div><p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Scanned exe</p><p className="text-xs font-mono break-all" style={{ color: "#4a5568" }}>{game.path}</p></div>
+                  <div><p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>Scanned exe</p><p className="text-xs font-mono break-all" style={{ color: "var(--color-text-dim)" }}>{game.path}</p></div>
                 </>
               ) : (
-                <div><p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Executable</p><p className="text-xs font-mono break-all" style={{ color: "#66c0f4" }}>{game.path}</p></div>
+                <div><p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>Executable</p><p className="text-xs font-mono break-all" style={{ color: "var(--color-accent)" }}>{game.path}</p></div>
               )}
-              <div><p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Folder</p><p className="text-xs font-mono break-all" style={{ color: "#c6d4df" }}>{game.path.replace(/[\\/][^\\/]$/, "")}</p></div>
+              <div><p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>Folder</p><p className="text-xs font-mono break-all" style={{ color: "var(--color-text)" }}>{game.path.replace(/[\\/][^\\/]$/, "")}</p></div>
             </div>
           </div>
         </div>
@@ -691,3 +691,4 @@ export function GameDetail({
     </div>
   );
 }
+

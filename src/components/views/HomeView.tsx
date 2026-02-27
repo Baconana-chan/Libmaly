@@ -72,8 +72,8 @@ function PlayChart({ sessions, gamePath, days = 7 }: { sessions: SessionEntryLik
         const h = Math.max(4, Math.round((v / max) * 100));
         return (
           <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1">
-            <div className="w-full rounded-t" style={{ height: `${h}%`, background: "linear-gradient(180deg,#66c0f4,#2a6db5)" }} title={`${labels[i]}: ${formatTime(v)}`} />
-            <span className="text-[9px]" style={{ color: "#4a5568" }}>{labels[i]}</span>
+            <div className="w-full rounded-t" style={{ height: `${h}%`, background: "linear-gradient(180deg,var(--color-accent),var(--color-accent-dark))" }} title={`${labels[i]}: ${formatTime(v)}`} />
+            <span className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>{labels[i]}</span>
           </div>
         );
       })}
@@ -138,46 +138,46 @@ export function HomeView({
   const coverSrc = (g: GameLike) => customizations[g.path]?.coverUrl ?? metadata[g.path]?.cover_url;
 
   return (
-    <div className="flex-1 overflow-y-auto px-8 py-6" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
-      <div className="flex items-center gap-6 mb-8 pb-5 border-b" style={{ borderColor: "#1b3a50" }}>
+    <div className="flex-1 overflow-y-auto px-8 py-6" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+      <div className="flex items-center gap-6 mb-8 pb-5 border-b" style={{ borderColor: "var(--color-border-card)" }}>
         <div>
-          <p className="text-3xl font-bold" style={{ color: "#fff" }}>{games.length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>Games in library</p>
+          <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{games.length}</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>Games in library</p>
         </div>
-        <div style={{ width: "1px", height: "36px", background: "#2a3f54" }} />
+        <div style={{ width: "1px", height: "36px", background: "var(--color-panel-3)" }} />
         <div>
-          <p className="text-3xl font-bold" style={{ color: "#fff" }}>{Object.keys(stats).filter((k) => stats[k].totalTime > 0).length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>Played</p>
+          <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{Object.keys(stats).filter((k) => stats[k].totalTime > 0).length}</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>Played</p>
         </div>
-        <div style={{ width: "1px", height: "36px", background: "#2a3f54" }} />
+        <div style={{ width: "1px", height: "36px", background: "var(--color-panel-3)" }} />
         <div>
-          <p className="text-3xl font-bold" style={{ color: "#fff" }}>{formatTime(totalPlaytimeSecs)}</p>
-          <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>Total playtime</p>
+          <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{formatTime(totalPlaytimeSecs)}</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>Total playtime</p>
         </div>
-        <div style={{ width: "1px", height: "36px", background: "#2a3f54" }} />
+        <div style={{ width: "1px", height: "36px", background: "var(--color-panel-3)" }} />
         <div>
-          <p className="text-3xl font-bold" style={{ color: "#fff" }}>{Object.keys(favGames).length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>Favourites</p>
+          <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{Object.keys(favGames).length}</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>Favourites</p>
         </div>
-        <div style={{ width: "1px", height: "36px", background: "#2a3f54" }} />
+        <div style={{ width: "1px", height: "36px", background: "var(--color-panel-3)" }} />
         <div>
-          <p className="text-3xl font-bold" style={{ color: "#fff" }}>{Object.keys(notes).filter((k) => notes[k].trim()).length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>With notes</p>
+          <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{Object.keys(notes).filter((k) => notes[k].trim()).length}</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>With notes</p>
         </div>
       </div>
 
       <section>
-        <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "#8f98a0" }}>
+        <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "var(--color-text-muted)" }}>
           Recent Games
-          <span className="ml-2 font-normal normal-case" style={{ color: "#4a5568" }}>
+          <span className="ml-2 font-normal normal-case" style={{ color: "var(--color-text-dim)" }}>
             — played in the last 60 days
           </span>
         </h2>
 
         {recent.length === 0 ? (
-          <div className="rounded-lg px-6 py-12 text-center" style={{ background: "#16202d", border: "2px dashed #2a3f54" }}>
-            <p className="text-sm" style={{ color: "#8f98a0" }}>No games played recently.</p>
-            <p className="text-xs mt-1" style={{ color: "#4a5568" }}>Launch a game to see it here.</p>
+          <div className="rounded-lg px-6 py-12 text-center" style={{ background: "var(--color-bg-elev)", border: "2px dashed var(--color-panel-3)" }}>
+            <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>No games played recently.</p>
+            <p className="text-xs mt-1" style={{ color: "var(--color-text-dim)" }}>Launch a game to see it here.</p>
           </div>
         ) : (
           <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" }}>
@@ -187,34 +187,34 @@ export function HomeView({
               const name = displayName(game);
               const isFav = !!favGames[game.path];
               return (
-                <div key={game.path} className="rounded-lg overflow-hidden flex flex-col" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
+                <div key={game.path} className="rounded-lg overflow-hidden flex flex-col" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
                   <div className="relative flex-shrink-0 overflow-hidden cursor-pointer" style={{ height: "110px" }} onClick={() => onSelect(game)}>
                     {cover ? <img src={cover} alt="" className="w-full h-full object-cover" style={{ filter: "brightness(0.65)" }} /> : <div className="w-full h-full" style={{ background: heroGradient(game.name) }} />}
                     <div className="absolute inset-0" style={{ background: "linear-gradient(to top,rgba(22,32,45,0.9) 0%,transparent 60%)" }} />
                     <div className="absolute bottom-0 left-0 px-3 pb-2 pr-2 right-0 flex items-end justify-between">
-                      <p className="font-semibold text-sm line-clamp-2 flex-1 mr-2" style={{ color: "#fff", textShadow: "0 1px 4px rgba(0,0,0,0.9)" }}>
-                        {isFav && <span style={{ color: "#c8a951", marginRight: "3px" }}>★</span>}
+                      <p className="font-semibold text-sm line-clamp-2 flex-1 mr-2" style={{ color: "var(--color-white)", textShadow: "0 1px 4px rgba(0,0,0,0.9)" }}>
+                        {isFav && <span style={{ color: "var(--color-warning)", marginRight: "3px" }}>★</span>}
                         {name}
                       </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 px-3 py-2">
                     <div className="flex-1 min-w-0">
-                      <p className="text-[10px]" style={{ color: "#8f98a0" }}>
+                      <p className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
                         {timeAgo(st.lastPlayed)} · {st.totalTime > 0 ? formatTime(st.totalTime) : "—"}
                       </p>
                     </div>
                     <button
                       onClick={() => onSelect(game)}
                       className="px-2.5 py-1 rounded text-xs flex-shrink-0"
-                      style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3d5a73" }}
+                      style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}
                       onMouseEnter={(e) => {
-                        e.currentTarget.style.background = "#1e4060";
-                        e.currentTarget.style.color = "#66c0f4";
+                        e.currentTarget.style.background = "var(--color-accent-deep)";
+                        e.currentTarget.style.color = "var(--color-accent)";
                       }}
                       onMouseLeave={(e) => {
-                        e.currentTarget.style.background = "#2a3f54";
-                        e.currentTarget.style.color = "#8f98a0";
+                        e.currentTarget.style.background = "var(--color-panel-3)";
+                        e.currentTarget.style.color = "var(--color-text-muted)";
                       }}
                     >
                       View
@@ -222,9 +222,9 @@ export function HomeView({
                     <button
                       onClick={() => (runningGamePath === game.path ? onStop() : onPlay(game.path))}
                       className="px-2.5 py-1 rounded text-xs flex-shrink-0 flex items-center gap-1"
-                      style={{ background: runningGamePath === game.path ? "#6b2222" : "#4c6b22", color: runningGamePath === game.path ? "#e88585" : "#d2e885" }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = runningGamePath === game.path ? "#8a1e1e" : "#5c8a1e")}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = runningGamePath === game.path ? "#6b2222" : "#4c6b22")}
+                      style={{ background: runningGamePath === game.path ? "var(--color-stop-bg)" : "var(--color-play-bg)", color: runningGamePath === game.path ? "var(--color-danger-soft)" : "var(--color-play-text)" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = runningGamePath === game.path ? "var(--color-stop-hover)" : "var(--color-play-hover)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = runningGamePath === game.path ? "var(--color-stop-bg)" : "var(--color-play-bg)")}
                     >
                       {runningGamePath === game.path ? (
                         <>
@@ -248,8 +248,8 @@ export function HomeView({
 
       {mostPlayedThisWeek.length > 0 && (
         <section className="mt-8">
-          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "#8f98a0" }}>Most Played This Week</h2>
-          <div className="rounded-xl p-4 space-y-3" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
+          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "var(--color-text-muted)" }}>Most Played This Week</h2>
+          <div className="rounded-xl p-4 space-y-3" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
             {mostPlayedThisWeek.map(({ game, secs, path }) => {
               const maxSecs = mostPlayedThisWeek[0].secs;
               const cover = coverSrc(game);
@@ -261,15 +261,15 @@ export function HomeView({
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between mb-0.5">
-                      <p className="text-xs truncate font-medium" style={{ color: "#c6d4df" }}>{name}</p>
-                      <span className="text-[10px] ml-2 flex-shrink-0" style={{ color: "#66c0f4" }}>{formatTime(secs)}</span>
+                      <p className="text-xs truncate font-medium" style={{ color: "var(--color-text)" }}>{name}</p>
+                      <span className="text-[10px] ml-2 flex-shrink-0" style={{ color: "var(--color-accent)" }}>{formatTime(secs)}</span>
                     </div>
-                    <div className="h-1 rounded-full" style={{ background: "#1a2d3d" }}>
+                    <div className="h-1 rounded-full" style={{ background: "var(--color-panel-low)" }}>
                       <div
                         className="h-full rounded-full"
                         style={{
                           width: `${(secs / maxSecs) * 100}%`,
-                          background: "linear-gradient(90deg, #2a6db5, #66c0f4)",
+                          background: "linear-gradient(90deg, var(--color-accent-dark), var(--color-accent))",
                           transition: "width 0.4s",
                         }}
                       />
@@ -284,8 +284,8 @@ export function HomeView({
 
       {sessions.length > 0 && (
         <section className="mt-8">
-          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "#8f98a0" }}>Library Activity — Last 7 Days</h2>
-          <div className="rounded-xl p-4" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
+          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "var(--color-text-muted)" }}>Library Activity — Last 7 Days</h2>
+          <div className="rounded-xl p-4" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
             <PlayChart sessions={sessions} gamePath={null} days={7} />
           </div>
         </section>
@@ -293,3 +293,4 @@ export function HomeView({
     </div>
   );
 }
+

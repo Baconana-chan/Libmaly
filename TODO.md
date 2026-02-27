@@ -4,9 +4,9 @@
 
 ## 🎨 UI / UX
 
-- [ ] **Themes** — Dark (current), Light, OLED-black; accent colour picker
-- [ ] **Theme scheduler** — auto-switch Light ↔ Dark based on time of day or OS setting
-- [ ] **Back / Forward navigation** — browser-style history for jumping between views
+- [x] **Themes** — Dark (current), Light, OLED-black; accent colour picker
+- [x] **Theme scheduler** — auto-switch Light ↔ Dark based on time of day or OS setting
+- [x] **Back / Forward navigation** — browser-style history for jumping between views
 
 ---
 

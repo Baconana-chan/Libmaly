@@ -77,46 +77,46 @@ export function StatsView({
   const busiestDay = dayCounts[maxDayIdx] > 0 ? days[maxDayIdx] : "-";
 
   return (
-    <div className="flex-1 overflow-y-auto px-10 py-8" style={{ background: "linear-gradient(to bottom, #1b2838 0%, #17212e 100%)", color: "#c6d4df" }}>
-      <h2 className="text-2xl font-bold mb-8 tracking-wide" style={{ color: "#fff" }}>
+    <div className="flex-1 overflow-y-auto px-10 py-8" style={{ background: "linear-gradient(to bottom, var(--color-bg) 0%, var(--color-bg-elev) 100%)", color: "var(--color-text)" }}>
+      <h2 className="text-2xl font-bold mb-8 tracking-wide" style={{ color: "var(--color-text)" }}>
         LIBRALY STATS
       </h2>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
-        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
-          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>
+        <div className="p-6 rounded-lg shadow-sm" style={{ background: "var(--color-panel-3)", border: "1px solid var(--color-border-strong)" }}>
+          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>
             Total Library Time
           </h3>
-          <p className="text-3xl font-bold" style={{ color: "#66c0f4" }}>
+          <p className="text-3xl font-bold" style={{ color: "var(--color-accent)" }}>
             {hours}h {mins}m
           </p>
         </div>
-        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
-          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>
+        <div className="p-6 rounded-lg shadow-sm" style={{ background: "var(--color-panel-3)", border: "1px solid var(--color-border-strong)" }}>
+          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>
             Longest Session
           </h3>
-          <p className="text-xl font-bold mb-1" style={{ color: "#c8a951" }}>
+          <p className="text-xl font-bold mb-1" style={{ color: "var(--color-warning)" }}>
             {lsHrs}h {lsMins}m
           </p>
-          <p className="text-xs truncate text-ellipsis overflow-hidden" style={{ color: "#8f98a0" }}>
+          <p className="text-xs truncate text-ellipsis overflow-hidden" style={{ color: "var(--color-text-muted)" }}>
             {lsGame}
           </p>
         </div>
-        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
-          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>
+        <div className="p-6 rounded-lg shadow-sm" style={{ background: "var(--color-panel-3)", border: "1px solid var(--color-border-strong)" }}>
+          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>
             Most Played Game
           </h3>
-          <p className="text-xl font-bold mb-1" style={{ color: "#e57373" }}>
+          <p className="text-xl font-bold mb-1" style={{ color: "var(--color-danger)" }}>
             {maxLaunches} launches
           </p>
-          <p className="text-xs truncate text-ellipsis overflow-hidden" style={{ color: "#8f98a0" }}>
+          <p className="text-xs truncate text-ellipsis overflow-hidden" style={{ color: "var(--color-text-muted)" }}>
             {mostLaunchedGame}
           </p>
         </div>
-        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
-          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>
+        <div className="p-6 rounded-lg shadow-sm" style={{ background: "var(--color-panel-3)", border: "1px solid var(--color-border-strong)" }}>
+          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>
             Busiest Day
           </h3>
-          <p className="text-2xl font-bold" style={{ color: "#6dbf6d" }}>
+          <p className="text-2xl font-bold" style={{ color: "var(--color-success)" }}>
             {busiestDay}
           </p>
         </div>
@@ -124,3 +124,4 @@ export function StatsView({
     </div>
   );
 }
+

@@ -37,21 +37,21 @@ export function InGameGallery({
     <section>
       <div className="flex flex-col gap-2 mb-2">
         <div className="flex items-center gap-2">
-          <h2 className="text-xs uppercase tracking-widest flex-1" style={{ color: "#8f98a0" }}>
+          <h2 className="text-xs uppercase tracking-widest flex-1" style={{ color: "var(--color-text-muted)" }}>
             In-Game Screenshots{" "}
-            {shots.length > 0 && <span style={{ color: "#4a5568" }}>({shots.length})</span>}
+            {shots.length > 0 && <span style={{ color: "var(--color-text-dim)" }}>({shots.length})</span>}
           </h2>
           <button
             onClick={onTake}
             className="flex items-center gap-1 px-2 py-1 rounded text-xs"
-            style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
+            style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-accent-muted)" }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = "#1e4060";
-              e.currentTarget.style.color = "#66c0f4";
+              e.currentTarget.style.background = "var(--color-accent-deep)";
+              e.currentTarget.style.color = "var(--color-accent)";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = "#2a3f54";
-              e.currentTarget.style.color = "#8f98a0";
+              e.currentTarget.style.background = "var(--color-panel-3)";
+              e.currentTarget.style.color = "var(--color-text-muted)";
             }}
             title="Capture game window now (F12 hotkey works while game is running)"
           >
@@ -73,14 +73,14 @@ export function InGameGallery({
           <button
             onClick={onOpenFolder}
             className="flex items-center gap-1 px-2 py-1 rounded text-xs"
-            style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
+            style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-accent-muted)" }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = "#1e4060";
-              e.currentTarget.style.color = "#66c0f4";
+              e.currentTarget.style.background = "var(--color-accent-deep)";
+              e.currentTarget.style.color = "var(--color-accent)";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = "#2a3f54";
-              e.currentTarget.style.color = "#8f98a0";
+              e.currentTarget.style.background = "var(--color-panel-3)";
+              e.currentTarget.style.color = "var(--color-text-muted)";
             }}
           >
             <svg
@@ -101,17 +101,17 @@ export function InGameGallery({
             onClick={onExportZip}
             disabled={shots.length === 0}
             className="flex items-center gap-1 px-2 py-1 rounded text-xs disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
+            style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-accent-muted)" }}
             onMouseEnter={(e) => {
               if (shots.length > 0) {
-                e.currentTarget.style.background = "#1e4060";
-                e.currentTarget.style.color = "#66c0f4";
+                e.currentTarget.style.background = "var(--color-accent-deep)";
+                e.currentTarget.style.color = "var(--color-accent)";
               }
             }}
             onMouseLeave={(e) => {
               if (shots.length > 0) {
-                e.currentTarget.style.background = "#2a3f54";
-                e.currentTarget.style.color = "#8f98a0";
+                e.currentTarget.style.background = "var(--color-panel-3)";
+                e.currentTarget.style.color = "var(--color-text-muted)";
               }
             }}
             title="Export all screenshots to a zip archive"
@@ -140,9 +140,9 @@ export function InGameGallery({
               onClick={() => setActiveTagFilter(null)}
               className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
               style={{
-                background: !activeTagFilter ? "#3d5a73" : "#1a2734",
-                color: !activeTagFilter ? "#fff" : "#8f98a0",
-                border: "1px solid #2a3f54",
+                background: !activeTagFilter ? "var(--color-border-strong)" : "#1a2734",
+                color: !activeTagFilter ? "var(--color-white)" : "var(--color-text-muted)",
+                border: "1px solid var(--color-panel-3)",
               }}
             >
               ALL
@@ -153,9 +153,9 @@ export function InGameGallery({
                 onClick={() => setActiveTagFilter(activeTagFilter === tag ? null : tag)}
                 className="text-[10px] px-1.5 py-0.5 rounded transition-colors uppercase tracking-tight"
                 style={{
-                  background: activeTagFilter === tag ? "#2a6db5" : "#1a2734",
-                  color: activeTagFilter === tag ? "#fff" : "#4cb5ff",
-                  border: `1px solid ${activeTagFilter === tag ? "#3d8ee6" : "#2a3f54"}`,
+                  background: activeTagFilter === tag ? "var(--color-accent-dark)" : "#1a2734",
+                  color: activeTagFilter === tag ? "var(--color-white)" : "#4cb5ff",
+                  border: `1px solid ${activeTagFilter === tag ? "#3d8ee6" : "var(--color-panel-3)"}`,
                 }}
               >
                 {tag}
@@ -166,13 +166,13 @@ export function InGameGallery({
       </div>
 
       {shots.length === 0 ? (
-        <div className="rounded px-3 py-4 text-center" style={{ background: "#16202d", border: "1px dashed #2a3f54" }}>
-          <p className="text-xs" style={{ color: "#4a5568" }}>
+        <div className="rounded px-3 py-4 text-center" style={{ background: "var(--color-bg-elev)", border: "1px dashed var(--color-panel-3)" }}>
+          <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
             Press{" "}
             <kbd
               style={{
-                background: "#2a3f54",
-                color: "#8f98a0",
+                background: "var(--color-panel-3)",
+                color: "var(--color-text-muted)",
                 padding: "1px 5px",
                 borderRadius: "3px",
                 fontSize: "10px",
@@ -190,12 +190,12 @@ export function InGameGallery({
               key={s.filename}
               onClick={() => setLightbox(s)}
               className="rounded overflow-hidden flex-shrink-0 relative group"
-              style={{ width: "90px", height: "60px", background: "#0d1117" }}
+              style={{ width: "90px", height: "60px", background: "var(--color-bg-deep)" }}
             >
               <img src={convertFileSrc(s.path)} alt={s.filename} className="w-full h-full object-cover" style={{ display: "block" }} />
               {s.tags?.length > 0 && (
                 <div className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl">
-                  <svg width="8" height="8" viewBox="0 0 24 24" fill="#66c0f4" stroke="#66c0f4" strokeWidth="1">
+                  <svg width="8" height="8" viewBox="0 0 24 24" fill="var(--color-accent)" stroke="var(--color-accent)" strokeWidth="1">
                     <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
                     <line x1="7" y1="7" x2="7.01" y2="7" />
                   </svg>
@@ -204,7 +204,7 @@ export function InGameGallery({
             </button>
           ))}
           {filteredShots.length === 0 && (
-            <div className="text-[10px] py-4 text-center w-full" style={{ color: "#4a5568" }}>
+            <div className="text-[10px] py-4 text-center w-full" style={{ color: "var(--color-text-dim)" }}>
               No shots match the selected tag.
             </div>
           )}
@@ -229,27 +229,27 @@ export function InGameGallery({
 
             <div className="w-full max-w-[90vw] mt-4 flex flex-col gap-3">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-mono" style={{ color: "#8cb4d5" }}>
+                <span className="text-sm font-mono" style={{ color: "var(--color-accent-soft)" }}>
                   {lightbox.filename}
                 </span>
                 <button
                   onClick={() => setLightbox(null)}
                   className="text-xs px-4 py-1.5 rounded font-semibold transition-colors"
-                  style={{ background: "#2a475e", color: "#fff" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "#3d5a73")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "#2a475e")}
+                  style={{ background: "var(--color-border)", color: "var(--color-white)" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-border-strong)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-border)")}
                 >
                   CLOSE
                 </button>
               </div>
 
-              <div className="bg-[#16202d] p-3 rounded-lg border border-[#2a3f54]">
+              <div className="bg-[var(--color-bg-elev)] p-3 rounded-lg border border-[var(--color-panel-3)]">
                 <div className="flex items-center gap-2 mb-2">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" strokeWidth="2">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2">
                     <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
                     <line x1="7" y1="7" x2="7.01" y2="7" />
                   </svg>
-                  <span className="text-[10px] uppercase tracking-widest font-bold" style={{ color: "#8f98a0" }}>
+                  <span className="text-[10px] uppercase tracking-widest font-bold" style={{ color: "var(--color-text-muted)" }}>
                     Labels / Tags
                   </span>
                 </div>
@@ -258,7 +258,7 @@ export function InGameGallery({
                   {lightbox.tags?.map((t) => (
                     <span
                       key={t}
-                      className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded bg-[#2a475e] text-[#c6d4df] border border-[#3d5a73] group hover:border-[#66c0f4] cursor-default transition-colors"
+                      className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded bg-[var(--color-border)] text-[var(--color-text)] border border-[var(--color-border-strong)] group hover:border-[var(--color-accent)] cursor-default transition-colors"
                     >
                       {t}
                       <button
@@ -277,7 +277,7 @@ export function InGameGallery({
                   <input
                     type="text"
                     placeholder="Add label (Bug, Ending, Funny...)"
-                    className="bg-transparent border border-dashed border-[#2a475e] text-[#8f98a0] text-[11px] px-2 py-0.5 rounded outline-none w-48 focus:w-64 focus:border-solid focus:border-[#66c0f4] focus:text-[#fff] transition-all"
+                    className="bg-transparent border border-dashed border-[var(--color-border)] text-[var(--color-text-muted)] text-[11px] px-2 py-0.5 rounded outline-none w-48 focus:w-64 focus:border-solid focus:border-[var(--color-accent)] focus:text-[var(--color-white)] transition-all"
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         const val = e.currentTarget.value.trim().toLowerCase();
@@ -299,3 +299,4 @@ export function InGameGallery({
     </section>
   );
 }
+

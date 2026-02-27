@@ -42,7 +42,7 @@ export function NsfwOverlay({
     >
       {!small && (
         <>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-70 mb-1">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-white)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-70 mb-1">
             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
             <circle cx="12" cy="12" r="3" />
             <line x1="1" y1="1" x2="23" y2="23" />
@@ -55,3 +55,4 @@ export function NsfwOverlay({
     </div>
   );
 }
+

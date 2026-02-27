@@ -1,14 +1,25 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "preact/hooks";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
+import { register as registerGlobalShortcut, unregister as unregisterGlobalShortcut } from "@tauri-apps/plugin-global-shortcut";
 import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { getMatches } from "@tauri-apps/plugin-cli";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { marked } from "marked";
+import { CommandPalette } from "./components/CommandPalette";
+import { NsfwOverlay } from "./components/common/NsfwOverlay";
+import { GameDetail } from "./components/game/GameDetail";
+import { AppUpdateModal } from "./components/modals/AppUpdateModal";
+import { CrashReportModal, LogViewerModal } from "./components/modals/DiagnosticsModals";
+import { FeedView } from "./components/views/FeedView";
+import { HomeView } from "./components/views/HomeView";
+import { StatsView } from "./components/views/StatsView";
+import { mergeFolderGames, mergeFolderMtimes } from "./lib/scanner";
 import "./App.css";
 
 // ─── Virtual list hook ────────────────────────────────────────────────────────
@@ -169,6 +180,22 @@ interface Screenshot {
   tags: string[];
 }
 
+interface RustLogEntry {
+  ts: number;
+  level: string;
+  message: string;
+}
+
+interface CrashReport {
+  ts: number;
+  thread: string;
+  message: string;
+  location: string;
+  backtrace: string;
+}
+
+type LogLevelFilter = "all" | "error" | "warn" | "info";
+
 interface HistoryEntry {
   id: string;
   date: number;
@@ -187,6 +214,9 @@ interface GameCustomization {
   launchArgs?: string;
   /** Additional pinned executables to show in the UI for this game */
   pinnedExes?: { name: string; path: string }[];
+  /** Per-game launch config override for Wine/Proton (non-Windows) */
+  runnerOverrideEnabled?: boolean;
+  runnerOverride?: RunnerOverrideConfig;
   /** Game completion status */
   status?: "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play";
   /** Daily/session time budget in minutes */
@@ -261,14 +291,40 @@ interface LibraryFolder { path: string; }
 
 interface RecentGame { name: string; path: string; }
 
+type RunnerKind = "wine" | "proton" | "custom";
+
 interface LaunchConfig {
   enabled: boolean;        // false = always run directly
-  runner: "wine" | "proton" | "custom";
+  runner: RunnerKind;
   runnerPath: string;         // path to wine/proton binary
   prefixPath: string;         // WINEPREFIX / STEAM_COMPAT_DATA_PATH
 }
 
 const DEFAULT_LAUNCH_CONFIG: LaunchConfig = { enabled: false, runner: "wine", runnerPath: "", prefixPath: "" };
+
+interface RunnerOverrideConfig {
+  runner: RunnerKind;
+  runnerPath: string;
+  prefixPath: string;
+}
+
+interface PrefixInfo {
+  name: string;
+  path: string;
+  kind: "wine" | "proton" | string;
+  has_dxvk: boolean;
+  has_vkd3d: boolean;
+}
+
+interface LutrisGameEntry {
+  name: string;
+  slug: string;
+  exe: string;
+  prefix?: string;
+  runner?: string;
+  args?: string;
+  config_path: string;
+}
 
 const SK_SETTINGS = "libmaly_app_settings-v1";
 interface AppSettings {
@@ -304,35 +360,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   bossKeyFallbackUrl: "",
 };
 
-function isGameAdult(meta?: GameMetadata): boolean {
-  if (!meta) return false;
-  if (meta.source === "f95" || meta.source === "dlsite") return true;
-  if (meta.age_rating && meta.age_rating.toLowerCase().includes("18")) return true;
-  return meta.tags?.some(t => ["adult", "nsfw", "18+", "18", "eroge"].includes(t.toLowerCase())) ?? false;
-}
 
-function NsfwOverlay({
-  gamePath, meta, appSettings, revealed, onReveal, small
-}: {
-  gamePath: string; meta?: GameMetadata; appSettings: AppSettings;
-  revealed: Record<string, boolean>; onReveal: (path: string) => void;
-  small?: boolean;
-}) {
-  if (!appSettings.blurNsfwContent || !isGameAdult(meta) || revealed[gamePath]) return null;
-  return (
-    <div className={`absolute inset-0 z-10 flex flex-col items-center justify-center cursor-pointer ${small ? "backdrop-blur-sm bg-black/20" : "backdrop-blur-xl bg-black/40"}`}
-      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onReveal(gamePath); }}>
-      {!small && (
-        <>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-70 mb-1">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /><line x1="1" y1="1" x2="23" y2="23" />
-          </svg>
-          <span className="text-[10px] uppercase font-bold text-white opacity-80 px-2 py-0.5 rounded shadow-sm" style={{ background: "rgba(0,0,0,0.6)" }}>18+ Content</span>
-        </>
-      )}
-    </div>
-  );
-}
 
 const COLLECTION_COLORS = ["#66c0f4", "#c8a951", "#a170c8", "#e8734a", "#5ba85b", "#d45252", "#4a8ee8", "#e85480"];
 
@@ -359,14 +387,6 @@ function formatTime(s: number) {
   if (h > 0) return `${h} hrs ${m} mins`;
   if (m > 0) return `${m} mins`;
   return "< 1 min";
-}
-function timeAgo(ts: number) {
-  if (!ts) return "Never";
-  const d = Math.floor((Date.now() - ts) / 86400000);
-  if (d === 0) return "Today"; if (d === 1) return "Yesterday";
-  if (d < 30) return `${d} days ago`;
-  const mo = Math.floor(d / 30);
-  return mo < 12 ? `${mo} mo ago` : `${Math.floor(mo / 12)} yr ago`;
 }
 function heroGradient(name: string) {
   let h = 0;
@@ -407,117 +427,9 @@ function parseDeepLinkUrl(rawUrl: string): LaunchRequest | null {
   }
 }
 
-// ─── Command Palette ────────────────────────────────────────────────────────
-function CommandPalette({
-  isOpen, onClose, games, metadata, notes, onSelect
-}: {
-  isOpen: boolean; onClose: () => void; games: Game[]; metadata: Record<string, GameMetadata>; notes: Record<string, string>; onSelect: (g: Game) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (isOpen) {
-      setQuery("");
-      setTimeout(() => inputRef.current?.focus(), 50);
-    }
-  }, [isOpen]);
-
-  const results = useMemo(() => {
-    if (!query.trim()) return [];
-    const q = query.toLowerCase();
-    return games.filter(g => {
-      if (g.name.toLowerCase().includes(q)) return true;
-      const meta = metadata[g.path];
-      if (meta) {
-        if (meta.developer?.toLowerCase().includes(q)) return true;
-        if (meta.tags?.some(t => t.toLowerCase().includes(q))) return true;
-      }
-      if (notes[g.path]?.toLowerCase().includes(q)) return true;
-      return false;
-    }).slice(0, 15);
-  }, [games, metadata, notes, query]);
-
-  if (!isOpen) return null;
-
-  return (
-    <div className="fixed inset-0 z-[10000] flex items-start justify-center pt-[15vh]"
-      style={{ background: "rgba(0,0,0,0.8)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-[600px] rounded-lg shadow-2xl overflow-hidden flex flex-col" style={{ background: "#1b2838", border: "1px solid #2a475e" }}>
-        <div className="flex items-center px-4 py-3 border-b" style={{ borderColor: "#1e3a50" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
-          </svg>
-          <input
-            ref={inputRef}
-            type="text"
-            className="flex-1 bg-transparent px-3 text-[15px] outline-none"
-            style={{ color: "#fff" }}
-            placeholder="Search games, tags, developers, notes... (Ctrl+K)"
-            value={query}
-            onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
-              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                e.preventDefault();
-                // Simple version: doesn't include list navigation for the sake of brevity
-              }
-              if (e.key === "Enter" && results.length > 0) {
-                onSelect(results[0]);
-                onClose();
-              }
-            }}
-          />
-        </div>
-        {results.length > 0 && (
-          <div className="py-2 max-h-[400px] overflow-y-auto" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
-            {results.map(g => (
-              <button key={g.path}
-                className="w-full flex items-center gap-3 px-4 py-2 hover:bg-[#2a475e] text-left transition-colors"
-                onClick={() => { onSelect(g); onClose(); }}>
-                <div className="w-8 h-8 rounded shrink-0 bg-[#0d1b2a] border border-[#1e3a50] overflow-hidden flex items-center justify-center font-bold text-xs" style={{ color: "#fff" }}>
-                  {metadata[g.path]?.cover_url ? <img src={metadata[g.path].cover_url} className="w-full h-full object-cover" alt="" /> : g.name.charAt(0).toUpperCase()}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold truncate" style={{ color: "#c6d4df" }}>{metadata[g.path]?.title ?? g.name}</p>
-                  <p className="text-[10px] truncate" style={{ color: "#8f98a0" }}>
-                    {metadata[g.path]?.developer || "Unknown Developer"}
-                    {metadata[g.path]?.tags?.length ? ` · ${metadata[g.path].tags.slice(0, 3).join(", ")}` : ""}
-                  </p>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-        {query.trim() && results.length === 0 && (
-          <div className="py-8 text-center text-sm" style={{ color: "#8f98a0" }}>No results found for "{query}"</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ─── TagBadge ─────────────────────────────────────────────────────────────────
-function TagBadge({ text }: { text: string }) {
-  return (
-    <span className="inline-block text-xs px-2 py-0.5 rounded"
-      style={{ background: "#1e3a50", color: "#8cb4d5", border: "1px solid #264d68" }}>
-      {text}
-    </span>
-  );
-}
 
 // ─── MetaRow ──────────────────────────────────────────────────────────────────
-function MetaRow({ label, value }: { label: string; value?: string }) {
-  if (!value) return null;
-  return (
-    <div className="flex gap-2 text-xs">
-      <span className="flex-shrink-0 w-24 text-right" style={{ color: "#8f98a0" }}>{label}</span>
-      <span style={{ color: "#c6d4df" }}>{value}</span>
-    </div>
-  );
-}
 
 // ─── F95 Login Modal ──────────────────────────────────────────────────────────
 function F95LoginModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
@@ -1165,77 +1077,13 @@ function NotesModal({ displayTitle, initialNote, onSave, onClose }: {
 }
 
 // ─── Settings Mini-Menu ───────────────────────────────────────────────────────
-function MenuEntry({ icon, label, color, onClick }: {
-  icon: string; label: string; color?: string; onClick: () => void;
-}) {
-  const [hov, setHov] = useState(false);
-  return (
-    <button onClick={onClick}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
-      style={{ color: color ?? "#c6d4df", background: hov ? "#2a3f54" : "transparent" }}>
-      <span style={{ fontSize: "13px" }}>{icon}</span>
-      <span>{label}</span>
-    </button>
-  );
-}
 
-function SettingsMenu({ isHidden, isFav, onDelete, onToggleHide, onToggleFav, onCustomize, onManageCollections }: {
-  isHidden: boolean; isFav: boolean;
-  onDelete: () => void; onToggleHide: () => void; onToggleFav: () => void; onCustomize: () => void; onManageCollections: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative flex-shrink-0">
-      <button
-        onClick={() => setOpen((p) => !p)}
-        className="flex items-center gap-1 px-3 py-2 rounded text-sm"
-        style={{ background: open ? "#3d5a73" : "#2a3f54", color: open ? "#c6d4df" : "#8f98a0", border: "1px solid #3d5a73" }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = "#3d5a73"; e.currentTarget.style.color = "#c6d4df"; }}
-        onMouseLeave={(e) => { if (!open) { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; } }}
-        title="Game settings">
-        {/* Gear icon */}
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-30 rounded-lg py-1 shadow-2xl"
-          style={{ background: "#1e2d3d", border: "1px solid #2a475e", minWidth: "180px" }}>
-          <MenuEntry icon="⭐" label={isFav ? "Remove from Favorites" : "Add to Favorites"}
-            color={isFav ? "#c8a951" : undefined}
-            onClick={() => { setOpen(false); onToggleFav(); }} />
-          <MenuEntry icon={isHidden ? "👁" : "🙈"} label={isHidden ? "Unhide Game" : "Hide Game"}
-            onClick={() => { setOpen(false); onToggleHide(); }} />
-          <MenuEntry icon="🎨" label="Customise…"
-            onClick={() => { setOpen(false); onCustomize(); }} />
-          <MenuEntry icon="📁" label="Collections…"
-            onClick={() => { setOpen(false); onManageCollections(); }} />
-          <div style={{ borderTop: "1px solid #2a3f54", margin: "3px 0" }} />
-          <MenuEntry icon="🗑" label="Uninstall" color="#e57373"
-            onClick={() => { setOpen(false); onDelete(); }} />
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ─── Customise Modal ──────────────────────────────────────────────────────────
-function CustomizeModal({ game, meta, custom, onSave, onClose }: {
+function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSave, onClose }: {
   game: Game; meta?: GameMetadata; custom: GameCustomization;
+  platform: string;
+  globalLaunchConfig: LaunchConfig;
   onSave: (c: GameCustomization) => void; onClose: () => void;
 }) {
   const [displayName, setDisplayName] = useState(custom.displayName ?? meta?.title ?? game.name);
@@ -1246,9 +1094,28 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
   const [pinnedExes, setPinnedExes] = useState<{ name: string; path: string }[]>(custom.pinnedExes ?? []);
   const [siblingExes, setSiblingExes] = useState<string[]>([]);
   const [detectingExes, setDetectingExes] = useState(false);
+  const [runnerOverrideEnabled, setRunnerOverrideEnabled] = useState(!!custom.runnerOverrideEnabled);
+  const [runnerOverride, setRunnerOverride] = useState<RunnerOverrideConfig>(
+    custom.runnerOverride ?? {
+      runner: globalLaunchConfig.runner,
+      runnerPath: globalLaunchConfig.runnerPath,
+      prefixPath: globalLaunchConfig.prefixPath,
+    }
+  );
+  const [detectedRunners, setDetectedRunners] = useState<{ name: string; path: string; kind: RunnerKind; flavor?: string }[]>([]);
+  const [detectingRunners, setDetectingRunners] = useState(false);
 
   // Derive game folder from its exe path
   const gameFolder = game.path.replace(/[\\/][^\\/]+$/, "");
+
+  useEffect(() => {
+    if (platform === "windows") return;
+    setDetectingRunners(true);
+    invoke<{ name: string; path: string; kind: RunnerKind; flavor?: string }[]>("detect_wine_runners")
+      .then(setDetectedRunners)
+      .catch(() => setDetectedRunners([]))
+      .finally(() => setDetectingRunners(false));
+  }, [platform]);
 
   const pickImage = async (setter: (s: string) => void) => {
     const sel = await open({
@@ -1291,6 +1158,12 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
       exeOverride: exeOverride.trim() && exeOverride.trim() !== game.path ? exeOverride.trim() : undefined,
       launchArgs: launchArgs.trim() || undefined,
       pinnedExes: pinnedExes.length > 0 ? pinnedExes : undefined,
+      runnerOverrideEnabled: platform !== "windows" && runnerOverrideEnabled ? true : undefined,
+      runnerOverride: platform !== "windows" && runnerOverrideEnabled ? {
+        runner: runnerOverride.runner,
+        runnerPath: runnerOverride.runnerPath.trim(),
+        prefixPath: runnerOverride.prefixPath.trim(),
+      } : undefined,
     });
     onClose();
   };
@@ -1452,6 +1325,91 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
                 style={{ background: "#152232", color: "#c6d4df", border: "1px solid #2a475e" }} />
             </div>
 
+            {platform !== "windows" && (
+              <div className="mt-4 rounded-lg p-3" style={{ background: "#152232", border: "1px solid #2a475e" }}>
+                <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer" style={{ color: "#8f98a0" }}>
+                  <input
+                    type="checkbox"
+                    checked={runnerOverrideEnabled}
+                    onChange={(e) => setRunnerOverrideEnabled(e.currentTarget.checked)}
+                  />
+                  Per-game runner override
+                </label>
+                {!runnerOverrideEnabled && (
+                  <p className="text-[10px] mt-1" style={{ color: "#4a5568" }}>
+                    Uses global Wine/Proton settings.
+                  </p>
+                )}
+
+                {runnerOverrideEnabled && (
+                  <div className="mt-3 space-y-2">
+                    <div className="flex gap-2">
+                      {(["wine", "proton", "custom"] as RunnerKind[]).map((r) => (
+                        <button
+                          key={r}
+                          onClick={() => setRunnerOverride((prev) => ({ ...prev, runner: r }))}
+                          className="flex-1 py-1.5 rounded text-xs capitalize"
+                          style={{
+                            background: runnerOverride.runner === r ? "#2a6db5" : "#1b2d3d",
+                            color: runnerOverride.runner === r ? "#fff" : "#8f98a0",
+                            border: `1px solid ${runnerOverride.runner === r ? "#3d7dc8" : "#2a475e"}`,
+                          }}
+                        >
+                          {r === "wine" ? "Wine" : r === "proton" ? "Proton" : "Custom"}
+                        </button>
+                      ))}
+                    </div>
+
+                    <input
+                      type="text"
+                      placeholder={runnerOverride.runner === "wine" ? "/usr/bin/wine" : runnerOverride.runner === "proton" ? "/path/to/proton" : "/path/to/runner"}
+                      value={runnerOverride.runnerPath}
+                      onInput={(e) => setRunnerOverride((prev) => ({ ...prev, runnerPath: (e.target as HTMLInputElement).value }))}
+                      className="w-full px-2 py-1.5 rounded text-xs font-mono outline-none"
+                      style={{ background: "#0d1b2a", color: "#c6d4df", border: "1px solid #2a475e" }}
+                    />
+                    <input
+                      type="text"
+                      placeholder={runnerOverride.runner === "proton" ? "STEAM_COMPAT_DATA_PATH" : "WINEPREFIX"}
+                      value={runnerOverride.prefixPath}
+                      onInput={(e) => setRunnerOverride((prev) => ({ ...prev, prefixPath: (e.target as HTMLInputElement).value }))}
+                      className="w-full px-2 py-1.5 rounded text-xs font-mono outline-none"
+                      style={{ background: "#0d1b2a", color: "#c6d4df", border: "1px solid #2a475e" }}
+                    />
+                    {detectedRunners.length > 0 && (
+                      <div className="max-h-32 overflow-y-auto rounded border" style={{ borderColor: "#2a475e" }}>
+                        {detectedRunners.map((d) => (
+                          <button
+                            key={d.path}
+                            onClick={() =>
+                              setRunnerOverride((prev) => ({
+                                ...prev,
+                                runnerPath: d.path,
+                                runner: d.kind,
+                              }))
+                            }
+                            className="w-full text-left px-2 py-1.5 text-[10px] border-b last:border-b-0 flex items-center gap-2"
+                            style={{
+                              background: runnerOverride.runnerPath === d.path ? "#1a3a5c" : "#0d1b2a",
+                              borderColor: "#1e3a50",
+                              color: runnerOverride.runnerPath === d.path ? "#66c0f4" : "#8f98a0",
+                            }}
+                          >
+                            <span>{d.name}</span>
+                            {d.flavor === "ge" && <span className="ml-auto text-[9px]" style={{ color: "#c8a951" }}>GE</span>}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {detectingRunners && <p className="text-[10px]" style={{ color: "#4a5568" }}>Detecting runners…</p>}
+                    <p className="text-[10px]" style={{ color: "#4a5568" }}>
+                      Tip: leave runner path empty with `Custom` to force direct launch for this game.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="mt-4">
               <label className="block text-xs font-semibold mb-1" style={{ color: "#8f98a0" }}>
                 Pinned Executables <span style={{ fontWeight: "normal", color: "#4a5568" }}>(e.g. Server, Config)</span>
@@ -1546,220 +1504,6 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
   );
 }
 
-// ─── In-Game Screenshots Gallery ─────────────────────────────────────────────
-function InGameGallery({ shots, onTake, onOpenFolder, onExportZip, onUpdateTags }: {
-  shots: Screenshot[];
-  onTake: () => void;
-  onOpenFolder: () => void;
-  onExportZip: () => void;
-  onUpdateTags: (filename: string, tags: string[]) => void;
-}) {
-  const [lightbox, setLightbox] = useState<Screenshot | null>(null);
-  const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
-
-  // Derived filtered shots
-  const filteredShots = activeTagFilter
-    ? shots.filter(s => s.tags?.includes(activeTagFilter))
-    : shots;
-
-  // Collect all unique tags from all screenshots
-  const allShotTags = useMemo(() => {
-    const tags = new Set<string>();
-    shots.forEach(s => s.tags?.forEach(t => tags.add(t)));
-    return Array.from(tags).sort();
-  }, [shots]);
-
-  return (
-    <section>
-      <div className="flex flex-col gap-2 mb-2">
-        <div className="flex items-center gap-2">
-          <h2 className="text-xs uppercase tracking-widest flex-1" style={{ color: "#8f98a0" }}>
-            In-Game Screenshots {shots.length > 0 && <span style={{ color: "#4a5568" }}>({shots.length})</span>}
-          </h2>
-          <button onClick={onTake}
-            className="flex items-center gap-1 px-2 py-1 rounded text-xs"
-            style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}
-            title="Capture game window now (F12 hotkey works while game is running)">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-              <circle cx="12" cy="13" r="4" />
-            </svg>
-            Capture
-          </button>
-          <button onClick={onOpenFolder}
-            className="flex items-center gap-1 px-2 py-1 rounded text-xs"
-            style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-            Folder
-          </button>
-          <button onClick={onExportZip}
-            disabled={shots.length === 0}
-            className="flex items-center gap-1 px-2 py-1 rounded text-xs disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
-            onMouseEnter={(e) => { if (shots.length > 0) { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; } }}
-            onMouseLeave={(e) => { if (shots.length > 0) { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; } }}
-            title="Export all screenshots to a zip archive">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            Export ZIP
-          </button>
-        </div>
-
-        {allShotTags.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-1">
-            <button
-              onClick={() => setActiveTagFilter(null)}
-              className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
-              style={{
-                background: !activeTagFilter ? "#3d5a73" : "#1a2734",
-                color: !activeTagFilter ? "#fff" : "#8f98a0",
-                border: "1px solid #2a3f54"
-              }}
-            >ALL</button>
-            {allShotTags.map(tag => (
-              <button
-                key={tag}
-                onClick={() => setActiveTagFilter(activeTagFilter === tag ? null : tag)}
-                className="text-[10px] px-1.5 py-0.5 rounded transition-colors uppercase tracking-tight"
-                style={{
-                  background: activeTagFilter === tag ? "#2a6db5" : "#1a2734",
-                  color: activeTagFilter === tag ? "#fff" : "#4cb5ff",
-                  border: `1px solid ${activeTagFilter === tag ? "#3d8ee6" : "#2a3f54"}`
-                }}
-              >{tag}</button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {shots.length === 0 ? (
-        <div className="rounded px-3 py-4 text-center" style={{ background: "#16202d", border: "1px dashed #2a3f54" }}>
-          <p className="text-xs" style={{ color: "#4a5568" }}>
-            Press <kbd style={{ background: "#2a3f54", color: "#8f98a0", padding: "1px 5px", borderRadius: "3px", fontSize: "10px" }}>F12</kbd> while a game is running, or click Capture above.
-          </p>
-        </div>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {filteredShots.map((s) => (
-            <button key={s.filename} onClick={() => setLightbox(s)}
-              className="rounded overflow-hidden flex-shrink-0 relative group"
-              style={{ width: "90px", height: "60px", background: "#0d1117" }}>
-              <img
-                src={convertFileSrc(s.path)}
-                alt={s.filename}
-                className="w-full h-full object-cover"
-                style={{ display: "block" }}
-              />
-              {s.tags?.length > 0 && (
-                <div className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl">
-                  <svg width="8" height="8" viewBox="0 0 24 24" fill="#66c0f4" stroke="#66c0f4" strokeWidth="1">
-                    <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
-                    <line x1="7" y1="7" x2="7.01" y2="7" />
-                  </svg>
-                </div>
-              )}
-              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"
-                style={{ background: "rgba(0,0,0,0.5)" }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                  <line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
-                </svg>
-              </div>
-            </button>
-          ))}
-          {filteredShots.length === 0 && (
-            <div className="text-[10px] py-4 text-center w-full" style={{ color: "#4a5568" }}>
-              No shots match the selected tag.
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Lightbox */}
-      {lightbox && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: "rgba(0,0,0,0.92)" }}
-          onClick={() => setLightbox(null)}>
-          <div onClick={(e) => e.stopPropagation()} className="relative flex flex-col items-center max-w-full max-h-full">
-            <div className="relative">
-              <img
-                src={convertFileSrc(lightbox.path)}
-                alt={lightbox.filename}
-                style={{ maxWidth: "90vw", maxHeight: "80vh", objectFit: "contain", display: "block" }}
-                className="rounded shadow-2xl"
-              />
-            </div>
-
-            <div className="w-full max-w-[90vw] mt-4 flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-mono" style={{ color: "#8cb4d5" }}>{lightbox.filename}</span>
-                <button onClick={() => setLightbox(null)}
-                  className="text-xs px-4 py-1.5 rounded font-semibold transition-colors"
-                  style={{ background: "#2a475e", color: "#fff" }}
-                  onMouseEnter={(e) => e.currentTarget.style.background = "#3d5a73"}
-                  onMouseLeave={(e) => e.currentTarget.style.background = "#2a475e"}>CLOSE</button>
-              </div>
-
-              {/* Tags Section */}
-              <div className="bg-[#16202d] p-3 rounded-lg border border-[#2a3f54]">
-                <div className="flex items-center gap-2 mb-2">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" strokeWidth="2">
-                    <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
-                    <line x1="7" y1="7" x2="7.01" y2="7" />
-                  </svg>
-                  <span className="text-[10px] uppercase tracking-widest font-bold" style={{ color: "#8f98a0" }}>Labels / Tags</span>
-                </div>
-
-                <div className="flex flex-wrap gap-1.5 items-center">
-                  {lightbox.tags?.map(t => (
-                    <span key={t} className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded bg-[#2a475e] text-[#c6d4df] border border-[#3d5a73] group hover:border-[#66c0f4] cursor-default transition-colors">
-                      {t}
-                      <button
-                        onClick={() => {
-                          const next = lightbox.tags.filter(x => x !== t);
-                          onUpdateTags(lightbox.filename, next);
-                          setLightbox({ ...lightbox, tags: next });
-                        }}
-                        className="hover:text-red-400 opacity-60 hover:opacity-100 transition-opacity"
-                      >✕</button>
-                    </span>
-                  ))}
-
-                  <input
-                    type="text"
-                    placeholder="Add label (Bug, Ending, Funny...)"
-                    className="bg-transparent border border-dashed border-[#2a475e] text-[#8f98a0] text-[11px] px-2 py-0.5 rounded outline-none w-48 focus:w-64 focus:border-solid focus:border-[#66c0f4] focus:text-[#fff] transition-all"
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        const val = e.currentTarget.value.trim().toLowerCase();
-                        if (val && !lightbox.tags?.includes(val)) {
-                          const next = [...(lightbox.tags || []), val];
-                          onUpdateTags(lightbox.filename, next);
-                          setLightbox({ ...lightbox, tags: next });
-                        }
-                        e.currentTarget.value = '';
-                      }
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
 // ─── Wine / Proton Settings Modal ──────────────────────────────────────────────
 function WineSettingsModal({ config, onSave, onClose }: {
   config: LaunchConfig;
@@ -1767,14 +1511,96 @@ function WineSettingsModal({ config, onSave, onClose }: {
   onClose: () => void;
 }) {
   const [cfg, setCfg] = useState<LaunchConfig>(config);
-  const [detected, setDetected] = useState<{ name: string; path: string; kind: string }[]>([]);
+  const [detected, setDetected] = useState<{ name: string; path: string; kind: RunnerKind; flavor?: string }[]>([]);
   const [detecting, setDetecting] = useState(false);
+  const [prefixes, setPrefixes] = useState<PrefixInfo[]>([]);
+  const [prefixLoading, setPrefixLoading] = useState(false);
+  const [prefixError, setPrefixError] = useState("");
+  const [newPrefixPath, setNewPrefixPath] = useState("");
+  const [toolBusy, setToolBusy] = useState<string | null>(null);
+  const [selectedVerb, setSelectedVerb] = useState("vcrun2019");
+  const winetricksVerbs = ["vcrun2019", "d3dx9", "dotnet48", "corefonts", "xact", "xinput"];
 
   useEffect(() => {
     setDetecting(true);
-    invoke<{ name: string; path: string; kind: string }[]>("detect_wine_runners")
+    invoke<{ name: string; path: string; kind: RunnerKind; flavor?: string }[]>("detect_wine_runners")
       .then(setDetected).catch(() => { }).finally(() => setDetecting(false));
   }, []);
+
+  const refreshPrefixes = useCallback(() => {
+    setPrefixLoading(true);
+    setPrefixError("");
+    invoke<PrefixInfo[]>("list_wine_prefixes")
+      .then((rows) => {
+        setPrefixes(rows);
+        if (!newPrefixPath && rows.length > 0) setNewPrefixPath(rows[0].path.replace(/[\\/][^\\/]+$/, ""));
+      })
+      .catch((e) => setPrefixError(String(e)))
+      .finally(() => setPrefixLoading(false));
+  }, [newPrefixPath]);
+
+  useEffect(() => {
+    refreshPrefixes();
+  }, [refreshPrefixes]);
+
+  const createPrefix = async () => {
+    const target = newPrefixPath.trim();
+    if (!target) return;
+    setToolBusy("create");
+    try {
+      await invoke("create_wine_prefix", { path: target, runner: cfg.runnerPath || null });
+      await refreshPrefixes();
+    } catch (e) {
+      alert("Failed to create prefix: " + e);
+    } finally {
+      setToolBusy(null);
+    }
+  };
+
+  const deletePrefix = async (path: string) => {
+    if (!confirm(`Delete prefix?\n${path}`)) return;
+    setToolBusy(`del:${path}`);
+    try {
+      await invoke("delete_wine_prefix", { path });
+      await refreshPrefixes();
+    } catch (e) {
+      alert("Failed to delete prefix: " + e);
+    } finally {
+      setToolBusy(null);
+    }
+  };
+
+  const installGraphics = async (prefix: PrefixInfo) => {
+    const needDxvk = !prefix.has_dxvk;
+    const needVkd3d = !prefix.has_vkd3d;
+    if (!needDxvk && !needVkd3d) return;
+    setToolBusy(`gfx:${prefix.path}`);
+    try {
+      await invoke("install_dxvk_vkd3d", {
+        prefix: prefix.path,
+        installDxvk: needDxvk,
+        installVkd3d: needVkd3d,
+      });
+      await refreshPrefixes();
+    } catch (e) {
+      alert("DXVK/VKD3D install failed: " + e);
+    } finally {
+      setToolBusy(null);
+    }
+  };
+
+  const runVerb = async (prefix: PrefixInfo) => {
+    setToolBusy(`verb:${prefix.path}`);
+    try {
+      await invoke("run_winetricks", { prefix: prefix.path, verbs: [selectedVerb] });
+      alert(`Winetricks finished: ${selectedVerb}`);
+      await refreshPrefixes();
+    } catch (e) {
+      alert("Winetricks failed: " + e);
+    } finally {
+      setToolBusy(null);
+    }
+  };
 
   const upd = (patch: Partial<LaunchConfig>) => setCfg((p) => ({ ...p, ...patch }));
 
@@ -1832,7 +1658,7 @@ function WineSettingsModal({ config, onSave, onClose }: {
                 <div className="space-y-1">
                   {detected.map((d) => (
                     <button key={d.path}
-                      onClick={() => upd({ runnerPath: d.path, runner: d.kind as "wine" | "proton" | "custom" })}
+                      onClick={() => upd({ runnerPath: d.path, runner: d.kind })}
                       className="w-full flex items-center gap-2 px-3 py-2 rounded text-xs text-left"
                       style={{
                         background: cfg.runnerPath === d.path ? "#1a3a5c" : "#1b2d3d",
@@ -1841,6 +1667,11 @@ function WineSettingsModal({ config, onSave, onClose }: {
                       }}>
                       <span>{d.kind === "wine" ? "🍷" : "⚙"}</span>
                       <span className="font-semibold">{d.name}</span>
+                      {d.flavor === "ge" && (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold" style={{ background: "#3a2800", color: "#c8a951" }}>
+                          GE
+                        </span>
+                      )}
                       <span className="ml-auto font-mono text-[10px] truncate max-w-[220px]" style={{ color: "#4a5568" }}>{d.path}</span>
                     </button>
                   ))}
@@ -1892,6 +1723,99 @@ function WineSettingsModal({ config, onSave, onClose }: {
                 <p>Set the data path to a folder that will hold the Proton prefix (Wine bottle) for your games.</p>
               </div>
             )}
+
+            <div className="rounded-lg p-3 space-y-3" style={{ background: "#152232", border: "1px solid #2a475e" }}>
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-semibold" style={{ color: "#8f98a0" }}>Wine Prefix Manager</p>
+                <button
+                  onClick={refreshPrefixes}
+                  className="ml-auto px-2 py-1 rounded text-[10px]"
+                  style={{ background: "#2a3f54", color: "#8f98a0" }}
+                  disabled={prefixLoading}
+                >
+                  Refresh
+                </button>
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newPrefixPath}
+                  onInput={(e) => setNewPrefixPath((e.target as HTMLInputElement).value)}
+                  placeholder="New prefix path"
+                  className="flex-1 px-2 py-1.5 rounded text-xs font-mono outline-none"
+                  style={{ background: "#0d1b2a", color: "#c6d4df", border: "1px solid #2a3f54" }}
+                />
+                <button
+                  onClick={createPrefix}
+                  disabled={toolBusy === "create" || !newPrefixPath.trim()}
+                  className="px-3 py-1.5 rounded text-xs disabled:opacity-50"
+                  style={{ background: "#2a6db5", color: "#fff" }}
+                >
+                  Create
+                </button>
+              </div>
+
+              {prefixError && <p className="text-[10px]" style={{ color: "#e57373" }}>{prefixError}</p>}
+              {prefixLoading && <p className="text-[10px]" style={{ color: "#4a5568" }}>Loading prefixes…</p>}
+
+              <div className="space-y-2 max-h-56 overflow-y-auto" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+                {prefixes.length === 0 && !prefixLoading && (
+                  <p className="text-[10px]" style={{ color: "#4a5568" }}>No Wine/Proton prefixes found.</p>
+                )}
+                {prefixes.map((pfx) => (
+                  <div key={pfx.path} className="rounded p-2" style={{ background: "#0d1b2a", border: "1px solid #1e3a50" }}>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-semibold" style={{ color: "#c6d4df" }}>{pfx.name}</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "#1e2d3d", color: "#8f98a0" }}>{pfx.kind}</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: pfx.has_dxvk ? "#1a3a1a" : "#3a2a00", color: pfx.has_dxvk ? "#6dbf6d" : "#c8a951" }}>
+                        DXVK {pfx.has_dxvk ? "ok" : "missing"}
+                      </span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: pfx.has_vkd3d ? "#1a3a1a" : "#3a2a00", color: pfx.has_vkd3d ? "#6dbf6d" : "#c8a951" }}>
+                        VKD3D {pfx.has_vkd3d ? "ok" : "missing"}
+                      </span>
+                    </div>
+                    <p className="text-[9px] mt-1 font-mono break-all" style={{ color: "#4a5568" }}>{pfx.path}</p>
+                    <div className="flex items-center gap-2 mt-2">
+                      <button
+                        onClick={() => installGraphics(pfx)}
+                        disabled={toolBusy === `gfx:${pfx.path}` || (pfx.has_dxvk && pfx.has_vkd3d)}
+                        className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
+                        style={{ background: "#2a3f54", color: "#8cb4d5" }}
+                      >
+                        Install DXVK/VKD3D
+                      </button>
+                      <select
+                        value={selectedVerb}
+                        onChange={(e) => setSelectedVerb((e.target as HTMLSelectElement).value)}
+                        className="px-2 py-1 rounded text-[10px] outline-none"
+                        style={{ background: "#1b2d3d", color: "#c6d4df", border: "1px solid #2a475e" }}
+                      >
+                        {winetricksVerbs.map((v) => (
+                          <option key={v} value={v}>{v}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => runVerb(pfx)}
+                        disabled={toolBusy === `verb:${pfx.path}`}
+                        className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
+                        style={{ background: "#2a3f54", color: "#66c0f4" }}
+                      >
+                        Run Winetricks
+                      </button>
+                      <button
+                        onClick={() => deletePrefix(pfx.path)}
+                        disabled={toolBusy === `del:${pfx.path}`}
+                        className="ml-auto px-2 py-1 rounded text-[10px] disabled:opacity-40"
+                        style={{ background: "#3a2020", color: "#e88585" }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </>)}
         </div>
 
@@ -2000,160 +1924,7 @@ function ManageCollectionsModal({ gamePath, displayTitle, collections, onToggle,
   );
 }
 
-// ─── Stats helpers ────────────────────────────────────────────────────────────
-
-/** Returns sessions grouped by calendar day (last N days) for charting. */
-function sessionsPerDay(sessions: SessionEntry[], gamePath: string | null, days = 7): { label: string; secs: number }[] {
-  const now = new Date();
-  return Array.from({ length: days }, (_, i) => {
-    const d = new Date(now);
-    d.setDate(d.getDate() - (days - 1 - i));
-    const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-    const dayEnd = dayStart + 86_400_000;
-    const secs = sessions
-      .filter(s => (!gamePath || s.path === gamePath) && s.startedAt >= dayStart && s.startedAt < dayEnd)
-      .reduce((acc, s) => acc + s.duration, 0);
-    const label = d.toLocaleDateString("en", { weekday: "short" });
-    return { label, secs };
-  });
-}
-
-const MILESTONES = [
-  { hours: 1, label: "1h", color: "#66c0f4" },
-  { hours: 5, label: "5h", color: "#4e9bd0" },
-  { hours: 10, label: "10h", color: "#c8a951" },
-  { hours: 25, label: "25h", color: "#e8904a" },
-  { hours: 50, label: "50h", color: "#e05050" },
-  { hours: 100, label: "100h", color: "#a060d8" },
-];
-
-// ─── PlayChart ────────────────────────────────────────────────────────────────
-function PlayChart({ sessions, gamePath, days = 7 }: { sessions: SessionEntry[]; gamePath: string | null; days?: number }) {
-  const data = sessionsPerDay(sessions, gamePath, days);
-  const maxSecs = Math.max(...data.map(d => d.secs), 1);
-  const H = 80;
-
-  return (
-    <div className="w-full">
-      <svg width="100%" height={H + 20} style={{ overflow: "visible" }}>
-        {data.map((d, i) => {
-          const barH = Math.max(d.secs > 0 ? 4 : 0, Math.round((d.secs / maxSecs) * H));
-          const wPct = 100 / days;
-          const gapPct = 1.5;
-          const xPct = i * wPct + (gapPct / 2);
-          const barWPct = wPct - gapPct;
-
-          return (
-            <g key={i}>
-              <rect x={`${xPct}%`} y={H - barH} width={`${barWPct}%`} height={barH}
-                rx="2"
-                fill={d.secs > 0 ? "#2a6db5" : "#1a2d3d"}
-                style={{ transition: "height 0.3s" }}>
-                {d.secs > 0 && <title>{formatTime(d.secs)}</title>}
-              </rect>
-              <text x={`${i * wPct + (wPct / 2)}%`} y={H + 14} textAnchor="middle"
-                fontSize="9" fill="#4a5568">{d.label}</text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
-}
-
-// ─── Milestones ───────────────────────────────────────────────────────────────
-function Milestones({ totalSecs }: { totalSecs: number }) {
-  const totalH = totalSecs / 3600;
-  const achieved = MILESTONES.filter(m => totalH >= m.hours);
-  const next = MILESTONES.find(m => totalH < m.hours);
-  if (achieved.length === 0 && !next) return null;
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Milestones</p>
-      <div className="flex flex-wrap gap-1.5 mb-1">
-        {achieved.map(m => (
-          <span key={m.label}
-            className="px-2 py-0.5 rounded-full text-[10px] font-bold"
-            style={{ background: m.color + "22", color: m.color, border: `1px solid ${m.color}55` }}
-            title={`${m.hours}h played`}>
-            ★ {m.label}
-          </span>
-        ))}
-      </div>
-      {next && (
-        <div className="mt-1">
-          <div className="flex justify-between text-[9px] mb-0.5" style={{ color: "#4a5568" }}>
-            <span>Next: {next.label}</span>
-            <span>{Math.round((totalH / next.hours) * 100)}%</span>
-          </div>
-          <div className="h-1 rounded-full overflow-hidden" style={{ background: "#1a2d3d" }}>
-            <div className="h-full rounded-full" style={{
-              width: `${Math.min(100, (totalH / next.hours) * 100)}%`,
-              background: next.color,
-              transition: "width 0.4s",
-            }} />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── SessionTimeline ──────────────────────────────────────────────────────────
-function SessionTimeline({ sessions, gamePath, onEditNote }: {
-  sessions: SessionEntry[];
-  gamePath: string;
-  onEditNote: (entry: SessionEntry) => void;
-}) {
-  const entries = useMemo(() =>
-    sessions.filter(s => s.path === gamePath).sort((a, b) => b.startedAt - a.startedAt).slice(0, 50),
-    [sessions, gamePath]
-  );
-
-  if (entries.length === 0) {
-    return (
-      <div className="rounded px-3 py-4 text-center text-xs" style={{ background: "#0f1923", color: "#4a5568" }}>
-        No sessions recorded yet — play the game to see history here.
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1"
-      style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
-      {entries.map((s) => {
-        const d = new Date(s.startedAt);
-        const dateStr = d.toLocaleDateString("en", { month: "short", day: "numeric" });
-        const timeStr = d.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" });
-        return (
-          <div key={s.id} className="flex items-start gap-2 rounded px-2.5 py-2 group"
-            style={{ background: "#0f1923" }}>
-            {/* Timeline dot */}
-            <div className="flex flex-col items-center flex-shrink-0 mt-0.5">
-              <div className="w-1.5 h-1.5 rounded-full" style={{ background: "#2a6db5" }} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[10px]" style={{ color: "#66c0f4" }}>{dateStr} {timeStr}</span>
-                <span className="text-[10px] font-semibold" style={{ color: "#c6d4df" }}>{formatTime(s.duration)}</span>
-              </div>
-              {s.note && (
-                <p className="text-xs mt-0.5 italic" style={{ color: "#8f98a0" }}>"{s.note}"</p>
-              )}
-            </div>
-            <button
-              onClick={() => onEditNote(s)}
-              className="text-[9px] flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded"
-              style={{ color: "#66c0f4", background: "#1a2d3d" }}
-              title={s.note ? "Edit note" : "Add note"}>
-              {s.note ? "✎" : "+ note"}
-            </button>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 // ─── SessionNoteModal ─────────────────────────────────────────────────────────
 /** Shown right after a session ends (or when editing a session note). */
@@ -2344,12 +2115,118 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
   );
 }
 
+// ─── Lutris Import Modal ────────────────────────────────────────────────────
+function LutrisImportModal({ games, onImport, onClose }: {
+  games: Game[];
+  onImport: (entries: LutrisGameEntry[]) => void;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [rows, setRows] = useState<{ entry: LutrisGameEntry; checked: boolean; exists: boolean }[]>([]);
+
+  useEffect(() => {
+    invoke<LutrisGameEntry[]>("import_lutris_games")
+      .then((entries) => {
+        const normalized = entries
+          .filter((e) => !!e.exe)
+          .map((e) => {
+            const exists = games.some((g) => normalizePathForMatch(g.path) === normalizePathForMatch(e.exe));
+            return { entry: e, checked: true, exists };
+          });
+        setRows(normalized);
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [games]);
+
+  const toggle = (exe: string) => {
+    setRows((prev) =>
+      prev.map((r) => (r.entry.exe === exe ? { ...r, checked: !r.checked } : r))
+    );
+  };
+
+  const apply = () => {
+    onImport(rows.filter((r) => r.checked).map((r) => r.entry));
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.82)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="rounded-xl shadow-2xl w-[680px] max-h-[82vh] flex flex-col"
+        style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
+        <div className="flex items-center gap-3 px-5 py-3 border-b" style={{ borderColor: "#1b3a50" }}>
+          <h2 className="font-bold text-sm" style={{ color: "#fff" }}>Import from Lutris</h2>
+          <div className="flex-1" />
+          <button onClick={onClose} className="text-sm" style={{ color: "#4a5568" }}>✕</button>
+        </div>
+        <div className="px-5 py-3 text-xs" style={{ color: "#8f98a0" }}>
+          Selected entries will be added to library (if missing) and receive per-game Wine/Proton override.
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 pb-4"
+          style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+          {loading && <p style={{ color: "#8f98a0" }}>Reading Lutris database…</p>}
+          {error && <p style={{ color: "#e57373" }}>{error}</p>}
+          {!loading && !error && rows.length === 0 && (
+            <p style={{ color: "#8f98a0" }}>No Lutris games found.</p>
+          )}
+          {!loading && !error && rows.length > 0 && (
+            <div className="space-y-2">
+              {rows.map((r) => (
+                <label key={r.entry.exe} className="block rounded p-2 cursor-pointer" style={{ background: "#152232", border: "1px solid #1e3a50" }}>
+                  <div className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={r.checked}
+                      onChange={() => toggle(r.entry.exe)}
+                      className="mt-0.5"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm truncate" style={{ color: "#c6d4df" }}>{r.entry.name}</p>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: r.exists ? "#1a3a1a" : "#1e2d3d", color: r.exists ? "#6dbf6d" : "#8f98a0" }}>
+                          {r.exists ? "Exists" : "New"}
+                        </span>
+                        {r.entry.runner && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "#2a3f54", color: "#8cb4d5" }}>
+                            {r.entry.runner}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] mt-0.5 break-all font-mono" style={{ color: "#4a5568" }}>{r.entry.exe}</p>
+                      {r.entry.prefix && (
+                        <p className="text-[10px] mt-0.5 break-all font-mono" style={{ color: "#8f98a0" }}>prefix: {r.entry.prefix}</p>
+                      )}
+                    </div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+        {!loading && rows.length > 0 && (
+          <div className="flex gap-3 justify-end px-5 py-3 border-t" style={{ borderColor: "#1b3a50" }}>
+            <button onClick={onClose} className="px-3 py-1.5 rounded text-xs" style={{ background: "transparent", color: "#8f98a0", border: "1px solid #2a475e" }}>
+              Cancel
+            </button>
+            <button onClick={apply} className="px-4 py-1.5 rounded text-xs font-semibold" style={{ background: "#2a6db5", color: "#fff" }}>
+              Apply {rows.filter((r) => r.checked).length}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Settings Modal ────────────────────────────────────────────────────────────
 function SettingsModal({
   f95LoggedIn, dlsiteLoggedIn, libraryFolders, syncState, platform, launchConfig,
   appUpdate, appSettings,
   onF95Login, onF95Logout, onDLsiteLogin, onDLsiteLogout, onRemoveFolder,
-  onRescanAll, onWineSettings, onSteamImport, onAppUpdate, onSaveSettings, onClose,
+  onRescanAll, onWineSettings, onSteamImport, onLutrisImport, onAppUpdate, onSaveSettings, onClose,
   onExportCSV, onExportHTML, onBatchMetadataRefresh, batchRefreshStatus
 }: {
   f95LoggedIn: boolean; dlsiteLoggedIn: boolean; libraryFolders: { path: string }[]; syncState: string;
@@ -2358,7 +2235,7 @@ function SettingsModal({
   onF95Login: () => void; onF95Logout: () => void;
   onDLsiteLogin: () => void; onDLsiteLogout: () => void;
   onRemoveFolder: (p: string) => void;
-  onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void;
+  onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void; onLutrisImport: () => void;
   onAppUpdate: () => void; onSaveSettings: (s: AppSettings) => void; onClose: () => void;
   onExportCSV: () => void; onExportHTML: () => void;
   onBatchMetadataRefresh: () => void;
@@ -2694,6 +2571,20 @@ function SettingsModal({
                 </svg>
                 Import from Steam…
               </button>
+
+              <div className="pt-3 border-t" style={{ borderColor: "#1e3a50" }}>
+                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "#4a5568" }}>Lutris Import</h3>
+                <p className="text-xs leading-relaxed mb-2" style={{ color: "#8f98a0" }}>
+                  Import Lutris game entries and apply their Wine prefix/runner as per-game override.
+                </p>
+                <button
+                  onClick={() => { onLutrisImport(); onClose(); }}
+                  className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
+                  style={{ background: "#2a1f3a", color: "#b08ee8", border: "1px solid #5a3a8a" }}
+                >
+                  Import from Lutris…
+                </button>
+              </div>
             </section>
           )}
 
@@ -2721,1008 +2612,8 @@ function SettingsModal({
 }
 
 // ─── Version Timeline ─────────────────────────────────────────────────────────
-function VersionTimeline({ history, onAddHistory }: {
-  history: HistoryEntry[];
-  onAddHistory: (v: string, n: string) => void;
-}) {
-  const [isAdding, setIsAdding] = useState(false);
-  const [draftV, setDraftV] = useState("");
-  const [draftN, setDraftN] = useState("");
-
-  const submit = () => {
-    if (!draftV.trim() || !draftN.trim()) return;
-    onAddHistory(draftV.trim(), draftN.trim());
-    setIsAdding(false);
-    setDraftV("");
-    setDraftN("");
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center mb-2">
-        <h2 className="text-xs uppercase tracking-widest text-[#8f98a0]">Version History</h2>
-        <button onClick={() => setIsAdding(!isAdding)} className="text-xs text-[#66c0f4] hover:underline">
-          {isAdding ? "Cancel" : "+ Log update"}
-        </button>
-      </div>
-
-      {isAdding && (
-        <div className="p-3 rounded mb-4" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
-          <div className="flex gap-2 mb-2">
-            <input type="text" placeholder="Vers" value={draftV} onChange={e => setDraftV(e.currentTarget.value)}
-              className="w-16 px-2 py-1 bg-[#152232] border border-[#1b3a50] rounded text-xs outline-none focus:border-[#66c0f4] text-white" />
-            <input type="text" placeholder="Update notes (e.g. Added patch)" value={draftN} onChange={e => setDraftN(e.currentTarget.value)}
-              onKeyDown={e => e.key === "Enter" && submit()}
-              className="flex-1 px-2 py-1 bg-[#152232] border border-[#1b3a50] rounded text-xs outline-none focus:border-[#66c0f4] text-white" />
-            <button onClick={submit} className="px-3 py-1 bg-[#66c0f4] text-black text-xs font-semibold rounded">Log</button>
-          </div>
-        </div>
-      )}
-
-      {history.length === 0 ? (
-        <p className="text-xs text-[#4a5568] italic">No version history logged yet.</p>
-      ) : (
-        <div className="relative border-l border-[#2a475e] ml-2 pl-4 pb-1">
-          {history.map((h) => (
-            <div key={h.id} className="relative mb-5 last:mb-0 group">
-              {/* timeline dot */}
-              <div className="absolute w-2 h-2 rounded-full bg-[#66c0f4] -left-[21px] top-1 transition-transform group-hover:scale-125" />
-              <div className="flex items-baseline gap-2 mb-0.5">
-                <span className="font-mono text-sm font-bold text-[#e57373]">{h.version}</span>
-                <span className="text-[10px] text-[#4a5568]" title={new Date(h.date).toLocaleString()}>
-                  {timeAgo(h.date)}
-                </span>
-              </div>
-              <p className="text-xs text-[#b8c8d4] leading-relaxed">{h.note}</p>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ─── Game Detail ──────────────────────────────────────────────────────────────
-function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots, isHidden, isFav,
-  onPlay, onStop, isRunning, runnerLabel, onDelete, onLinkPage, onOpenF95Login, onClearMeta, onUpdate,
-  onTakeScreenshot, onOpenScreenshotsFolder, onExportGalleryZip, onUpdateScreenshotTags, onToggleHide, onToggleFav, onOpenCustomize, onSaveCustomization, onOpenNotes, hasNotes, onManageCollections,
-  sessions, onEditSessionNote, appSettings, revealedNsfw, onRevealNsfw, history, onAddHistory }: {
-    game: Game; stat: GameStats; meta?: GameMetadata;
-    customization: GameCustomization; f95LoggedIn: boolean;
-    screenshots: Screenshot[]; isHidden: boolean; isFav: boolean;
-    onPlay: (overridePath?: string, overrideArgs?: string) => void; onStop: () => void; isRunning: boolean; runnerLabel?: string;
-    onDelete: () => void; onLinkPage: () => void;
-    onOpenF95Login: () => void; onClearMeta: () => void; onUpdate: () => void;
-    onTakeScreenshot: () => void; onOpenScreenshotsFolder: () => void; onExportGalleryZip: () => void; onUpdateScreenshotTags: (filename: string, tags: string[]) => void;
-    onToggleHide: () => void; onToggleFav: () => void; onOpenCustomize: () => void;
-    onSaveCustomization: (changes: Partial<GameCustomization>) => void;
-    onOpenNotes: () => void; hasNotes: boolean; onManageCollections: () => void;
-    sessions: SessionEntry[]; onEditSessionNote: (entry: SessionEntry) => void;
-    appSettings: AppSettings; revealedNsfw: Record<string, boolean>; onRevealNsfw: (path: string) => void;
-    history: HistoryEntry[]; onAddHistory: (version: string, note: string) => void;
-  }) {
-  const [activeShot, setActiveShot] = useState(0);
-  const cover = customization.coverUrl ?? meta?.cover_url;
-  const heroBg = customization.backgroundUrl ?? cover;
-  const displayTitle = customization.displayName ?? meta?.title ?? game.name;
-  const shots = meta?.screenshots ?? [];
-
-  return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden">
-
-      {/* Hero banner */}
-      <div className="relative flex-shrink-0 overflow-hidden" style={{ height: "240px" }}>
-        {heroBg
-          ? <img src={heroBg} alt={displayTitle} className="absolute inset-0 w-full h-full object-cover"
-            style={{ filter: "brightness(0.5)" }} />
-          : <div className="absolute inset-0" style={{ background: heroGradient(game.name) }} />}
-
-        <NsfwOverlay gamePath={game.path} meta={meta} appSettings={appSettings} revealed={revealedNsfw} onReveal={onRevealNsfw} />
-        <div className="absolute inset-0"
-          style={{ background: "linear-gradient(to top,#1b2838 0%,rgba(27,40,56,0.15) 60%,transparent 100%)" }} />
-        <div className="absolute bottom-0 left-0 right-0 px-8 pb-5">
-          <div className="flex items-end justify-between">
-            <div>
-              <div className="flex gap-2 mb-1.5">
-                {meta?.source && (
-                  <span className="inline-block text-xs px-2 py-0.5 rounded font-semibold"
-                    style={{ background: meta.source === "f95" ? "#c8a951" : "#e0534a", color: meta.source === "f95" ? "#1a1a1a" : "#fff" }}>
-                    {meta.source === "f95" ? "F95zone" : "DLsite"}
-                  </span>
-                )}
-                {isHidden && (
-                  <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-semibold"
-                    style={{ background: "rgba(0,0,0,0.6)", color: "#8f98a0", border: "1px solid #3d5a73" }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
-                      <line x1="1" y1="1" x2="23" y2="23" />
-                    </svg>
-                    Hidden
-                  </span>
-                )}
-              </div>
-              <h1 className="text-3xl font-bold" style={{ color: "#fff", textShadow: "0 2px 8px rgba(0,0,0,.9)" }}>{displayTitle}</h1>
-              {meta?.version && <span className="text-sm mt-0.5 block" style={{ color: "#8cb4d5" }}>{meta.version}</span>}
-            </div>
-            {meta?.rating && (
-              <div className="text-right mb-1">
-                <p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Rating</p>
-                <p className="font-bold" style={{ color: "#c8a951" }}>★ {meta.rating}</p>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Action bar */}
-      <div className="flex items-center gap-2 px-8 py-3 flex-shrink-0"
-        style={{ background: "#16202d", borderBottom: "1px solid #0d1117" }}>
-        <button onClick={game.uninstalled ? undefined : (isRunning ? onStop : () => onPlay())}
-          disabled={game.uninstalled}
-          title={game.uninstalled ? "Reinstall the game or check folder to play" : ""}
-          className="flex items-center gap-2 px-7 py-2 rounded font-bold text-sm uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ background: game.uninstalled ? "#3a3a3a" : (isRunning ? "#6b2222" : "#4c6b22"), color: game.uninstalled ? "#8f98a0" : (isRunning ? "#e88585" : "#d2e885") }}
-          onMouseEnter={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "#8a1e1e" : "#5c8a1e" }}
-          onMouseLeave={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "#6b2222" : "#4c6b22" }}>
-          {game.uninstalled ? "Folder missing" : isRunning
-            ? <><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" /></svg>Stop</>
-            : <><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-              Play{runnerLabel && <span className="ml-1 text-[10px] font-normal normal-case opacity-80">via {runnerLabel}</span>}</>
-          }
-        </button>
-        {customization?.pinnedExes?.map((ex, i) => (
-          <button key={i} onClick={() => onPlay(ex.path, undefined)} disabled={isRunning}
-            className="flex items-center gap-1.5 px-3 py-2 rounded text-sm disabled:opacity-50"
-            style={{ background: "#2a3f54", color: "#c6d4df", border: "1px solid #3d5a73" }}
-            onMouseEnter={(e) => { if (!isRunning) { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; } }}
-            onMouseLeave={(e) => { if (!isRunning) { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#c6d4df"; } }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-            {ex.name}
-          </button>
-        ))}
-        <button onClick={onLinkPage}
-          className="flex items-center gap-1.5 px-3 py-2 rounded text-sm"
-          style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3d5a73" }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-          </svg>
-          {meta ? "Re-link" : "Link Page"}
-        </button>
-        <button onClick={onUpdate}
-          className="flex items-center gap-1.5 px-3 py-2 rounded text-sm"
-          style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3d5a73" }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "#1e3020"; e.currentTarget.style.color = "#6dbf6d"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}
-          title="Install a new version safely (preserves saves)">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" />
-            <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
-          </svg>
-          Update
-        </button>
-        <button onClick={onOpenNotes}
-          className="flex items-center gap-1.5 px-3 py-2 rounded text-sm"
-          style={{ background: hasNotes ? "#1e2d1a" : "#2a3f54", color: hasNotes ? "#6dbf6d" : "#8f98a0", border: `1px solid ${hasNotes ? "#2a5a2a" : "#3d5a73"}` }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "#1e2d1a"; e.currentTarget.style.color = "#6dbf6d"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = hasNotes ? "#1e2d1a" : "#2a3f54"; e.currentTarget.style.color = hasNotes ? "#6dbf6d" : "#8f98a0"; }}
-          title="Game notes (Markdown supported)">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-          </svg>
-          Notes{hasNotes && <span className="w-1.5 h-1.5 rounded-full bg-current ml-0.5" />}
-        </button>
-        {meta && (
-          <a href={meta.source_url} target="_blank" rel="noreferrer"
-            className="flex items-center gap-1 px-3 py-2 rounded text-xs"
-            style={{ background: "#152232", color: "#66c0f4", border: "1px solid #2a475e" }}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-              <polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
-            </svg>
-            Open {meta.source === "f95" ? "F95" : "DLsite"}
-          </a>
-        )}
-        {!f95LoggedIn && (
-          <button onClick={onOpenF95Login}
-            className="flex items-center gap-1 px-3 py-2 rounded text-xs"
-            style={{ background: "#2a1f00", color: "#c8a951", border: "1px solid #5a4200" }}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
-            F95 Login
-          </button>
-        )}
-        <div className="flex-1" />
-        {meta && (
-          <button onClick={onClearMeta}
-            className="px-3 py-2 rounded text-xs"
-            style={{ background: "transparent", color: "#4a5568" }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "#e57373")}
-            onMouseLeave={(e) => (e.currentTarget.style.color = "#4a5568")}
-            title="Remove linked metadata">✕ Unlink</button>
-        )}
-        <SettingsMenu
-          isHidden={isHidden}
-          isFav={isFav}
-          onDelete={onDelete}
-          onToggleHide={onToggleHide}
-          onToggleFav={onToggleFav}
-          onCustomize={onOpenCustomize}
-          onManageCollections={onManageCollections}
-        />
-      </div>
-
-      {/* Body */}
-      <div className="flex-1 overflow-y-auto px-8 py-5"
-        style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
-        <div className="flex gap-6 max-w-5xl">
-
-          {/* Left: overview, screenshots, tags */}
-          <div className="flex-1 min-w-0 space-y-5">
-            {(meta?.overview_html || meta?.overview) && (
-              <section>
-                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Overview</h2>
-                {meta.overview_html ? (
-                  // DLsite: rich HTML (may contain inline images / character sprites)
-                  <div
-                    className="text-sm leading-relaxed dlsite-overview"
-                    style={{ color: "#b8c8d4" }}
-                    dangerouslySetInnerHTML={{ __html: meta.overview_html }}
-                  />
-                ) : (
-                  // F95: plain text with paragraph breaks
-                  <div className="text-sm leading-relaxed" style={{ color: "#b8c8d4" }}>
-                    {meta.overview!.split("\n\n").map((para, i) => (
-                      <p key={i} className={i > 0 ? "mt-3" : ""}>{para}</p>
-                    ))}
-                  </div>
-                )}
-              </section>
-            )}
-            {shots.length > 0 && (
-              <section>
-                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Screenshots</h2>
-                <div className="rounded overflow-hidden mb-2" style={{ background: "#0d1117" }}>
-                  <img src={shots[activeShot]} alt="screenshot" className="w-full object-contain" style={{ maxHeight: "240px" }} />
-                </div>
-                <div className="flex gap-2 flex-wrap">
-                  {shots.map((s, i) => (
-                    <button key={i} onClick={() => setActiveShot(i)}
-                      className="rounded overflow-hidden flex-shrink-0"
-                      style={{
-                        width: "78px", height: "50px", opacity: i === activeShot ? 1 : 0.5,
-                        outline: i === activeShot ? "2px solid #66c0f4" : "none"
-                      }}>
-                      <img src={s} alt="" className="w-full h-full object-cover" />
-                    </button>
-                  ))}
-                </div>
-              </section>
-            )}
-            {meta?.tags && meta.tags.length > 0 && (
-              <section>
-                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Tags</h2>
-                <div className="flex flex-wrap gap-1.5">
-                  {meta.tags.map((t) => <TagBadge key={t} text={t} />)}
-                </div>
-              </section>
-            )}
-            <section>
-              <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center justify-between" style={{ color: "#8f98a0" }}>
-                <span>Custom Tags</span>
-              </h2>
-              <div className="flex flex-wrap gap-1.5 items-center">
-                {customization.customTags?.map((t) => (
-                  <span key={t} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded cursor-pointer group"
-                    style={{ background: "#2a475e", color: "#c6d4df", border: "1px solid #3d5a73" }}
-                    onClick={() => {
-                      const tags = customization.customTags?.filter(x => x !== t) || [];
-                      onSaveCustomization({ customTags: tags });
-                    }}>
-                    {t} <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">✕</span>
-                  </span>
-                ))}
-                <input type="text" placeholder="+ add tag"
-                  className="bg-transparent border border-dashed border-[#2a475e] text-[#8f98a0] hover:text-[#c6d4df] hover:border-[#3d5a73] transition-colors text-xs px-2 py-0.5 rounded outline-none w-24 focus:w-32 focus:border-solid focus:border-[#66c0f4] focus:text-[#fff]"
-                  onKeyDown={e => {
-                    if (e.key === "Enter") {
-                      const val = e.currentTarget.value.trim().toLowerCase();
-                      if (val) {
-                        const tags = new Set(customization.customTags || []);
-                        tags.add(val);
-                        onSaveCustomization({ customTags: Array.from(tags) });
-                        e.currentTarget.value = "";
-                      }
-                    }
-                  }} />
-              </div>
-            </section>
-            {!meta && (
-              <div className="rounded-lg px-6 py-8 text-center" style={{ background: "#16202d", border: "2px dashed #2a3f54" }}>
-                <p className="text-sm mb-1" style={{ color: "#8f98a0" }}>No metadata linked yet.</p>
-                <p className="text-xs mb-4" style={{ color: "#4a5568" }}>
-                  Link an F95zone or DLsite page to get cover art, description, tags and more.
-                </p>
-                <button onClick={onLinkPage}
-                  className="px-5 py-2 rounded text-sm font-semibold"
-                  style={{ background: "#2a6db5", color: "#fff" }}>
-                  Link a Page
-                </button>
-              </div>
-            )}
-            <InGameGallery
-              shots={screenshots}
-              onTake={onTakeScreenshot}
-              onOpenFolder={onOpenScreenshotsFolder}
-              onExportZip={onExportGalleryZip}
-              onUpdateTags={onUpdateScreenshotTags}
-            />
-            {/* Play History */}
-            <section>
-              <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Play History</h2>
-              <SessionTimeline sessions={sessions} gamePath={game.path} onEditNote={onEditSessionNote} />
-            </section>
-            {/* Version History */}
-            <section>
-              <VersionTimeline history={history} onAddHistory={onAddHistory} />
-            </section>
-          </div>
-
-          {/* Right: stats + info */}
-          <div className="flex-shrink-0 w-60 space-y-4">
-            <div className="rounded-lg p-4 space-y-3" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-              <h2 className="text-xs uppercase tracking-widest" style={{ color: "#8f98a0" }}>Your Stats</h2>
-              <div>
-                <p className="text-xs" style={{ color: "#8f98a0" }}>Total playtime</p>
-                <p className="text-base font-semibold" style={{ color: "#c6d4df" }}>
-                  {stat.totalTime > 0 ? formatTime(stat.totalTime) : "—"}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs" style={{ color: "#8f98a0" }}>Last played</p>
-                <p className="text-sm" style={{ color: "#c6d4df" }}>{timeAgo(stat.lastPlayed)}</p>
-              </div>
-              {stat.lastSession > 0 && (
-                <div>
-                  <p className="text-xs" style={{ color: "#8f98a0" }}>Last session</p>
-                  <p className="text-sm" style={{ color: "#c6d4df" }}>{formatTime(stat.lastSession)}</p>
-                </div>
-              )}
-              {(stat.launchCount ?? 0) > 0 && (
-                <div>
-                  <p className="text-xs" style={{ color: "#8f98a0" }}>Times played</p>
-                  <p className="text-sm font-semibold" style={{ color: "#66c0f4" }}>
-                    {stat.launchCount} {stat.launchCount === 1 ? "session" : "sessions"}
-                  </p>
-                </div>
-              )}
-              {/* 7-day playtime chart */}
-              {sessions.some(s => s.path === game.path) && (
-                <div>
-                  <p className="text-xs mb-2" style={{ color: "#8f98a0" }}>This week</p>
-                  <PlayChart sessions={sessions} gamePath={game.path} />
-                </div>
-              )}
-            </div>
-            {/* Status & Budget */}
-            <div className="rounded-lg p-4 space-y-4" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-              <div>
-                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "#8f98a0" }}>Completion Status</label>
-                <select
-                  value={customization.status || ""}
-                  onChange={(e) => onSaveCustomization({ status: ((e.target as HTMLSelectElement).value || undefined) as any })}
-                  className="w-full bg-[#1b2838] border border-[#2a475e] rounded px-2 py-1.5 text-xs outline-none text-[#c6d4df] cursor-pointer"
-                  style={{ backgroundImage: "none" }}>
-                  <option value="">- Not Set -</option>
-                  <option value="Playing">▶ Playing</option>
-                  <option value="Completed">✓ Completed</option>
-                  <option value="On Hold">⏸ On Hold</option>
-                  <option value="Dropped">⏹ Dropped</option>
-                  <option value="Plan to Play">📅 Plan to Play</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "#8f98a0" }} title="Show a toast warning when you exceed this time in a single launch">Time Budget (mins)</label>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="No limit"
-                  value={customization.timeLimitMins || ""}
-                  onChange={(e) => {
-                    const el = e.target as HTMLInputElement;
-                    onSaveCustomization({ timeLimitMins: el.value ? parseInt(el.value) : undefined });
-                  }}
-                  className="w-full bg-[#1b2838] border border-[#2a475e] rounded px-2 py-1.5 text-xs outline-none text-[#c6d4df]" />
-              </div>
-            </div>
-            {/* Milestones */}
-            {stat.totalTime > 0 && (
-              <div className="rounded-lg p-4" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-                <Milestones totalSecs={stat.totalTime} />
-              </div>
-            )}
-            {meta && (
-              <div className="rounded-lg p-4 space-y-2" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-                <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "#8f98a0" }}>Game Info</h2>
-                {/* F95 fields */}
-                <MetaRow label="Developer" value={meta.developer} />
-                <MetaRow label="Version" value={meta.version} />
-                <MetaRow label="Engine" value={meta.engine} />
-                <MetaRow label="OS" value={meta.os} />
-                <MetaRow label="Language" value={meta.language} />
-                <MetaRow label="Censored" value={meta.censored} />
-                <MetaRow label="Released" value={meta.release_date} />
-                <MetaRow label="Updated" value={meta.last_updated} />
-                <MetaRow label="Price" value={meta.price} />
-                {/* DLsite extended fields */}
-                <MetaRow label="Circle" value={meta.circle} />
-                <MetaRow label="Series" value={meta.series} />
-                <MetaRow label="Author" value={meta.author} />
-                <MetaRow label="Illustration" value={meta.illustration} />
-                <MetaRow label="Voice Actor" value={meta.voice_actor} />
-                <MetaRow label="Music" value={meta.music} />
-                <MetaRow label="Age Rating" value={meta.age_rating} />
-                <MetaRow label="Format" value={meta.product_format} />
-                <MetaRow label="File Format" value={meta.file_format} />
-                <MetaRow label="File Size" value={meta.file_size} />
-              </div>
-            )}
-            <div className="rounded-lg p-4 space-y-2" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-              <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "#8f98a0" }}>Files</h2>
-              {customization.exeOverride ? (
-                <>
-                  <div>
-                    <div className="flex items-center gap-1.5 mb-0.5">
-                      <p className="text-xs" style={{ color: "#c8a951" }}>Launch override</p>
-                      <span className="text-[9px] px-1.5 py-px rounded font-semibold"
-                        style={{ background: "#3a2800", color: "#c8a951", border: "1px solid #5a4200" }}>active</span>
-                    </div>
-                    <p className="text-xs font-mono break-all" style={{ color: "#c8a951" }}>
-                      {customization.exeOverride}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Scanned exe</p>
-                    <p className="text-xs font-mono break-all" style={{ color: "#4a5568" }}>{game.path}</p>
-                  </div>
-                </>
-              ) : (
-                <div>
-                  <p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Executable</p>
-                  <p className="text-xs font-mono break-all" style={{ color: "#66c0f4" }}>{game.path}</p>
-                </div>
-              )}
-              <div>
-                <p className="text-xs mb-0.5" style={{ color: "#8f98a0" }}>Folder</p>
-                <p className="text-xs font-mono break-all" style={{ color: "#c6d4df" }}>
-                  {game.path.replace(/[\\/][^\\/]+$/, "")}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div >
-  );
-}
-
-interface RssItem {
-  id: string;
-  sourceName: string;
-  title: string;
-  link: string;
-  pubDate: number;
-  description: string;
-}
-
-function FeedView({ appSettings, wishlist, onToggleWishlist }: {
-  appSettings: AppSettings;
-  wishlist: WishlistItem[];
-  onToggleWishlist: (item: Omit<WishlistItem, 'addedAt'>) => void;
-}) {
-  const [items, setItems] = useState<RssItem[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let active = true;
-    const fetchAll = async () => {
-      setLoading(true);
-      const allItems: RssItem[] = [];
-      const feeds = appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds;
-
-      for (const feed of feeds) {
-        if (!feed.url.trim()) continue;
-        try {
-          const xmlText = await invoke<string>("fetch_rss", { url: feed.url });
-          const parser = new DOMParser();
-          const doc = parser.parseFromString(xmlText, "text/xml");
-          const itemNodes = doc.querySelectorAll("item");
-          for (const node of itemNodes) {
-            const title = node.querySelector("title")?.textContent || "No Title";
-            const link = node.querySelector("link")?.textContent || "";
-            const desc = node.querySelector("description")?.textContent || "";
-            const pubDateStr = node.querySelector("pubDate")?.textContent;
-            const pubDate = pubDateStr ? new Date(pubDateStr).getTime() : 0;
-            const guid = node.querySelector("guid")?.textContent || link || title;
-            allItems.push({
-              sourceName: feed.name || "Unknown Source",
-              title, link, description: desc, pubDate, id: guid
-            });
-          }
-        } catch (e) {
-          console.error("Failed to fetch RSS for", feed.name, e);
-        }
-      }
-      if (!active) return;
-      allItems.sort((a, b) => b.pubDate - a.pubDate);
-      setItems(allItems);
-      setLoading(false);
-    };
-    fetchAll();
-    return () => { active = false; };
-  }, [appSettings.rssFeeds]);
-
-  return (
-    <div className="flex-1 overflow-y-auto px-10 py-8" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
-      <div className="max-w-3xl mx-auto space-y-6">
-        <h1 className="text-3xl font-bold mb-8" style={{ color: "#fff", textShadow: "0 2px 8px rgba(0,0,0,.9)" }}>News & Updates</h1>
-        {loading ? (
-          <div className="flex justify-center p-12">
-            <div className="w-8 h-8 rounded-full border-2 border-[#66c0f4] border-t-transparent animate-spin" />
-          </div>
-        ) : items.length === 0 ? (
-          <p className="text-center py-12" style={{ color: "#8f98a0" }}>No updates found in your configured feeds.</p>
-        ) : (
-          items.map(item => (
-            <div key={item.id} className="p-5 rounded-lg text-left" style={{ background: "#1b2838", border: "1px solid #2a475e" }}>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded" style={{ background: "#2a475e", color: "#66c0f4" }}>{item.sourceName}</span>
-                <span className="text-[11px]" style={{ color: "#8f98a0" }}>{item.pubDate > 0 ? new Date(item.pubDate).toLocaleString() : ""}</span>
-              </div>
-              <h2 className="text-lg font-bold mb-2 leading-tight flex items-start justify-between gap-4">
-                <a href={item.link} target="_blank" rel="noreferrer" className="hover:underline flex-1" style={{ color: "#c6d4df" }}>{item.title}</a>
-                <button
-                  onClick={() => {
-                    const statusMatch = item.title.match(/\[(Completed|Abandoned|On Hold|WIP|Alpha|Beta|Demo|Early Access)[^\]]*\]/i);
-                    const releaseStatus = statusMatch ? statusMatch[1] : "Unknown";
-                    onToggleWishlist({ id: item.link || item.id, title: item.title, source: item.sourceName, releaseStatus });
-                  }}
-                  className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-full transition-colors"
-                  style={{
-                    background: wishlist.some(w => w.id === (item.link || item.id)) ? "#1a2c1a" : "#2a3f54",
-                    color: wishlist.some(w => w.id === (item.link || item.id)) ? "#6dbf6d" : "#8f98a0"
-                  }}
-                  title={wishlist.some(w => w.id === (item.link || item.id)) ? "Remove from wishlist" : "Add to wishlist"}
-                >
-                  {wishlist.some(w => w.id === (item.link || item.id)) ? "★" : "+"}
-                </button>
-              </h2>
-              <div className="text-sm prose prose-invert max-w-none opacity-80"
-                style={{ color: "#8f98a0" }}
-                dangerouslySetInnerHTML={{ __html: item.description }} />
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Stats View ────────────────────────────────────────────────────────────────
-function StatsView({ games, stats, sessions, customizations, metadata }: {
-  games: Game[]; stats: Record<string, GameStats>; sessions: SessionEntry[];
-  customizations: Record<string, GameCustomization>; metadata: Record<string, GameMetadata>;
-}) {
-  const totalPlaytime = Object.values(stats).reduce((acc, s) => acc + (s.totalTime || 0), 0);
-  const hours = Math.floor(totalPlaytime / 3600);
-  const mins = Math.floor((totalPlaytime % 3600) / 60);
-
-  const longestSession = sessions.length ? sessions.reduce((max, s) => s.duration > max.duration ? s : max, sessions[0]) : null;
-  const lsGame = longestSession ? (customizations[longestSession.path]?.displayName || metadata[longestSession.path]?.title || games.find(g => g.path === longestSession.path)?.name || "Unknown") : "-";
-  const lsHrs = longestSession ? Math.floor(longestSession.duration / 3600) : 0;
-  const lsMins = longestSession ? Math.floor((longestSession.duration % 3600) / 60) : 0;
-
-  let maxLaunches = 0;
-  let mostLaunchedGame = "-";
-  for (const path of Object.keys(stats)) {
-    if ((stats[path].launchCount || 0) > maxLaunches) {
-      maxLaunches = stats[path].launchCount;
-      mostLaunchedGame = customizations[path]?.displayName || metadata[path]?.title || games.find(g => g.path === path)?.name || "Unknown";
-    }
-  }
-
-  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  const dayCounts = [0, 0, 0, 0, 0, 0, 0];
-  sessions.forEach(s => {
-    dayCounts[new Date(s.startedAt).getDay()]++;
-  });
-  let maxDayIdx = 0;
-  for (let i = 1; i < 7; i++) {
-    if (dayCounts[i] > dayCounts[maxDayIdx]) maxDayIdx = i;
-  }
-  const busiestDay = dayCounts[maxDayIdx] > 0 ? days[maxDayIdx] : "-";
-
-  return (
-    <div className="flex-1 overflow-y-auto px-10 py-8" style={{ background: "linear-gradient(to bottom, #1b2838 0%, #17212e 100%)", color: "#c6d4df" }}>
-      <h2 className="text-2xl font-bold mb-8 tracking-wide" style={{ color: "#fff" }}>LIBRALY STATS</h2>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
-        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
-          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Total Library Time</h3>
-          <p className="text-3xl font-bold" style={{ color: "#66c0f4" }}>{hours}h {mins}m</p>
-        </div>
-        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
-          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Longest Session</h3>
-          <p className="text-xl font-bold mb-1" style={{ color: "#c8a951" }}>{lsHrs}h {lsMins}m</p>
-          <p className="text-xs truncate text-ellipsis overflow-hidden" style={{ color: "#8f98a0" }}>{lsGame}</p>
-        </div>
-        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
-          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Most Played Game</h3>
-          <p className="text-xl font-bold mb-1" style={{ color: "#e57373" }}>{maxLaunches} launches</p>
-          <p className="text-xs truncate text-ellipsis overflow-hidden" style={{ color: "#8f98a0" }}>{mostLaunchedGame}</p>
-        </div>
-        <div className="p-6 rounded-lg shadow-sm" style={{ background: "#2a3f54", border: "1px solid #3d5a73" }}>
-          <h3 className="text-xs uppercase tracking-widest mb-2" style={{ color: "#8f98a0" }}>Busiest Day</h3>
-          <p className="text-2xl font-bold" style={{ color: "#6dbf6d" }}>{busiestDay}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Home View ────────────────────────────────────────────────────────────────
-function HomeView({ games, stats, sessions, metadata, customizations, favGames, notes, runningGamePath, onSelect, onPlay, onStop }: {
-  games: Game[];
-  stats: Record<string, GameStats>;
-  sessions: SessionEntry[];
-  metadata: Record<string, GameMetadata>;
-  customizations: Record<string, GameCustomization>;
-  favGames: Record<string, boolean>;
-  notes: Record<string, string>;
-  runningGamePath: string | null;
-  onSelect: (g: Game) => void;
-  onPlay: (path: string) => void;
-  onStop: () => void;
-}) {
-  const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000; // 60 days ago
-
-  const recent = useMemo(() =>
-    games
-      .filter((g) => (stats[g.path]?.lastPlayed ?? 0) > cutoff)
-      .sort((a, b) => (stats[b.path]?.lastPlayed ?? 0) - (stats[a.path]?.lastPlayed ?? 0))
-      .slice(0, 20),
-    [games, stats]
-  );
-
-  const totalTime = useMemo(() =>
-    Object.values(stats).reduce((s, v) => s + v.totalTime, 0),
-    [stats]
-  );
-
-  // Most played this week — top 5 by session seconds in the last 7 days
-  const weekAgo = Date.now() - 7 * 86_400_000;
-  const mostPlayedThisWeek = useMemo(() => {
-    const byPath: Record<string, number> = {};
-    for (const s of sessions) {
-      if (s.startedAt >= weekAgo) {
-        byPath[s.path] = (byPath[s.path] ?? 0) + s.duration;
-      }
-    }
-    return Object.entries(byPath)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([path, secs]) => ({ game: games.find(g => g.path === path), secs, path }))
-      .filter(e => e.game != null) as { game: Game; secs: number; path: string }[];
-  }, [sessions, games]);
-
-  const displayName = (g: Game) =>
-    customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name;
-  const coverSrc = (g: Game) =>
-    customizations[g.path]?.coverUrl ?? metadata[g.path]?.cover_url;
-
-  return (
-    <div className="flex-1 overflow-y-auto px-8 py-6"
-      style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
-
-      {/* Library stats banner */}
-      <div className="flex items-center gap-6 mb-8 pb-5 border-b" style={{ borderColor: "#1b3a50" }}>
-        <div>
-          <p className="text-3xl font-bold" style={{ color: "#fff" }}>{games.length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>Games in library</p>
-        </div>
-        <div style={{ width: "1px", height: "36px", background: "#2a3f54" }} />
-        <div>
-          <p className="text-3xl font-bold" style={{ color: "#fff" }}>{Object.keys(stats).filter(k => stats[k].totalTime > 0).length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>Played</p>
-        </div>
-        <div style={{ width: "1px", height: "36px", background: "#2a3f54" }} />
-        <div>
-          <p className="text-3xl font-bold" style={{ color: "#fff" }}>{formatTime(totalTime)}</p>
-          <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>Total playtime</p>
-        </div>
-        <div style={{ width: "1px", height: "36px", background: "#2a3f54" }} />
-        <div>
-          <p className="text-3xl font-bold" style={{ color: "#fff" }}>{Object.keys(favGames).length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>Favourites</p>
-        </div>
-        <div style={{ width: "1px", height: "36px", background: "#2a3f54" }} />
-        <div>
-          <p className="text-3xl font-bold" style={{ color: "#fff" }}>{Object.keys(notes).filter(k => notes[k].trim()).length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>With notes</p>
-        </div>
-      </div>
-
-      {/* Recent Games */}
-      <section>
-        <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "#8f98a0" }}>
-          Recent Games
-          <span className="ml-2 font-normal normal-case" style={{ color: "#4a5568" }}>— played in the last 60 days</span>
-        </h2>
-
-        {recent.length === 0 ? (
-          <div className="rounded-lg px-6 py-12 text-center" style={{ background: "#16202d", border: "2px dashed #2a3f54" }}>
-            <p className="text-sm" style={{ color: "#8f98a0" }}>No games played recently.</p>
-            <p className="text-xs mt-1" style={{ color: "#4a5568" }}>Launch a game to see it here.</p>
-          </div>
-        ) : (
-          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" }}>
-            {recent.map((game) => {
-              const st = stats[game.path] ?? { totalTime: 0, lastPlayed: 0, lastSession: 0 };
-              const cover = coverSrc(game);
-              const name = displayName(game);
-              const isFav = !!favGames[game.path];
-              return (
-                <div key={game.path}
-                  className="rounded-lg overflow-hidden flex flex-col"
-                  style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-                  {/* Banner */}
-                  <div className="relative flex-shrink-0 overflow-hidden cursor-pointer" style={{ height: "110px" }}
-                    onClick={() => onSelect(game)}>
-                    {cover
-                      ? <img src={cover} alt="" className="w-full h-full object-cover" style={{ filter: "brightness(0.65)" }} />
-                      : <div className="w-full h-full" style={{ background: heroGradient(game.name) }} />}
-                    <div className="absolute inset-0"
-                      style={{ background: "linear-gradient(to top,rgba(22,32,45,0.9) 0%,transparent 60%)" }} />
-                    <div className="absolute bottom-0 left-0 px-3 pb-2 pr-2 right-0 flex items-end justify-between">
-                      <p className="font-semibold text-sm line-clamp-2 flex-1 mr-2" style={{ color: "#fff", textShadow: "0 1px 4px rgba(0,0,0,0.9)" }}>
-                        {isFav && <span style={{ color: "#c8a951", marginRight: "3px" }}>★</span>}
-                        {name}
-                      </p>
-                    </div>
-                  </div>
-                  {/* Footer */}
-                  <div className="flex items-center gap-2 px-3 py-2">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[10px]" style={{ color: "#8f98a0" }}>
-                        {timeAgo(st.lastPlayed)} · {st.totalTime > 0 ? formatTime(st.totalTime) : "—"}
-                      </p>
-                    </div>
-                    <button onClick={() => onSelect(game)}
-                      className="px-2.5 py-1 rounded text-xs flex-shrink-0"
-                      style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3d5a73" }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; }}>
-                      View
-                    </button>
-                    <button
-                      onClick={() => runningGamePath === game.path ? onStop() : onPlay(game.path)}
-                      className="px-2.5 py-1 rounded text-xs flex-shrink-0 flex items-center gap-1"
-                      style={{ background: runningGamePath === game.path ? "#6b2222" : "#4c6b22", color: runningGamePath === game.path ? "#e88585" : "#d2e885" }}
-                      onMouseEnter={(e) => e.currentTarget.style.background = runningGamePath === game.path ? "#8a1e1e" : "#5c8a1e"}
-                      onMouseLeave={(e) => e.currentTarget.style.background = runningGamePath === game.path ? "#6b2222" : "#4c6b22"}>
-                      {runningGamePath === game.path
-                        ? <><svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" /></svg>Stop</>
-                        : <><svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>Play</>}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* Most Played This Week */}
-      {mostPlayedThisWeek.length > 0 && (
-        <section className="mt-8">
-          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "#8f98a0" }}>
-            Most Played This Week
-          </h2>
-          <div className="rounded-xl p-4 space-y-3" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-            {mostPlayedThisWeek.map(({ game, secs, path }) => {
-              const maxSecs = mostPlayedThisWeek[0].secs;
-              const cover = coverSrc(game);
-              const name = displayName(game);
-              return (
-                <div key={path} className="flex items-center gap-3 cursor-pointer"
-                  onClick={() => onSelect(game)}>
-                  <div className="w-8 h-8 rounded overflow-hidden flex-shrink-0"
-                    style={{ background: heroGradient(game.name) }}>
-                    {cover && <img src={cover} alt="" className="w-full h-full object-cover" />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-0.5">
-                      <p className="text-xs truncate font-medium" style={{ color: "#c6d4df" }}>{name}</p>
-                      <span className="text-[10px] ml-2 flex-shrink-0" style={{ color: "#66c0f4" }}>{formatTime(secs)}</span>
-                    </div>
-                    <div className="h-1 rounded-full" style={{ background: "#1a2d3d" }}>
-                      <div className="h-full rounded-full" style={{
-                        width: `${(secs / maxSecs) * 100}%`,
-                        background: "linear-gradient(90deg, #2a6db5, #66c0f4)",
-                        transition: "width 0.4s",
-                      }} />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* Library-wide 7-day playtime chart */}
-      {sessions.length > 0 && (
-        <section className="mt-8">
-          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "#8f98a0" }}>
-            Library Activity — Last 7 Days
-          </h2>
-          <div className="rounded-xl p-4" style={{ background: "#16202d", border: "1px solid #1e3a50" }}>
-            <PlayChart sessions={sessions} gamePath={null} days={7} />
-          </div>
-        </section>
-      )}
-    </div>
-  );
-}
-
-// ─── App Update Modal ─────────────────────────────────────────────────────────
-function AppUpdateModal({
-  version, url, downloadUrl, onClose,
-}: { version: string; url: string; downloadUrl: string; onClose: () => void }) {
-  type Phase = "idle" | "downloading" | "done" | "error";
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [errMsg, setErrMsg] = useState("");
-
-  const handleInstall = async () => {
-    if (!downloadUrl) return;
-    setPhase("downloading");
-    try {
-      await invoke("apply_update", { downloadUrl });
-      // apply_update calls app.exit(0) on success, so we'll never reach here
-      setPhase("done");
-    } catch (e: any) {
-      setErrMsg(String(e));
-      setPhase("error");
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.82)" }}
-      onClick={(e) => { if (e.target === e.currentTarget && phase !== "downloading") onClose(); }}>
-      <div className="rounded-xl shadow-2xl w-[440px]"
-        style={{ background: "#1e2d3d", border: "1px solid #2a475e" }}>
-
-        {/* Header */}
-        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b" style={{ borderColor: "#1b3a50" }}>
-          <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
-            style={{ background: "linear-gradient(135deg,#2a6db5,#1a4a80)" }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" />
-              <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
-            </svg>
-          </div>
-          <div className="flex-1 min-w-0">
-            <h2 className="font-bold text-base" style={{ color: "#fff" }}>Update Available</h2>
-            <p className="text-xs" style={{ color: "#8f98a0" }}>LIBMALY {version}</p>
-          </div>
-          {phase !== "downloading" && (
-            <button onClick={onClose} className="text-xl leading-none" style={{ color: "#4a5568" }}>✕</button>
-          )}
-        </div>
-
-        <div className="px-6 py-5 space-y-4">
-          {phase === "idle" && (
-            <>
-              <p className="text-sm leading-relaxed" style={{ color: "#b8c8d4" }}>
-                A new version of LIBMALY is ready.{" "}
-                {downloadUrl
-                  ? "Click <strong>Install Now</strong> to download and apply the update automatically — your library data, stats, and covers are stored in AppData and will not be affected."
-                  : "No automatic installer is available for this release yet."}
-              </p>
-              {downloadUrl && (
-                <div className="rounded-lg p-3 flex items-start gap-2.5"
-                  style={{ background: "#0f1d2a", border: "1px solid #1e3a50" }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#66c0f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0 mt-0.5">
-                    <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-                  </svg>
-                  <p className="text-xs" style={{ color: "#8cb4d5" }}>
-                    The app will close automatically after downloading so the update script can safely replace the files, then relaunch.
-                  </p>
-                </div>
-              )}
-              <div className="flex gap-3 justify-end pt-1">
-                <a href={url} target="_blank" rel="noreferrer"
-                  className="px-4 py-2 rounded text-xs flex items-center gap-1.5"
-                  style={{ background: "transparent", color: "#8f98a0", border: "1px solid #2a475e" }}>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
-                  </svg>
-                  Changelog
-                </a>
-                {downloadUrl ? (
-                  <button onClick={handleInstall}
-                    className="px-5 py-2 rounded text-sm font-semibold flex items-center gap-2"
-                    style={{ background: "#2a6db5", color: "#fff" }}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="8 17 12 21 16 17" /><line x1="12" y1="12" x2="12" y2="21" />
-                      <path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29" />
-                    </svg>
-                    Install Now
-                  </button>
-                ) : (
-                  <button onClick={onClose}
-                    className="px-4 py-2 rounded text-sm"
-                    style={{ background: "#2a3f54", color: "#c6d4df" }}>Close</button>
-                )}
-              </div>
-            </>
-          )}
-
-          {phase === "downloading" && (
-            <div className="space-y-4 py-2">
-              <div className="flex items-center gap-3">
-                <div className="relative flex-shrink-0">
-                  <div className="w-10 h-10 rounded-full" style={{ border: "3px solid #1e3a50" }} />
-                  <div className="absolute inset-0 w-10 h-10 rounded-full animate-spin border-t-transparent border-2"
-                    style={{ borderColor: "#66c0f4", borderTopColor: "transparent" }} />
-                </div>
-                <div>
-                  <p className="text-sm font-medium" style={{ color: "#fff" }}>Downloading & installing…</p>
-                  <p className="text-xs mt-0.5" style={{ color: "#8f98a0" }}>The app will relaunch automatically.</p>
-                </div>
-              </div>
-              {/* Indeterminate progress bar */}
-              <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "#0d1b2a" }}>
-                <div className="h-full rounded-full animate-pulse" style={{ background: "linear-gradient(90deg, #2a6db5, #66c0f4)", width: "60%" }} />
-              </div>
-            </div>
-          )}
-
-          {phase === "done" && (
-            <p className="text-sm text-center py-3" style={{ color: "#6dbf6d" }}>
-              ✓ Update applied! Relaunching…
-            </p>
-          )}
-
-          {phase === "error" && (
-            <div className="space-y-3">
-              <div className="rounded p-3" style={{ background: "#3a1010", border: "1px solid #8b2020" }}>
-                <p className="text-xs font-semibold mb-1" style={{ color: "#e57373" }}>Auto-install failed</p>
-                <p className="text-xs font-mono break-all" style={{ color: "#c89090" }}>{errMsg}</p>
-              </div>
-              <p className="text-xs" style={{ color: "#8f98a0" }}>
-                You can{" "}
-                <a href={url} target="_blank" rel="noreferrer" style={{ color: "#66c0f4" }}>download the update manually</a>
-                {" "}from the release page.
-              </p>
-              <div className="flex justify-end gap-3">
-                <button onClick={() => { setPhase("idle"); setErrMsg(""); }}
-                  className="px-4 py-2 rounded text-sm"
-                  style={{ background: "#152232", color: "#8f98a0", border: "1px solid #2a475e" }}>Retry</button>
-                <button onClick={onClose}
-                  className="px-4 py-2 rounded text-sm"
-                  style={{ background: "#2a3f54", color: "#c6d4df" }}>Close</button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
@@ -3843,6 +2734,13 @@ export default function App() {
   const [showCollections, setShowCollections] = useState(false);
   const [showDevelopers, setShowDevelopers] = useState(false);
   const [showWishlist, setShowWishlist] = useState(false);
+  const [showLogViewer, setShowLogViewer] = useState(false);
+  const [rustLogs, setRustLogs] = useState<RustLogEntry[]>([]);
+  const [crashReport, setCrashReport] = useState<CrashReport | null>(null);
+  const [logLevelFilter, setLogLevelFilter] = useState<LogLevelFilter>("all");
+  const [appVersion, setAppVersion] = useState<string>("unknown");
+  const [isUiActive, setIsUiActive] = useState<boolean>(true);
+  const [liveSessionExtraSec, setLiveSessionExtraSec] = useState<number>(0);
   const [batchRefreshStatus, setBatchRefreshStatus] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("lastPlayed");
   /** custom-order map: contextKey -> ordered array of game paths */
@@ -3943,6 +2841,8 @@ export default function App() {
   const [pendingNoteSession, setPendingNoteSession] = useState<SessionEntry | null>(null);
   /** Show the Steam import modal */
   const [showSteamImport, setShowSteamImport] = useState(false);
+  /** Show the Lutris import modal */
+  const [showLutrisImport, setShowLutrisImport] = useState(false);
   /** Wishlisted unowned games */
   const [wishlist, setWishlist] = useState<WishlistItem[]>(() => loadCache(SK_WISHLIST, []));
 
@@ -3978,6 +2878,7 @@ export default function App() {
     invoke<boolean>("f95_is_logged_in").then(setF95LoggedIn).catch(() => { });
     invoke<boolean>("dlsite_is_logged_in").then(setDlsiteLoggedIn).catch(() => { });
     invoke<string>("get_platform").then(setPlatform).catch(() => { });
+    getVersion().then(setAppVersion).catch(() => { });
     // Check for a newer release on GitHub (once per startup, never again)
     invoke<{ version: string; url: string; download_url: string } | null>("check_app_update")
       .then((u) => { if (u) setAppUpdate({ version: u.version, url: u.url, downloadUrl: u.download_url }); })
@@ -4012,6 +2913,10 @@ export default function App() {
           break;
         }
       }
+    }).catch(() => { });
+    invoke<RustLogEntry[]>("get_recent_logs", { limit: 300 }).then(setRustLogs).catch(() => { });
+    invoke<CrashReport | null>("get_last_crash_report").then((r) => {
+      if (r) setCrashReport(r);
     }).catch(() => { });
 
     const unlistenFinished = listen("game-finished", (ev: any) => {
@@ -4066,6 +2971,13 @@ export default function App() {
         }
       }
     });
+    const unlistenRustLog = listen<RustLogEntry>("rust-log", (ev) => {
+      const entry = ev.payload;
+      setRustLogs((prev) => {
+        const next = [...prev, entry];
+        return next.length > 500 ? next.slice(next.length - 500) : next;
+      });
+    });
 
     return () => {
       unlistenFinished.then((f) => f());
@@ -4073,6 +2985,7 @@ export default function App() {
       unlistenShot.then((f) => f());
       unlistenBoss.then((f) => f());
       unlistenDeepLink.then((f) => f());
+      unlistenRustLog.then((f) => f());
     };
   }, []);
 
@@ -4099,6 +3012,54 @@ export default function App() {
     return () => clearInterval(iv);
   }, [appSettings.trayTooltipEnabled, runningGamePath, games, metadata, customizations]);
 
+  // UI activity detection (focused + visible) to freeze live counters when app is in background.
+  useEffect(() => {
+    let alive = true;
+    const recompute = async () => {
+      try {
+        const focused = await getCurrentWindow().isFocused();
+        if (alive) setIsUiActive(document.visibilityState === "visible" && focused);
+      } catch {
+        if (alive) setIsUiActive(document.visibilityState === "visible");
+      }
+    };
+    const onFocus = () => { recompute(); };
+    const onBlur = () => { recompute(); };
+    const onVisibility = () => { recompute(); };
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
+    recompute();
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  // Live total playtime updater, frozen when app is not actively focused.
+  useEffect(() => {
+    if (!runningGamePath) {
+      setLiveSessionExtraSec(0);
+      return;
+    }
+    const update = () => {
+      if (!isUiActive) return;
+      const elapsed = Math.max(0, Math.floor((Date.now() - sessionStartRef.current) / 1000));
+      setLiveSessionExtraSec(elapsed);
+    };
+    update();
+    const iv = setInterval(update, 15000);
+    return () => clearInterval(iv);
+  }, [runningGamePath, isUiActive]);
+
+  const totalPlaytimeBaseSecs = useMemo(
+    () => Object.values(stats).reduce((s, v) => s + v.totalTime, 0),
+    [stats]
+  );
+  const totalPlaytimeLiveSecs = totalPlaytimeBaseSecs + (runningGamePath ? liveSessionExtraSec : 0);
+
   // Auto-screenshot timer
   useEffect(() => {
     const mins = appSettings.autoScreenshotInterval;
@@ -4118,6 +3079,30 @@ export default function App() {
 
     return () => clearInterval(intervalId);
   }, [appSettings.autoScreenshotInterval, runningGamePath]);
+
+  // Global F12 screenshot hotkey on non-Windows (Linux X11/Wayland + macOS).
+  useEffect(() => {
+    if (platform === "windows") return;
+    let active = true;
+    registerGlobalShortcut("F12", async () => {
+      if (!active) return;
+      try {
+        const shot = await invoke<Screenshot>("take_screenshot_manual");
+        const gamePath = runningGamePath || selected?.path;
+        if (!gamePath) return;
+        setScreenshots((prev) => ({
+          ...prev,
+          [gamePath]: [shot, ...(prev[gamePath] ?? [])],
+        }));
+      } catch {
+        // Ignore when no active game is running.
+      }
+    }).catch(() => { });
+    return () => {
+      active = false;
+      unregisterGlobalShortcut("F12").catch(() => { });
+    };
+  }, [platform, runningGamePath, selected?.path]);
 
   // Background game update checker
   useEffect(() => {
@@ -4228,28 +3213,73 @@ export default function App() {
     });
   };
 
+  const handleLutrisImport = (entries: LutrisGameEntry[]) => {
+    if (entries.length === 0) return;
+
+    // Add missing games to library.
+    setGames((prev) => {
+      const next = [...prev];
+      const seen = new Set(prev.map((g) => normalizePathForMatch(g.path)));
+      for (const e of entries) {
+        if (!e.exe) continue;
+        const key = normalizePathForMatch(e.exe);
+        if (seen.has(key)) continue;
+        next.push({ name: e.name || deriveGameName(e.exe), path: e.exe });
+        seen.add(key);
+      }
+      saveCache(SK_GAMES, next);
+      return next;
+    });
+
+    // Apply per-game runner override from Lutris config.
+    setCustomizations((prev) => {
+      const next = { ...prev };
+      for (const e of entries) {
+        if (!e.exe) continue;
+        const prevCustom = next[e.exe] ?? {};
+        const runnerLower = (e.runner || "").toLowerCase();
+        const runnerKind: RunnerKind =
+          runnerLower.includes("proton") ? "proton" : runnerLower.includes("wine") ? "wine" : "custom";
+        next[e.exe] = {
+          ...prevCustom,
+          displayName: prevCustom.displayName ?? e.name ?? deriveGameName(e.exe),
+          launchArgs: prevCustom.launchArgs ?? e.args,
+          runnerOverrideEnabled: true,
+          runnerOverride: {
+            runner: runnerKind,
+            runnerPath: prevCustom.runnerOverride?.runnerPath ?? "",
+            prefixPath: e.prefix ?? prevCustom.runnerOverride?.prefixPath ?? "",
+          },
+        };
+      }
+      saveCache(SK_CUSTOM, next);
+      return next;
+    });
+  };
+
 
   // ── Persist helpers ─────────────────────────────────────────────────────────
-  /** Merge scanned results from one folder into the global game list. */
-  const mergeGames = (scanned: Game[], nm: DirMtime[], folderPath: string) => {
-    setGames((prev) => {
-      const isFromFolder = (gPath: string) => gPath.startsWith(folderPath + "\\") || gPath.startsWith(folderPath + "/") || gPath === folderPath;
-      const oldOther = prev.filter((g) => !isFromFolder(g.path));
-      const oldFromPath = prev.filter((g) => isFromFolder(g.path));
+  const applySingleScanResult = (
+    currentGames: Game[],
+    currentMtimes: DirMtime[],
+    scannedGames: Game[],
+    scannedMtimes: DirMtime[],
+    folderPath: string,
+  ): { games: Game[]; mtimes: DirMtime[] } => {
+    const nextGames = mergeFolderGames(
+      currentGames,
+      scannedGames,
+      folderPath,
+      (path) => (statsRef.current[path]?.totalTime ?? 0) > 0 || !!metadataRef.current[path],
+    );
+    const nextMtimes = mergeFolderMtimes(currentMtimes, scannedMtimes, folderPath);
+    return { games: nextGames, mtimes: nextMtimes };
+  };
 
-      const scannedPaths = new Set(scanned.map(g => g.path));
-
-      const missingGhosts = oldFromPath
-        .filter((g) => !scannedPaths.has(g.path))
-        .filter((g) => (statsRef.current[g.path]?.totalTime ?? 0) > 0 || metadataRef.current[g.path])
-        .map(g => ({ ...g, uninstalled: true }));
-
-      const scannedClean = scanned.map(g => ({ ...g, uninstalled: false }));
-      const merged = [...oldOther, ...missingGhosts, ...scannedClean];
-      saveCache(SK_GAMES, merged);
-      return merged;
-    });
-    saveCache(SK_MTIMES, nm);
+  const persistScanState = (nextGames: Game[], nextMtimes: DirMtime[]) => {
+    setGames(nextGames);
+    saveCache(SK_GAMES, nextGames);
+    saveCache(SK_MTIMES, nextMtimes);
   };
 
   const persistFolders = (folders: LibraryFolder[]) => {
@@ -4262,20 +3292,28 @@ export default function App() {
     if (isSyncing.current) return;
     isSyncing.current = true; setSyncState("syncing");
     try {
+      let workingGames = gamesRef.current;
+      let workingMtimes = loadCache<DirMtime[]>(SK_MTIMES, []);
       for (const f of folders) {
+        let ng: Game[] = [];
+        let nm: DirMtime[] = [];
         try {
-          const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games_incremental", {
+          [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games_incremental", {
             path: f.path,
-            cachedGames: loadCache<Game[]>(SK_GAMES, []),
-            cachedMtimes: loadCache<DirMtime[]>(SK_MTIMES, []),
+            cachedGames: workingGames,
+            cachedMtimes: workingMtimes,
           });
-          mergeGames(ng, nm, f.path);
         } catch {
           // Fall back to full scan for this folder
-          const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: f.path }).catch(() => [[], []] as [Game[], DirMtime[]]);
-          mergeGames(ng, nm, f.path);
+          [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: f.path }).catch(() => [[], []] as [Game[], DirMtime[]]);
         }
+        const merged = applySingleScanResult(workingGames, workingMtimes, ng, nm, f.path);
+        workingGames = merged.games;
+        workingMtimes = merged.mtimes;
+        // Yield to the event loop between folders to keep UI responsive.
+        await new Promise((resolve) => setTimeout(resolve, 0));
       }
+      persistScanState(workingGames, workingMtimes);
     } finally {
       isSyncing.current = false; setSyncState("idle");
     }
@@ -4284,10 +3322,16 @@ export default function App() {
   const runFullScanAll = async (folders: LibraryFolder[]) => {
     setSyncState("full-scan");
     try {
+      let workingGames = gamesRef.current;
+      let workingMtimes = loadCache<DirMtime[]>(SK_MTIMES, []);
       for (const f of folders) {
         const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: f.path }).catch(() => [[], []] as [Game[], DirMtime[]]);
-        mergeGames(ng, nm, f.path);
+        const merged = applySingleScanResult(workingGames, workingMtimes, ng, nm, f.path);
+        workingGames = merged.games;
+        workingMtimes = merged.mtimes;
+        await new Promise((resolve) => setTimeout(resolve, 0));
       }
+      persistScanState(workingGames, workingMtimes);
     } finally {
       setSyncState("idle");
     }
@@ -4305,7 +3349,8 @@ export default function App() {
     setSyncState("full-scan");
     try {
       const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: sel });
-      mergeGames(ng, nm, sel);
+      const merged = applySingleScanResult(gamesRef.current, loadCache<DirMtime[]>(SK_MTIMES, []), ng, nm, sel);
+      persistScanState(merged.games, merged.mtimes);
     } catch (e) { alert("Failed to scan: " + e); }
     finally { setSyncState("idle"); }
   };
@@ -4347,12 +3392,27 @@ export default function App() {
   };
 
   const launchGame = async (path: string, overridePath?: string, overrideArgs?: string) => {
-    const useRunner = launchConfig.enabled && platform !== "windows";
-    const runner = useRunner ? (launchConfig.runnerPath || (launchConfig.runner !== "custom" ? launchConfig.runner : null)) : null;
-    const prefix = useRunner && launchConfig.prefixPath ? launchConfig.prefixPath : null;
+    const gameCustom = customizations[path];
+
+    let runner: string | null = null;
+    let prefix: string | null = null;
+
+    if (platform !== "windows") {
+      if (gameCustom?.runnerOverrideEnabled) {
+        const ov = gameCustom.runnerOverride;
+        runner = ov
+          ? (ov.runnerPath || (ov.runner !== "custom" ? ov.runner : null))
+          : null;
+        prefix = ov?.prefixPath?.trim() ? ov.prefixPath.trim() : null;
+      } else if (launchConfig.enabled) {
+        runner = launchConfig.runnerPath || (launchConfig.runner !== "custom" ? launchConfig.runner : null);
+        prefix = launchConfig.prefixPath ? launchConfig.prefixPath : null;
+      }
+    }
+
     // Honour per-game executable override (keeps original `path` as the cache key)
-    const actualPath = overridePath ?? customizations[path]?.exeOverride ?? path;
-    const args = overrideArgs !== undefined ? overrideArgs : (customizations[path]?.launchArgs ?? null);
+    const actualPath = overridePath ?? gameCustom?.exeOverride ?? path;
+    const args = overrideArgs !== undefined ? overrideArgs : (gameCustom?.launchArgs ?? null);
     try {
       await invoke("launch_game", { path: actualPath, runner, prefix, args: args || null });
       // ── Track recent games (last 5, deduplicated) ────────────────────────
@@ -4540,6 +3600,56 @@ export default function App() {
     }
   };
 
+  const refreshRustLogs = async () => {
+    const logs = await invoke<RustLogEntry[]>("get_recent_logs", { limit: 300 }).catch(() => []);
+    setRustLogs(logs);
+  };
+
+  const clearRustLogs = async () => {
+    await invoke("clear_recent_logs").catch(() => { });
+    setRustLogs([]);
+  };
+
+  const buildDiagnosticsPayload = () => {
+    const levelMatches = (l: RustLogEntry) => {
+      const x = l.level.toLowerCase();
+      const norm: "error" | "warn" | "info" = x.startsWith("err") ? "error" : x.startsWith("warn") ? "warn" : "info";
+      return logLevelFilter === "all" ? true : norm === logLevelFilter;
+    };
+    return {
+      exportedAt: new Date().toISOString(),
+      app: {
+        version: appVersion,
+        platform,
+        userAgent: navigator.userAgent,
+      },
+      levelFilter: logLevelFilter,
+      crashReport,
+      logs: rustLogs.filter(levelMatches),
+    };
+  };
+
+  const handleCopyDiagnosticJson = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(buildDiagnosticsPayload(), null, 2));
+      alert("Diagnostics JSON copied.");
+    } catch {
+      alert("Could not copy diagnostics JSON.");
+    }
+  };
+
+  const handleExportDiagnosticLog = async () => {
+    const payload = buildDiagnosticsPayload();
+    const savePath = await save({
+      defaultPath: `libmaly-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    }).catch(() => null);
+    if (!savePath || typeof savePath !== "string") return;
+    await invoke("save_string_to_file", { path: savePath, contents: JSON.stringify(payload, null, 2) }).catch((e) => {
+      alert("Failed to export logs: " + e);
+    });
+  };
+
   useEffect(() => {
     if (!appSettings.metadataAutoRefetchDays) return;
     let active = true;
@@ -4601,7 +3711,19 @@ export default function App() {
   const handleSaveCustomization = (c: GameCustomization) => {
     if (!selected) return;
     const next = { ...customizations };
-    if (!c.displayName && !c.coverUrl && !c.backgroundUrl && !c.exeOverride) delete next[selected.path];
+    if (
+      !c.displayName &&
+      !c.coverUrl &&
+      !c.backgroundUrl &&
+      !c.exeOverride &&
+      !c.launchArgs &&
+      !(c.pinnedExes && c.pinnedExes.length > 0) &&
+      !c.status &&
+      !c.timeLimitMins &&
+      !(c.customTags && c.customTags.length > 0) &&
+      !c.runnerOverrideEnabled &&
+      !c.runnerOverride
+    ) delete next[selected.path];
     else next[selected.path] = c;
     setCustomizations(next); saveCache(SK_CUSTOM, next);
   };
@@ -4667,7 +3789,8 @@ export default function App() {
     setSyncState("full-scan");
     try {
       const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: folder });
-      mergeGames(ng, nm, folder);
+      const merged = applySingleScanResult(gamesRef.current, loadCache<DirMtime[]>(SK_MTIMES, []), ng, nm, folder);
+      persistScanState(merged.games, merged.mtimes);
     } catch (e) { alert("Rescan failed: " + e); }
     finally { setSyncState("idle"); }
   };
@@ -5586,6 +4709,17 @@ export default function App() {
                 </svg>
                 Settings
               </button>
+              <button onClick={() => setShowLogViewer(true)}
+                className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
+                style={{ background: "transparent", color: "#4a5568", border: "1px solid #2a3f54" }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "#8f98a0"; e.currentTarget.style.borderColor = "#3d5a73"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "#4a5568"; e.currentTarget.style.borderColor = "#2a3f54"; }}
+                title="Rust logs">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 6h16" /><path d="M4 12h16" /><path d="M4 18h16" />
+                </svg>
+                Logs
+              </button>
               {appUpdate && (
                 <button onClick={() => setShowAppUpdateModal(true)}
                   className="flex-1 py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1"
@@ -5605,9 +4739,9 @@ export default function App() {
       {/* ── Main ── */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative">
         {selected === null && activeMainTab === "feed" ? (
-          <FeedView appSettings={appSettings} wishlist={wishlist} onToggleWishlist={handleToggleWishlist} />
+          <FeedView appSettings={appSettings} wishlist={wishlist} defaultFeeds={DEFAULT_SETTINGS.rssFeeds} onToggleWishlist={handleToggleWishlist} />
         ) : selected === null && activeMainTab === "stats" ? (
-          <StatsView games={games} stats={stats} sessions={sessionLog} customizations={customizations} metadata={metadata} />
+          <StatsView games={games} stats={stats} sessions={sessionLog} customizations={customizations} metadata={metadata} totalPlaytimeSecs={totalPlaytimeLiveSecs} />
         ) : viewMode === "grid" && !selected ? (
           <div className="flex-1 overflow-y-auto px-6 py-6" style={{ scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
             <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
@@ -5675,6 +4809,7 @@ export default function App() {
               favGames={favGames}
               notes={notes}
               runningGamePath={runningGamePath}
+              totalPlaytimeSecs={totalPlaytimeLiveSecs}
               onSelect={setSelected}
               onPlay={launchGame}
               onStop={killGame}
@@ -5693,7 +4828,17 @@ export default function App() {
             onPlay={(...args) => launchGame(selected.path, ...args)}
             onStop={killGame}
             isRunning={runningGamePath === selected.path}
-            runnerLabel={launchConfig.enabled && platform !== "windows" ? launchConfig.runner.charAt(0).toUpperCase() + launchConfig.runner.slice(1) : undefined}
+            runnerLabel={(() => {
+              if (platform === "windows") return undefined;
+              const gc = customizations[selected.path];
+              if (gc?.runnerOverrideEnabled) {
+                const ov = gc.runnerOverride;
+                if (!ov || (!ov.runnerPath && ov.runner === "custom")) return "Direct";
+                return `${ov.runner.charAt(0).toUpperCase()}${ov.runner.slice(1)} (Override)`;
+              }
+              if (!launchConfig.enabled) return undefined;
+              return `${launchConfig.runner.charAt(0).toUpperCase()}${launchConfig.runner.slice(1)}`;
+            })()}
             onDelete={() => setDeleteTarget(selected)}
             onLinkPage={() => setShowLinkModal(true)}
             onOpenF95Login={() => setShowF95Login(true)}
@@ -5769,6 +4914,7 @@ export default function App() {
             onRescanAll={() => runFullScanAll(libraryFolders)}
             onWineSettings={() => setShowWineSettings(true)}
             onSteamImport={() => setShowSteamImport(true)}
+            onLutrisImport={() => setShowLutrisImport(true)}
             onAppUpdate={() => setShowAppUpdateModal(true)}
             appSettings={appSettings}
             onSaveSettings={(s) => { setAppSettings(s); saveCache(SK_SETTINGS, s); }}
@@ -5817,6 +4963,8 @@ export default function App() {
             game={selected}
             meta={metadata[selected.path]}
             custom={customizations[selected.path] ?? {}}
+            platform={platform}
+            globalLaunchConfig={launchConfig}
             onSave={handleSaveCustomization}
             onClose={() => setShowCustomizeModal(false)}
           />
@@ -5834,6 +4982,32 @@ export default function App() {
             url={appUpdate.url}
             downloadUrl={appUpdate.downloadUrl}
             onClose={() => setShowAppUpdateModal(false)}
+          />
+        )
+      }
+      {
+        showLogViewer && (
+          <LogViewerModal
+            logs={rustLogs}
+            crashReport={crashReport}
+            levelFilter={logLevelFilter}
+            onSetLevelFilter={setLogLevelFilter}
+            onRefresh={refreshRustLogs}
+            onClear={clearRustLogs}
+            onExport={handleExportDiagnosticLog}
+            onCopyJson={handleCopyDiagnosticJson}
+            onClose={() => setShowLogViewer(false)}
+          />
+        )
+      }
+      {
+        crashReport && (
+          <CrashReportModal
+            report={crashReport}
+            onClose={() => {
+              invoke("clear_last_crash_report").catch(() => { });
+              setCrashReport(null);
+            }}
           />
         )
       }
@@ -5945,6 +5119,15 @@ export default function App() {
           />
         )
       }
+      {
+        showLutrisImport && (
+          <LutrisImportModal
+            games={games}
+            onImport={handleLutrisImport}
+            onClose={() => setShowLutrisImport(false)}
+          />
+        )
+      }
 
       <CommandPalette
         isOpen={showCmdPalette}
@@ -5958,3 +5141,4 @@ export default function App() {
   );
 
 }
+

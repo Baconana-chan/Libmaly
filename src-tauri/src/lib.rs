@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(not(windows))]
+use std::collections::HashSet;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::AppHandle;
@@ -39,6 +42,76 @@ struct RecentGame {
 }
 
 struct RecentGamesState(std::sync::Mutex<Vec<RecentGame>>);
+
+#[derive(Serialize, Deserialize, Clone)]
+struct RustLogEntry {
+    ts: u64,
+    level: String,
+    message: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct CrashReport {
+    ts: u64,
+    thread: String,
+    message: String,
+    location: String,
+    backtrace: String,
+}
+
+static RUST_LOG_BUFFER: OnceLock<Mutex<Vec<RustLogEntry>>> = OnceLock::new();
+const MAX_RUST_LOGS: usize = 500;
+const CRASH_REPORT_FILE: &str = "libmaly_last_crash.json";
+
+fn rust_log_buffer() -> &'static Mutex<Vec<RustLogEntry>> {
+    RUST_LOG_BUFFER.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn push_rust_log(app: Option<&AppHandle>, level: &str, message: impl Into<String>) {
+    let entry = RustLogEntry {
+        ts: now_ms(),
+        level: level.to_string(),
+        message: message.into(),
+    };
+    {
+        let mut logs = rust_log_buffer().lock().unwrap();
+        logs.push(entry.clone());
+        if logs.len() > MAX_RUST_LOGS {
+            let overflow = logs.len() - MAX_RUST_LOGS;
+            logs.drain(0..overflow);
+        }
+    }
+    if let Some(app_handle) = app {
+        let _ = app_handle.emit("rust-log", &entry);
+    }
+}
+
+fn parse_panic_payload(panic_info: &std::panic::PanicHookInfo<'_>) -> String {
+    if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "Unknown panic payload".to_string()
+    }
+}
+
+fn write_crash_report(app: &AppHandle, report: &CrashReport) {
+    if let Ok(mut dir) = app.path().app_data_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        dir.push(CRASH_REPORT_FILE);
+        if let Ok(json) = serde_json::to_string_pretty(report) {
+            let _ = std::fs::write(dir, json);
+        }
+    }
+}
 
 /// One entry in the directory-modification-time cache.
 /// Stored by the frontend and passed back on next launch.
@@ -275,6 +348,7 @@ struct WineRunner {
     name: String,
     path: String,
     kind: String, // "wine" | "proton"
+    flavor: Option<String>, // "official" | "ge"
 }
 
 #[tauri::command]
@@ -282,7 +356,26 @@ fn detect_wine_runners() -> Vec<WineRunner> {
     #[allow(unused_mut)]
     let mut runners: Vec<WineRunner> = Vec::new();
     #[cfg(not(windows))]
+    let mut seen_paths: HashSet<String> = HashSet::new();
+
+    #[cfg(not(windows))]
+    let mut push_runner =
+        |name: String, path: String, kind: &str, flavor: Option<&str>| {
+            if path.is_empty() || !seen_paths.insert(path.clone()) {
+                return;
+            }
+            runners.push(WineRunner {
+                name,
+                path,
+                kind: kind.to_string(),
+                flavor: flavor.map(|s| s.to_string()),
+            });
+        };
+
+    #[cfg(not(windows))]
     {
+        let home = std::env::var("HOME").unwrap_or_default();
+
         // ── Wine system binary ─────────────────────────────────────────────
         let wine_candidates = [
             "/usr/bin/wine",
@@ -292,11 +385,7 @@ fn detect_wine_runners() -> Vec<WineRunner> {
         ];
         for c in &wine_candidates {
             if std::path::Path::new(c).exists() {
-                runners.push(WineRunner {
-                    name: "Wine".into(),
-                    path: c.to_string(),
-                    kind: "wine".into(),
-                });
+                push_runner("Wine".into(), c.to_string(), "wine", None);
                 break;
             }
         }
@@ -305,16 +394,12 @@ fn detect_wine_runners() -> Vec<WineRunner> {
             if let Ok(out) = Command::new("which").arg("wine").output() {
                 let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if !path.is_empty() {
-                    runners.push(WineRunner {
-                        name: "Wine (which)".into(),
-                        path,
-                        kind: "wine".into(),
-                    });
+                    push_runner("Wine (which)".into(), path, "wine", None);
                 }
             }
         }
+
         // ── Steam Proton ───────────────────────────────────────────────────
-        let home = std::env::var("HOME").unwrap_or_default();
         let steam_common_paths = [
             format!("{home}/.steam/steam/steamapps/common"),
             format!("{home}/.local/share/Steam/steamapps/common"),
@@ -337,18 +422,441 @@ fn detect_wine_runners() -> Vec<WineRunner> {
                     let name = entry.file_name().to_string_lossy().to_string();
                     let proton_bin = entry.path().join("proton");
                     if proton_bin.exists() {
-                        runners.push(WineRunner {
-                            name: name.clone(),
-                            path: proton_bin.to_string_lossy().to_string(),
-                            kind: "proton".into(),
-                        });
+                        let lower = name.to_lowercase();
+                        let is_ge = lower.contains("ge-proton") || lower.contains("proton-ge");
+                        push_runner(
+                            name.clone(),
+                            proton_bin.to_string_lossy().to_string(),
+                            "proton",
+                            Some(if is_ge { "ge" } else { "official" }),
+                        );
                     }
+                }
+            }
+        }
+
+        // ── Proton-GE via compatibilitytools.d ────────────────────────────
+        let compat_tools_dirs = [
+            format!("{home}/.steam/root/compatibilitytools.d"),
+            format!("{home}/.steam/steam/compatibilitytools.d"),
+            format!("{home}/.local/share/Steam/compatibilitytools.d"),
+            format!("{home}/Library/Application Support/Steam/compatibilitytools.d"),
+        ];
+        for dir in &compat_tools_dirs {
+            let root = std::path::Path::new(dir);
+            if !root.exists() {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(root) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let proton_bin = path.join("proton");
+                    if !proton_bin.exists() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let lower = name.to_lowercase();
+                    let is_ge = lower.contains("ge-proton")
+                        || lower.contains("proton-ge")
+                        || lower.starts_with("ge-");
+                    push_runner(
+                        name,
+                        proton_bin.to_string_lossy().to_string(),
+                        "proton",
+                        Some(if is_ge { "ge" } else { "official" }),
+                    );
                 }
             }
         }
     }
     runners
 }
+
+#[derive(Serialize, Clone)]
+struct PrefixInfo {
+    name: String,
+    path: String,
+    kind: String, // "wine" | "proton"
+    has_dxvk: bool,
+    has_vkd3d: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct LutrisGameEntry {
+    name: String,
+    slug: String,
+    exe: String,
+    prefix: Option<String>,
+    runner: Option<String>,
+    args: Option<String>,
+    config_path: String,
+}
+
+#[cfg(not(windows))]
+fn is_wine_prefix_dir(path: &std::path::Path) -> bool {
+    path.join("drive_c").is_dir() && path.join("system.reg").is_file()
+}
+
+#[cfg(not(windows))]
+fn detect_prefix_graphics(prefix: &std::path::Path) -> (bool, bool) {
+    let sys32 = prefix.join("drive_c").join("windows").join("system32");
+    let wow64 = prefix.join("drive_c").join("windows").join("syswow64");
+    let has_any = |dll: &str| sys32.join(dll).is_file() || wow64.join(dll).is_file();
+    let has_dxvk = has_any("dxgi.dll") && (has_any("d3d11.dll") || has_any("d3d9.dll"));
+    let has_vkd3d = has_any("d3d12.dll");
+    (has_dxvk, has_vkd3d)
+}
+
+#[tauri::command]
+fn list_wine_prefixes() -> Vec<PrefixInfo> {
+    #[cfg(windows)]
+    {
+        return Vec::new();
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let mut candidates: Vec<(String, std::path::PathBuf, String)> = Vec::new();
+        let mut seen_paths: HashSet<String> = HashSet::new();
+
+        let push_candidate = |items: &mut Vec<(String, std::path::PathBuf, String)>,
+                              seen: &mut HashSet<String>,
+                              name: String,
+                              path: std::path::PathBuf,
+                              kind: &str| {
+            let key = path.to_string_lossy().to_string();
+            if seen.insert(key) {
+                items.push((name, path, kind.to_string()));
+            }
+        };
+
+        // Classic default prefix.
+        let default_prefix = std::path::PathBuf::from(format!("{home}/.wine"));
+        if default_prefix.exists() {
+            push_candidate(
+                &mut candidates,
+                &mut seen_paths,
+                ".wine".to_string(),
+                default_prefix,
+                "wine",
+            );
+        }
+
+        // User-managed Wine prefixes.
+        let wine_prefix_roots = [
+            format!("{home}/.local/share/wineprefixes"),
+            format!("{home}/.wineprefixes"),
+            format!("{home}/Games"),
+        ];
+        for root in &wine_prefix_roots {
+            let root_path = std::path::Path::new(root);
+            if !root_path.exists() {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(root_path) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let p = entry.path();
+                    if !p.is_dir() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if is_wine_prefix_dir(&p) {
+                        push_candidate(&mut candidates, &mut seen_paths, name, p, "wine");
+                    } else {
+                        let nested = p.join("prefix");
+                        if is_wine_prefix_dir(&nested) {
+                            push_candidate(&mut candidates, &mut seen_paths, name, nested, "wine");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Steam compatdata prefixes (Proton).
+        let compat_roots = [
+            format!("{home}/.steam/steam/steamapps/compatdata"),
+            format!("{home}/.local/share/Steam/steamapps/compatdata"),
+            format!("{home}/Library/Application Support/Steam/steamapps/compatdata"),
+        ];
+        for root in &compat_roots {
+            let root_path = std::path::Path::new(root);
+            if !root_path.exists() {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(root_path) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let pfx = entry.path().join("pfx");
+                    if !is_wine_prefix_dir(&pfx) {
+                        continue;
+                    }
+                    let app_id = entry.file_name().to_string_lossy().to_string();
+                    let name = format!("compatdata/{app_id}");
+                    push_candidate(&mut candidates, &mut seen_paths, name, pfx, "proton");
+                }
+            }
+        }
+
+        let mut out: Vec<PrefixInfo> = candidates
+            .into_iter()
+            .filter_map(|(name, path, kind)| {
+                if !is_wine_prefix_dir(&path) {
+                    return None;
+                }
+                let (has_dxvk, has_vkd3d) = detect_prefix_graphics(&path);
+                Some(PrefixInfo {
+                    name,
+                    path: path.to_string_lossy().to_string(),
+                    kind,
+                    has_dxvk,
+                    has_vkd3d,
+                })
+            })
+            .collect();
+
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out
+    }
+}
+
+#[tauri::command]
+fn create_wine_prefix(path: String, runner: Option<String>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = (path, runner);
+        return Err("Wine prefixes are not supported on Windows".to_string());
+    }
+    #[cfg(not(windows))]
+    {
+        let target = std::path::Path::new(&path);
+        if path.trim().is_empty() {
+            return Err("Prefix path is empty".to_string());
+        }
+        std::fs::create_dir_all(target).map_err(|e| e.to_string())?;
+
+        let runner_cmd = runner.unwrap_or_else(|| "wineboot".to_string());
+        let is_proton = std::path::Path::new(&runner_cmd)
+            .file_name()
+            .map(|n| n.to_string_lossy().eq_ignore_ascii_case("proton"))
+            .unwrap_or(false);
+        let mut cmd = Command::new(&runner_cmd);
+        if is_proton {
+            // For proton, this should point to compatdata dir (contains pfx after init).
+            cmd.arg("run").arg("wineboot");
+            cmd.env("STEAM_COMPAT_DATA_PATH", &path);
+        } else {
+            if std::path::Path::new(&runner_cmd)
+                .file_name()
+                .map(|n| n.to_string_lossy().contains("wine"))
+                .unwrap_or(false)
+            {
+                cmd.arg("-u");
+            }
+            cmd.env("WINEPREFIX", &path);
+        }
+
+        let out = cmd.output().map_err(|e| format!("Failed to run wineboot: {e}"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if err.is_empty() {
+                "Failed to initialize prefix".to_string()
+            } else {
+                err
+            });
+        }
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn delete_wine_prefix(path: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = path;
+        return Err("Wine prefixes are not supported on Windows".to_string());
+    }
+    #[cfg(not(windows))]
+    {
+        if path.trim().is_empty() {
+            return Err("Prefix path is empty".to_string());
+        }
+        let p = std::path::Path::new(&path);
+        if !p.exists() {
+            return Ok(());
+        }
+        if p.parent().is_none() {
+            return Err("Refusing to delete root directory".to_string());
+        }
+        if !is_wine_prefix_dir(p) {
+            return Err("The selected path does not look like a Wine prefix".to_string());
+        }
+        std::fs::remove_dir_all(p).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn run_winetricks_for_prefix(prefix: &str, verbs: &[String]) -> Result<String, String> {
+    if verbs.is_empty() {
+        return Err("No verbs provided".to_string());
+    }
+    let mut cmd = Command::new("winetricks");
+    cmd.arg("-q");
+    for v in verbs {
+        cmd.arg(v);
+    }
+    cmd.env("WINEPREFIX", prefix);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("Failed to run winetricks: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "winetricks failed".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+#[tauri::command]
+fn run_winetricks(prefix: String, verbs: Vec<String>) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let _ = (prefix, verbs);
+        return Err("Winetricks is not available on Windows".to_string());
+    }
+    #[cfg(not(windows))]
+    {
+        run_winetricks_for_prefix(&prefix, &verbs)
+    }
+}
+
+#[tauri::command]
+fn install_dxvk_vkd3d(
+    prefix: String,
+    install_dxvk: bool,
+    install_vkd3d: bool,
+) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let _ = (prefix, install_dxvk, install_vkd3d);
+        return Err("DXVK/VKD3D installer is not available on Windows".to_string());
+    }
+    #[cfg(not(windows))]
+    {
+        let mut verbs: Vec<String> = Vec::new();
+        if install_dxvk {
+            verbs.push("dxvk".to_string());
+        }
+        if install_vkd3d {
+            verbs.push("vkd3d".to_string());
+        }
+        if verbs.is_empty() {
+            return Err("Nothing selected to install".to_string());
+        }
+        run_winetricks_for_prefix(&prefix, &verbs)
+    }
+}
+
+#[cfg(not(windows))]
+fn extract_yaml_value(source: &str, keys: &[&str]) -> Option<String> {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        for key in keys {
+            let prefix = format!("{key}:");
+            if trimmed.starts_with(&prefix) {
+                let raw = trimmed[prefix.len()..].trim();
+                if raw.is_empty() || raw == "null" {
+                    continue;
+                }
+                let unquoted = raw
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .trim()
+                    .to_string();
+                if !unquoted.is_empty() {
+                    return Some(unquoted);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+fn import_lutris_games() -> Vec<LutrisGameEntry> {
+    #[cfg(windows)]
+    {
+        return Vec::new();
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let roots = [
+            format!("{home}/.config/lutris/games"),
+            format!("{home}/.local/share/lutris/games"),
+        ];
+
+        let mut out: Vec<LutrisGameEntry> = Vec::new();
+        let mut seen_exe: HashSet<String> = HashSet::new();
+
+        for root in &roots {
+            let root_path = std::path::Path::new(root);
+            if !root_path.exists() {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(root_path) else {
+                continue;
+            };
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path
+                    .extension()
+                    .map(|x| x.to_string_lossy().to_lowercase() != "yml")
+                    .unwrap_or(true)
+                {
+                    continue;
+                }
+                let Ok(src) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let exe = extract_yaml_value(&src, &["exe", "executable"]);
+                let Some(exe_path) = exe else {
+                    continue;
+                };
+                if exe_path.is_empty() || !seen_exe.insert(exe_path.clone()) {
+                    continue;
+                }
+                let slug = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "lutris-game".to_string());
+                let name = extract_yaml_value(&src, &["name"]).unwrap_or_else(|| slug.clone());
+                let prefix = extract_yaml_value(&src, &["prefix", "wineprefix"]);
+                let runner = extract_yaml_value(&src, &["runner", "runner_name"]);
+                let args = extract_yaml_value(&src, &["args", "arguments", "game_args"]);
+                out.push(LutrisGameEntry {
+                    name,
+                    slug,
+                    exe: exe_path,
+                    prefix,
+                    runner,
+                    args,
+                    config_path: path.to_string_lossy().to_string(),
+                });
+            }
+        }
+
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out
+    }
+}
+
 #[tauri::command]
 fn split_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
@@ -501,7 +1009,7 @@ fn launch_game(
                 );
             }
             Err(e) => {
-                eprintln!("Failed to launch game: {}", e);
+                push_rust_log(Some(&app), "error", format!("Failed to launch game: {}", e));
             }
         }
     });
@@ -1136,12 +1644,48 @@ fn save_string_to_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_recent_logs(limit: Option<usize>) -> Vec<RustLogEntry> {
+    let logs = rust_log_buffer().lock().unwrap();
+    let take_n = limit.unwrap_or(200).min(MAX_RUST_LOGS);
+    if logs.len() <= take_n {
+        logs.clone()
+    } else {
+        logs[logs.len() - take_n..].to_vec()
+    }
+}
+
+#[tauri::command]
+fn clear_recent_logs() -> Result<(), String> {
+    rust_log_buffer().lock().unwrap().clear();
+    Ok(())
+}
+
+#[tauri::command]
+fn get_last_crash_report(app: AppHandle) -> Option<CrashReport> {
+    let mut path = app.path().app_data_dir().ok()?;
+    path.push(CRASH_REPORT_FILE);
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+#[tauri::command]
+fn clear_last_crash_report(app: AppHandle) -> Result<(), String> {
+    let mut path = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    path.push(CRASH_REPORT_FILE);
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_cli::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -1156,6 +1700,12 @@ pub fn run() {
             list_executables_in_folder,
             get_platform,
             detect_wine_runners,
+            list_wine_prefixes,
+            create_wine_prefix,
+            delete_wine_prefix,
+            run_winetricks,
+            install_dxvk_vkd3d,
+            import_lutris_games,
             launch_game,
             kill_game,
             delete_game,
@@ -1182,11 +1732,44 @@ pub fn run() {
             set_tray_tooltip,
             fetch_rss,
             save_string_to_file,
+            get_recent_logs,
+            clear_recent_logs,
+            get_last_crash_report,
+            clear_last_crash_report,
         ])
         .setup(|app| {
+            push_rust_log(Some(app.handle()), "info", "LIBMALY started");
+
+            // Capture panics into a persisted crash report file and in-app log stream.
+            let app_for_panic = app.handle().clone();
+            std::panic::set_hook(Box::new(move |panic_info| {
+                let message = parse_panic_payload(panic_info);
+                let location = panic_info
+                    .location()
+                    .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let report = CrashReport {
+                    ts: now_ms(),
+                    thread: std::thread::current()
+                        .name()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "unnamed".to_string()),
+                    message: message.clone(),
+                    location: location.clone(),
+                    backtrace: std::backtrace::Backtrace::force_capture().to_string(),
+                };
+                write_crash_report(&app_for_panic, &report);
+                push_rust_log(
+                    Some(&app_for_panic),
+                    "error",
+                    format!("panic: {} @ {}", message, location),
+                );
+            }));
+
             // ── System tray ───────────────────────────────────────────────
             let initial_menu = build_tray_menu(app.handle(), &[])?;
-            TrayIconBuilder::with_id("main-tray")
+            #[allow(unused_mut)]
+            let mut tray_builder = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("LIBMALY")
                 .menu(&initial_menu)
@@ -1243,8 +1826,16 @@ pub fn run() {
                             }
                         }
                     }
-                })
-                .build(app)?;
+                });
+
+            #[cfg(target_os = "macos")]
+            {
+                // macOS status-bar icon should be treated as a template image for
+                // stable NSStatusItem appearance in light/dark menu bars.
+                tray_builder = tray_builder.icon_as_template(true);
+            }
+
+            tray_builder.build(app)?;
             Ok(())
         })
         // ── Minimize to tray instead of closing ───────────────────────────

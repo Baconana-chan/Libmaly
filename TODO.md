@@ -20,15 +20,12 @@
 
 - [ ] **VNDB support** — fetch metadata from vndb.org for visual novels (cover, tags, relations, release date)
 - [ ] **MangaGamer / Johren / Fakku support** — additional store scrapers
-- [ ] **Developer grouping** — sidebar section "By Developer"; click to filter all games from one circle/studio
 
 ---
 
 ## 🖼️ Screenshots
 
-- [ ] **Non-Windows screenshot** — global hotkey via X11/Wayland on Linux; CGWindow on macOS
 - [ ] **Screenshot annotation** — simple draw / text overlay before saving
-- [ ] **Export gallery** — zip all screenshots for a game and save / share
 
 ---
 
@@ -45,32 +42,22 @@
 
 ## 🍷 Wine / Proton (Linux & macOS)
 
-- [ ] **Per-game runner config** — override the global Wine/Proton settings for individual games
-- [ ] **Wine prefix manager** — create, list and delete prefixes from within the UI
-- [ ] **DXVK / VKD3D auto-install** — detect if DXVK is present in a prefix; offer to install it
-- [ ] **Winetricks integration** — run common verbs (vcrun2019, d3dx9, etc.) from a dropdown
-- [ ] **Proton-GE support** — auto-detect Proton-GE builds alongside official Steam Proton
-- [ ] **Lutris import** — read Lutris's game database to import already-configured Wine games
+
 
 ---
 
 ## 📥 Import & Interop
 
 - [ ] **Import from Playnite / GOG Galaxy** — read existing launchers' databases and merge into library
-- [ ] **Deep link protocol** — `libmaly://launch/<game-path>` URI scheme for external tools
-- [ ] **CLI interface** — `libmaly launch <name>` from a terminal
 
 ---
 
 ## 🛠️ Technical
 
 - [ ] **Portable mode** — store all data next to the exe instead of AppData (USB-stick installs)
-- [ ] **Log viewer** — in-app console showing recent Rust-side errors/warnings for debugging
-- [ ] **Crash reporter** — catch panics and offer to copy a report to clipboard
 - [ ] **i18n / l10n** — internationalisation framework; provide RU, JA, ZH translations
 - [ ] **Plugin system** — allow JS/WASM plugins to add metadata sources or UI panels
 - [ ] **REST API mode** — optional local HTTP server so external scripts can query/control the library
-- [ ] **Tray icon on macOS** — verify/fix `NSStatusItem` behaviour once macOS build is stable
 
 ---
 
@@ -136,6 +123,7 @@
 - [x] **Wishlist** — add un-owned games with a link and release status; separate sidebar section
 - [x] **Metadata diff view** — when re-fetching, show "changed: version 0.9 → 1.0" before applying
 - [x] **Game version history** — log each time you update a game (date + note); shown as timeline entries
+- [x] **Developer grouping** — sidebar section "By Developer"; click to filter all games from one circle/studio
 
 ### Notifications & Tray
 - [x] **Update checker** — notification when a linked F95/DLsite game has a new version posted
@@ -151,11 +139,28 @@
 - [x] **Screenshot deletion** — remove individual screenshots from the gallery
 - [x] **Auto-screenshot timer** — periodic screenshot every N minutes while a game runs
 - [x] **Screenshot tagging** — label screenshots ("ending", "bug", "funny moment"); filterable gallery
+- [x] **Non-Windows screenshot** — global hotkey via X11/Wayland on Linux; CGWindow on macOS
+- [x] **Export gallery** — zip all screenshots for a game and save / share
 
 ### Wine / Proton
 - [x] **Global Wine/Proton config** — set Wine binary and prefix globally; used for all non-Windows games
 - [x] **Per-game Wine toggle** — enable/disable Wine wrapper per game on Linux/macOS
+- [x] **Per-game runner config** — override the global Wine/Proton settings for individual games
+- [x] **Wine prefix manager** — create, list and delete prefixes from within the UI
+- [x] **DXVK / VKD3D auto-install** — detect if DXVK is present in a prefix; offer to install it
+- [x] **Winetricks integration** — run common verbs (vcrun2019, d3dx9, etc.) from a dropdown
+- [x] **Proton-GE support** — auto-detect Proton-GE builds alongside official Steam Proton
+- [x] **Lutris import** — read Lutris's game database to import already-configured Wine games
 
 ### Performance & Stability
 - [x] **Virtual sidebar list** — windowed rendering for 1000+ game libraries
 - [x] **kill_game on Linux/macOS** — SIGTERM with timeout fallback to SIGKILL
+
+### Import & Interop
+- [x] **Deep link protocol** — `libmaly://launch/<game-path>` URI scheme for external tools
+- [x] **CLI interface** — `libmaly launch <name>` from a terminal
+
+### Technical
+- [x] **Log viewer** — in-app console showing recent Rust-side errors/warnings for debugging
+- [x] **Crash reporter** — catch panics and offer to copy a report to clipboard
+- [x] **Tray icon on macOS** — verify/fix `NSStatusItem` behaviour once macOS build is stable

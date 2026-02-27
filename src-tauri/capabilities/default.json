@@ -11,6 +11,7 @@
     "dialog:default",
     "cli:default",
     "deep-link:default",
+    "global-shortcut:default",
     "core:window:allow-set-fullscreen",
     "core:window:allow-is-fullscreen"
   ]

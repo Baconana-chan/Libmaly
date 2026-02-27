@@ -271,7 +271,7 @@ pub fn capture_window_of(pid: u32, game_exe: &str) -> Result<Screenshot, String>
     }
     #[cfg(target_os = "macos")]
     {
-        capture_macos(game_exe)
+        capture_macos(pid, game_exe)
     }
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
@@ -475,7 +475,7 @@ fn capture_linux(pid: u32, game_exe: &str) -> Result<Screenshot, String> {
 // ── macOS screenshot capture ────────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]
-fn capture_macos(game_exe: &str) -> Result<Screenshot, String> {
+fn capture_macos(pid: u32, game_exe: &str) -> Result<Screenshot, String> {
     use std::process::Command;
     let dir = screenshots_dir(game_exe);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -487,8 +487,37 @@ fn capture_macos(game_exe: &str) -> Result<Screenshot, String> {
     let out_path = dir.join(&filename);
     let out_str = out_path.to_string_lossy().to_string();
 
-    // screencapture -x = no sound; -m = main screen only
-    let ok = Command::new("screencapture")
+    // Try to resolve the game's CGWindowID first (AXWindowID), then capture that window.
+    let cg_window_id = Command::new("osascript")
+        .arg("-e")
+        .arg(format!(
+            r#"tell application "System Events" to tell (first process whose unix id is {}) to get value of attribute "AXWindowID" of first window"#,
+            pid
+        ))
+        .output()
+        .ok()
+        .and_then(|o| {
+            if !o.status.success() {
+                return None;
+            }
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.chars().all(|c| c.is_ascii_digit()) {
+                Some(s)
+            } else {
+                None
+            }
+        });
+
+    // screencapture -x = no sound. If we have a window id, use `-l <id>` (CGWindow path).
+    let ok = if let Some(id) = cg_window_id {
+        Command::new("screencapture")
+            .args(["-x", "-l", &id, &out_str])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    } else {
+        false
+    } || Command::new("screencapture")
         .args(["-x", "-m", &out_str])
         .status()
         .map(|s| s.success())

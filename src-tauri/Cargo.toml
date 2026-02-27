@@ -1,6 +1,6 @@
 [package]
 name = "libmaly"
-version = "1.3.0"
+version = "1.4.0"
 description = "A personal game library manager"
 authors = ["Baconana-chan"]
 edition = "2021"
@@ -40,6 +40,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-notification = "2.3.3"
 urlencoding = "2.1.3"
+base64 = "0.22.1"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [
@@ -50,6 +51,7 @@ winapi = { version = "0.3", features = [
     "minwindef",
     "handleapi",
 ] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [features]
 zip-support = []

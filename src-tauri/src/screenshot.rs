@@ -3,6 +3,8 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex};
 use tauri::AppHandle;
+use base64::Engine;
+use crate::data_paths::app_data_root;
 #[cfg(windows)]
 use tauri::Emitter;
 
@@ -44,22 +46,7 @@ fn hook_state() -> &'static Mutex<Option<HookState>> {
 
 /// Returns the base screenshots directory for the current platform.
 pub fn screenshots_dir(game_exe: &str) -> PathBuf {
-    #[cfg(windows)]
-    let base = std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-
-    #[cfg(target_os = "linux")]
-    let base = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".local/share");
-
-    #[cfg(target_os = "macos")]
-    let base = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("Library/Application Support");
+    let base = app_data_root();
 
     let folder_name = Path::new(game_exe)
         .parent()
@@ -76,7 +63,7 @@ pub fn screenshots_dir(game_exe: &str) -> PathBuf {
             }
         })
         .collect();
-    base.join("libmaly").join("screenshots").join(sanitized)
+    base.join("screenshots").join(sanitized)
 }
 
 // ── Serde types ────────────────────────────────────────────────────────────
@@ -255,6 +242,34 @@ pub fn take_screenshot_manual(state: tauri::State<ActiveGameState>) -> Result<Sc
         None => Err("No game is currently running.".to_string()),
         Some(game) => capture_window_of(game.pid, &game.exe),
     }
+}
+
+#[tauri::command]
+pub fn overwrite_screenshot_png(path: String, data_url: String) -> Result<(), String> {
+    let encoded = data_url
+        .strip_prefix("data:image/png;base64,")
+        .unwrap_or(data_url.as_str());
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| format!("Invalid PNG data: {e}"))?;
+    std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_screenshot_file(path: String) -> Result<(), String> {
+    let p = PathBuf::from(path);
+    if p.exists() {
+        std::fs::remove_file(p).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_screenshot_data_url(path: String) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:image/png;base64,{b64}"))
 }
 
 // ── Public capture entry-point (also used by hotkey thread) ───────────────
@@ -541,14 +556,15 @@ fn capture_macos(pid: u32, game_exe: &str) -> Result<Screenshot, String> {
 mod win {
     use super::{screenshots_dir, Screenshot};
     use winapi::shared::minwindef::{BOOL, DWORD, FALSE, LPARAM, TRUE};
-    use winapi::shared::windef::{HBITMAP, HWND, RECT};
+    use winapi::shared::windef::{HBITMAP, HWND, POINT, RECT};
     use winapi::um::wingdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
         SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
     };
     use winapi::um::winuser::{
-        EnumWindows, GetClientRect, GetDC, GetWindowLongW, GetWindowTextW,
-        GetWindowThreadProcessId, IsWindowVisible, PrintWindow, ReleaseDC, GWL_STYLE,
+        ClientToScreen, EnumWindows, GetClientRect, GetDC, GetForegroundWindow, GetWindowLongW,
+        GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, PrintWindow, ReleaseDC,
+        GWL_STYLE,
     };
 
     pub fn exec_panic_action(pid: u32, action: &str, mute: bool) {
@@ -660,12 +676,34 @@ mod win {
             let hbmp: HBITMAP = CreateCompatibleBitmap(hdc_src, w, h);
             let old = SelectObject(hdc_mem, hbmp as *mut _);
 
-            // PrintWindow captures the window even when it's not in foreground.
-            // PW_CLIENTONLY (1) = skip title bar / borders.
-            let ok = PrintWindow(hwnd, hdc_mem, 1);
-            if ok == 0 {
-                // Fallback: BitBlt (requires the window to be visible and not covered)
-                BitBlt(hdc_mem, 0, 0, w, h, hdc_src, 0, 0, SRCCOPY);
+            let blit_from_screen = || -> bool {
+                let mut pt = POINT { x: 0, y: 0 };
+                ClientToScreen(hwnd, &mut pt);
+                let hdc_screen = GetDC(std::ptr::null_mut());
+                if !hdc_screen.is_null() {
+                    BitBlt(hdc_mem, 0, 0, w, h, hdc_screen, pt.x, pt.y, SRCCOPY);
+                    ReleaseDC(std::ptr::null_mut(), hdc_screen);
+                    true
+                } else {
+                    BitBlt(hdc_mem, 0, 0, w, h, hdc_src, 0, 0, SRCCOPY);
+                    false
+                }
+            };
+
+            let is_foreground = GetForegroundWindow() == hwnd;
+            if is_foreground {
+                // Foreground games (Unity/DirectX especially) are best captured from the screen.
+                // If screen-DC path fails for any reason, fall back to PrintWindow.
+                if !blit_from_screen() {
+                    let _ = PrintWindow(hwnd, hdc_mem, 1);
+                }
+            } else {
+                // Background or partially covered windows: prefer PrintWindow first.
+                // If PrintWindow fails, capture whatever is currently visible on screen.
+                let ok = PrintWindow(hwnd, hdc_mem, 1);
+                if ok == 0 {
+                    let _ = blit_from_screen();
+                }
             }
 
             // Read pixels as 32 bpp BGRA top-down
@@ -692,7 +730,7 @@ mod win {
             };
 
             let mut buf: Vec<u8> = vec![0u8; (w * h) as usize * 4];
-            let ret = GetDIBits(
+            let mut ret = GetDIBits(
                 hdc_mem,
                 hbmp,
                 0,
@@ -702,14 +740,52 @@ mod win {
                 DIB_RGB_COLORS,
             );
 
+            if ret == 0 {
+                SelectObject(hdc_mem, old);
+                DeleteObject(hbmp as *mut _);
+                DeleteDC(hdc_mem);
+                ReleaseDC(hwnd, hdc_src);
+                return Err("GetDIBits failed".into());
+            }
+
+            // Some Unity/D3D windows still produce a white frame via PrintWindow;
+            // retry once from the screen DC, but only when game is foreground
+            // (otherwise we may capture an overlapping window by design).
+            let mostly_white = {
+                let mut white = 0usize;
+                let mut total = 0usize;
+                for px in buf.chunks(4).step_by(32) {
+                    total += 1;
+                    if px[0] > 245 && px[1] > 245 && px[2] > 245 {
+                        white += 1;
+                    }
+                }
+                total > 64 && white * 100 / total >= 95
+            };
+            if mostly_white && is_foreground {
+                let _ = blit_from_screen();
+                ret = GetDIBits(
+                    hdc_mem,
+                    hbmp,
+                    0,
+                    h as u32,
+                    buf.as_mut_ptr() as *mut _,
+                    &mut bmi,
+                    DIB_RGB_COLORS,
+                );
+                if ret == 0 {
+                    SelectObject(hdc_mem, old);
+                    DeleteObject(hbmp as *mut _);
+                    DeleteDC(hdc_mem);
+                    ReleaseDC(hwnd, hdc_src);
+                    return Err("GetDIBits failed on foreground fallback".into());
+                }
+            }
+
             SelectObject(hdc_mem, old);
             DeleteObject(hbmp as *mut _);
             DeleteDC(hdc_mem);
             ReleaseDC(hwnd, hdc_src);
-
-            if ret == 0 {
-                return Err("GetDIBits failed".into());
-            }
 
             // GDI gives BGRA — swap B ↔ R to get RGBA, set alpha = 255
             for px in buf.chunks_mut(4) {

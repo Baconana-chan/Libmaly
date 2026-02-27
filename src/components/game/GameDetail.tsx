@@ -47,7 +47,23 @@ interface GameCustomization {
   status?: "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play";
   timeLimitMins?: number;
   customTags?: string[];
+  personalRating?: number;
+  personalReview?: string;
+  overallScore100?: number;
+  ratingMode?: "manual" | "categories";
+  categoryRatings?: Partial<Record<RatingCategoryKey, number>>;
 }
+
+type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
+type RatingCategoryKey = "gameplay" | "story" | "soundtrack" | "visuals" | "characters" | "performance";
+const RATING_CATEGORIES: { key: RatingCategoryKey; label: string }[] = [
+  { key: "gameplay", label: "Gameplay" },
+  { key: "story", label: "Story" },
+  { key: "soundtrack", label: "Soundtrack" },
+  { key: "visuals", label: "Visuals" },
+  { key: "characters", label: "Characters" },
+  { key: "performance", label: "Performance" },
+];
 
 interface GameMetadata {
   source: string;
@@ -60,6 +76,7 @@ interface GameMetadata {
   cover_url?: string;
   screenshots: string[];
   tags: string[];
+  relations?: string[];
   engine?: string;
   os?: string;
   language?: string;
@@ -82,6 +99,7 @@ interface GameMetadata {
 
 interface AppSettings {
   blurNsfwContent: boolean;
+  ratingScale: RatingScale;
 }
 
 function formatTime(s: number) {
@@ -89,6 +107,50 @@ function formatTime(s: number) {
   if (h > 0) return `${h} hrs ${m} mins`;
   if (m > 0) return `${m} mins`;
   return "< 1 min";
+}
+
+function clampScore100(v: number) {
+  return Math.max(0, Math.min(100, Math.round(v)));
+}
+
+function formatScoreForScale(score100: number, scale: RatingScale) {
+  const s = clampScore100(score100);
+  if (scale === "10") return `${Math.round(s / 10)}/10`;
+  if (scale === "10_decimal") return `${(s / 10).toFixed(1)}/10`;
+  if (scale === "100") return `${s}/100`;
+  if (scale === "5_star") return `${(s / 20).toFixed(1)}/5`;
+  if (s <= 40) return "😞";
+  if (s <= 75) return "😐";
+  return "😄";
+}
+
+function scaleInputConfig(scale: RatingScale): { min: number; max: number; step: number; suffix: string } {
+  if (scale === "10") return { min: 0, max: 10, step: 1, suffix: "/10" };
+  if (scale === "10_decimal") return { min: 0, max: 10, step: 0.1, suffix: "/10" };
+  if (scale === "100") return { min: 0, max: 100, step: 1, suffix: "/100" };
+  if (scale === "5_star") return { min: 0, max: 5, step: 0.1, suffix: "/5" };
+  return { min: 1, max: 3, step: 1, suffix: "/3" };
+}
+
+function score100ToScaleValue(score100: number, scale: RatingScale): number {
+  const s = clampScore100(score100);
+  if (scale === "10" || scale === "10_decimal") return s / 10;
+  if (scale === "100") return s;
+  if (scale === "5_star") return s / 20;
+  if (s <= 40) return 1;
+  if (s <= 75) return 2;
+  return 3;
+}
+
+function scaleValueToScore100(value: number, scale: RatingScale): number {
+  const cfg = scaleInputConfig(scale);
+  const v = Math.max(cfg.min, Math.min(cfg.max, value));
+  if (scale === "10" || scale === "10_decimal") return clampScore100(v * 10);
+  if (scale === "100") return clampScore100(v);
+  if (scale === "5_star") return clampScore100(v * 20);
+  if (v <= 1.5) return 33;
+  if (v <= 2.5) return 67;
+  return 100;
 }
 
 function timeAgo(ts: number) {
@@ -124,6 +186,26 @@ function MetaRow({ label, value }: { label: string; value?: string }) {
       <span style={{ color: "var(--color-text)" }}>{value}</span>
     </div>
   );
+}
+
+function sourceLabel(source?: string) {
+  if (source === "f95") return "F95zone";
+  if (source === "dlsite") return "DLsite";
+  if (source === "vndb") return "VNDB";
+  if (source === "mangagamer") return "MangaGamer";
+  if (source === "johren") return "Johren";
+  if (source === "fakku") return "FAKKU";
+  return "Metadata";
+}
+
+function sourceBadgeBg(source?: string) {
+  if (source === "f95") return "var(--color-warning)";
+  if (source === "dlsite") return "var(--color-danger-strong)";
+  if (source === "vndb") return "var(--color-accent-dark)";
+  if (source === "mangagamer") return "#7c5cff";
+  if (source === "johren") return "#5a6bff";
+  if (source === "fakku") return "#da4c96";
+  return "var(--color-border)";
 }
 
 function MenuEntry({ icon, label, color, onClick }: { icon: string; label: string; color?: string; onClick: () => void }) {
@@ -387,7 +469,9 @@ export function GameDetail({
   onOpenF95Login,
   onClearMeta,
   onUpdate,
+  onBackupSaves,
   onTakeScreenshot,
+  onAnnotateScreenshot,
   onOpenScreenshotsFolder,
   onExportGalleryZip,
   onUpdateScreenshotTags,
@@ -423,7 +507,9 @@ export function GameDetail({
   onOpenF95Login: () => void;
   onClearMeta: () => void;
   onUpdate: () => void;
+  onBackupSaves: () => void;
   onTakeScreenshot: () => void;
+  onAnnotateScreenshot: () => void;
   onOpenScreenshotsFolder: () => void;
   onExportGalleryZip: () => void;
   onUpdateScreenshotTags: (filename: string, tags: string[]) => void;
@@ -443,10 +529,39 @@ export function GameDetail({
   onAddHistory: (version: string, note: string) => void;
 }) {
   const [activeShot, setActiveShot] = useState(0);
+  const [metaLightboxShot, setMetaLightboxShot] = useState<string | null>(null);
+  const [reviewDraft, setReviewDraft] = useState(customization.personalReview ?? "");
   const cover = customization.coverUrl ?? meta?.cover_url;
   const heroBg = customization.backgroundUrl ?? cover;
   const displayTitle = customization.displayName ?? meta?.title ?? game.name;
   const shots = meta?.screenshots ?? [];
+  const ratingScale = appSettings.ratingScale || "10";
+  const ratingCfg = scaleInputConfig(ratingScale);
+  const categoryValues = RATING_CATEGORIES
+    .map((c) => customization.categoryRatings?.[c.key])
+    .filter((v): v is number => typeof v === "number" && !Number.isNaN(v))
+    .map(clampScore100);
+  const categoryAvg = categoryValues.length > 0
+    ? Math.round(categoryValues.reduce((a, b) => a + b, 0) / categoryValues.length)
+    : undefined;
+  const legacyOverall = typeof customization.personalRating === "number"
+    ? clampScore100(customization.personalRating * 10)
+    : undefined;
+  const manualOverall = typeof customization.overallScore100 === "number"
+    ? clampScore100(customization.overallScore100)
+    : legacyOverall;
+  const ratingMode = customization.ratingMode || "categories";
+  const overall100 = ratingMode === "categories"
+    ? (typeof categoryAvg === "number" ? categoryAvg : manualOverall)
+    : manualOverall;
+
+  useEffect(() => {
+    if (activeShot >= shots.length) setActiveShot(0);
+  }, [activeShot, shots.length]);
+
+  useEffect(() => {
+    setReviewDraft(customization.personalReview ?? "");
+  }, [customization.personalReview, game.path]);
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
@@ -459,8 +574,8 @@ export function GameDetail({
             <div>
               <div className="flex gap-2 mb-1.5">
                 {meta?.source && (
-                  <span className="inline-block text-xs px-2 py-0.5 rounded font-semibold" style={{ background: meta.source === "f95" ? "var(--color-warning)" : "var(--color-danger-strong)", color: meta.source === "f95" ? "var(--color-black-strong)" : "var(--color-white)" }}>
-                    {meta.source === "f95" ? "F95zone" : "DLsite"}
+                  <span className="inline-block text-xs px-2 py-0.5 rounded font-semibold" style={{ background: sourceBadgeBg(meta.source), color: meta.source === "f95" ? "var(--color-black-strong)" : "var(--color-white)" }}>
+                    {sourceLabel(meta.source)}
                   </span>
                 )}
                 {isHidden && (
@@ -533,6 +648,12 @@ export function GameDetail({
           </svg>
           Update
         </button>
+        <button onClick={onBackupSaves} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }} title="Detect and back up save files to zip">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          Backup Saves
+        </button>
         <button onClick={onOpenNotes} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: hasNotes ? "#1e2d1a" : "var(--color-panel-3)", color: hasNotes ? "var(--color-success)" : "var(--color-text-muted)", border: `1px solid ${hasNotes ? "var(--color-success-border)" : "var(--color-border-strong)"}` }} title="Game notes (Markdown supported)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
@@ -544,7 +665,7 @@ export function GameDetail({
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
             </svg>
-            Open {meta.source === "f95" ? "F95" : "DLsite"}
+            Open {sourceLabel(meta.source)}
           </a>
         )}
         {!f95LoggedIn && (
@@ -579,7 +700,13 @@ export function GameDetail({
               <section>
                 <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Screenshots</h2>
                 <div className="rounded overflow-hidden mb-2" style={{ background: "var(--color-bg-deep)" }}>
-                  <img src={shots[activeShot]} alt="screenshot" className="w-full object-contain" style={{ maxHeight: "240px" }} />
+                  <button
+                    onClick={() => setMetaLightboxShot(shots[activeShot])}
+                    className="block w-full"
+                    title="Open full size"
+                  >
+                    <img src={shots[activeShot]} alt="screenshot" className="w-full object-contain" style={{ maxHeight: "240px" }} />
+                  </button>
                 </div>
                 <div className="flex gap-2 flex-wrap">
                   {shots.map((s, i) => (
@@ -625,11 +752,21 @@ export function GameDetail({
             {!meta && (
               <div className="rounded-lg px-6 py-8 text-center" style={{ background: "var(--color-bg-elev)", border: "2px dashed var(--color-panel-3)" }}>
                 <p className="text-sm mb-1" style={{ color: "var(--color-text-muted)" }}>No metadata linked yet.</p>
-                <p className="text-xs mb-4" style={{ color: "var(--color-text-dim)" }}>Link an F95zone or DLsite page to get cover art, description, tags and more.</p>
+                <p className="text-xs mb-4" style={{ color: "var(--color-text-dim)" }}>Link an F95zone, DLsite, VNDB, MangaGamer, Johren or FAKKU page to get cover art, description, tags and more.</p>
                 <button onClick={onLinkPage} className="px-5 py-2 rounded text-sm font-semibold" style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>Link a Page</button>
               </div>
             )}
-            <InGameGallery shots={screenshots} onTake={onTakeScreenshot} onOpenFolder={onOpenScreenshotsFolder} onExportZip={onExportGalleryZip} onUpdateTags={onUpdateScreenshotTags} />
+            {meta?.relations && meta.relations.length > 0 && (
+              <section>
+                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Relations</h2>
+                <div className="space-y-1">
+                  {meta.relations.map((r, i) => (
+                    <p key={`${r}-${i}`} className="text-xs" style={{ color: "var(--color-text-soft)" }}>{r}</p>
+                  ))}
+                </div>
+              </section>
+            )}
+            <InGameGallery shots={screenshots} onTake={onTakeScreenshot} onAnnotate={onAnnotateScreenshot} onOpenFolder={onOpenScreenshotsFolder} onExportZip={onExportGalleryZip} onUpdateTags={onUpdateScreenshotTags} />
             <section>
               <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Play History</h2>
               <SessionTimeline sessions={sessions} gamePath={game.path} onEditNote={onEditSessionNote} />
@@ -655,8 +792,87 @@ export function GameDetail({
                 </select>
               </div>
               <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs uppercase tracking-widest" style={{ color: "var(--color-text-muted)" }}>Overall Rating</label>
+                  <span className="text-xs font-semibold" style={{ color: "var(--color-warning)" }}>
+                    {typeof overall100 === "number" ? formatScoreForScale(overall100, ratingScale) : "—"}
+                  </span>
+                </div>
+                <select
+                  value={ratingMode}
+                  onChange={(e) => {
+                    onSaveCustomization({ ratingMode: (e.target as HTMLSelectElement).value as "manual" | "categories" });
+                  }}
+                  className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)] cursor-pointer"
+                  style={{ backgroundImage: "none" }}
+                >
+                  <option value="categories">Auto (from categories)</option>
+                  <option value="manual">Manual overall</option>
+                </select>
+                {ratingMode === "manual" && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <input
+                      type="number"
+                      min={ratingCfg.min}
+                      max={ratingCfg.max}
+                      step={ratingCfg.step}
+                      value={typeof manualOverall === "number" ? score100ToScaleValue(manualOverall, ratingScale) : ""}
+                      onChange={(e) => {
+                        const raw = e.currentTarget.value;
+                        const parsed = parseFloat(raw);
+                        onSaveCustomization({ overallScore100: Number.isFinite(parsed) ? scaleValueToScore100(parsed, ratingScale) : undefined });
+                      }}
+                      className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)]"
+                      placeholder={`0${ratingCfg.suffix}`}
+                    />
+                    <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>{ratingCfg.suffix}</span>
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>Category Ratings</label>
+                <div className="space-y-1.5">
+                  {RATING_CATEGORIES.map((cat) => (
+                    <div key={cat.key} className="flex items-center gap-2">
+                      <span className="text-[11px] w-20" style={{ color: "var(--color-text-muted)" }}>{cat.label}</span>
+                      <input
+                        type="number"
+                        min={ratingCfg.min}
+                        max={ratingCfg.max}
+                        step={ratingCfg.step}
+                        value={typeof customization.categoryRatings?.[cat.key] === "number" ? score100ToScaleValue(customization.categoryRatings?.[cat.key] as number, ratingScale) : ""}
+                        onChange={(e) => {
+                          const parsed = parseFloat(e.currentTarget.value);
+                          const next = { ...(customization.categoryRatings || {}) };
+                          if (Number.isFinite(parsed)) next[cat.key] = scaleValueToScore100(parsed, ratingScale);
+                          else delete next[cat.key];
+                          onSaveCustomization({ categoryRatings: next });
+                        }}
+                        className="flex-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1 text-xs outline-none text-[var(--color-text)]"
+                        placeholder="Unrated"
+                      />
+                    </div>
+                  ))}
+                </div>
+                {ratingScale === "3_smiley" && (
+                  <p className="text-[10px] mt-1" style={{ color: "var(--color-text-dim)" }}>1=😞 2=😐 3=😄</p>
+                )}
+              </div>
+              <div>
                 <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }} title="Show a toast warning when you exceed this time in a single launch">Time Budget (mins)</label>
                 <input type="number" min="0" placeholder="No limit" value={customization.timeLimitMins || ""} onChange={(e) => { const el = e.target as HTMLInputElement; onSaveCustomization({ timeLimitMins: el.value ? parseInt(el.value) : undefined }); }} className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)]" />
+              </div>
+              <div>
+                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>Short Review</label>
+                <textarea
+                  value={reviewDraft}
+                  onInput={(e) => setReviewDraft((e.target as HTMLTextAreaElement).value)}
+                  onBlur={() => onSaveCustomization({ personalReview: reviewDraft.trim() || undefined })}
+                  rows={4}
+                  maxLength={600}
+                  className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)] resize-y"
+                  placeholder="Your personal notes/review (stored locally)"
+                />
               </div>
             </div>
             {stat.totalTime > 0 && <div className="rounded-lg p-4" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}><Milestones totalSecs={stat.totalTime} /></div>}
@@ -688,6 +904,32 @@ export function GameDetail({
           </div>
         </div>
       </div>
+
+      {metaLightboxShot && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.92)" }}
+          onClick={() => setMetaLightboxShot(null)}
+        >
+          <div onClick={(e) => e.stopPropagation()} className="relative flex flex-col items-center max-w-full max-h-full">
+            <img
+              src={metaLightboxShot}
+              alt="metadata screenshot"
+              style={{ maxWidth: "92vw", maxHeight: "84vh", objectFit: "contain", display: "block" }}
+              className="rounded shadow-2xl"
+            />
+            <button
+              onClick={() => setMetaLightboxShot(null)}
+              className="mt-4 text-xs px-4 py-1.5 rounded font-semibold transition-colors"
+              style={{ background: "var(--color-border)", color: "var(--color-white)" }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-border-strong)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-border)")}
+            >
+              CLOSE
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

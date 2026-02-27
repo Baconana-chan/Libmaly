@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-#[cfg(not(windows))]
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -12,11 +11,17 @@ use tauri::AppHandle;
 use tauri::Emitter;
 use tauri::Manager;
 use walkdir::WalkDir;
+#[cfg(windows)]
+use rusqlite::Connection;
+#[cfg(windows)]
+use rusqlite::types::ValueRef;
 
 mod metadata;
 use metadata::{
     dlsite_is_logged_in, dlsite_login, dlsite_logout, f95_is_logged_in, f95_login, f95_logout,
-    fetch_dlsite_metadata, fetch_f95_metadata, search_suggest_links,
+    fetch_dlsite_metadata, fetch_f95_metadata, fetch_fakku_metadata, fetch_johren_metadata,
+    fetch_mangagamer_metadata, fetch_vndb_metadata, fakku_is_logged_in, fakku_login,
+    fakku_logout, search_suggest_links,
 };
 
 mod updater;
@@ -24,9 +29,12 @@ use updater::{preview_update, update_game};
 
 mod screenshot;
 use screenshot::{
-    export_screenshots_zip, get_screenshots, open_screenshots_folder, save_screenshot_tags,
-    take_screenshot_manual,
+    delete_screenshot_file, export_screenshots_zip, get_screenshots, open_screenshots_folder,
+    overwrite_screenshot_png, save_screenshot_tags, take_screenshot_manual,
+    get_screenshot_data_url,
 };
+mod data_paths;
+use data_paths::{app_data_root, crash_report_path, is_portable_mode};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Game {
@@ -59,6 +67,13 @@ struct CrashReport {
     backtrace: String,
 }
 
+#[derive(Serialize)]
+struct SaveBackupResult {
+    zip_path: String,
+    files: usize,
+    directories: Vec<String>,
+}
+
 static RUST_LOG_BUFFER: OnceLock<Mutex<Vec<RustLogEntry>>> = OnceLock::new();
 const MAX_RUST_LOGS: usize = 500;
 const CRASH_REPORT_FILE: &str = "libmaly_last_crash.json";
@@ -72,6 +87,254 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn sanitize_name_for_filename(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            out.push(c);
+        } else if c.is_whitespace() {
+            out.push('_');
+        }
+    }
+    let out = out.trim_matches('_').to_string();
+    if out.is_empty() {
+        "game".to_string()
+    } else {
+        out
+    }
+}
+
+fn name_variants_from_game_path(game_path: &Path) -> Vec<String> {
+    let mut raw = Vec::<String>::new();
+    if let Some(stem) = game_path.file_stem() {
+        raw.push(stem.to_string_lossy().to_string());
+    }
+    if let Some(parent) = game_path.parent().and_then(|p| p.file_name()) {
+        raw.push(parent.to_string_lossy().to_string());
+    }
+
+    let mut set = HashSet::<String>::new();
+    let mut out = Vec::<String>::new();
+    for item in raw {
+        let trimmed = item.trim().to_string();
+        if !trimmed.is_empty() && set.insert(trimmed.to_lowercase()) {
+            out.push(trimmed.clone());
+        }
+        let compact: String = trimmed
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if !compact.is_empty() && set.insert(compact.to_lowercase()) {
+            out.push(compact);
+        }
+    }
+    out
+}
+
+fn push_dir_if_exists_unique(out: &mut Vec<PathBuf>, dir: PathBuf) {
+    if !dir.exists() || !dir.is_dir() {
+        return;
+    }
+    let key = dir.to_string_lossy().to_string().to_lowercase();
+    if out
+        .iter()
+        .any(|d| d.to_string_lossy().to_string().to_lowercase() == key)
+    {
+        return;
+    }
+    out.push(dir);
+}
+
+fn dir_has_files(dir: &Path) -> bool {
+    WalkDir::new(dir)
+        .max_depth(8)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_type().is_file())
+}
+
+fn detect_save_dirs(game_path: &str) -> Vec<PathBuf> {
+    let game = PathBuf::from(game_path);
+    let variants = name_variants_from_game_path(&game);
+    let variants_lc: Vec<String> = variants.iter().map(|v| v.to_lowercase()).collect();
+
+    let mut candidates = Vec::<PathBuf>::new();
+    if let Some(parent) = game.parent() {
+        for rel in [
+            "save",
+            "saves",
+            "savedata",
+            "save_data",
+            "savegame",
+            "savegames",
+            "userdata",
+            "www/save",
+        ] {
+            push_dir_if_exists_unique(&mut candidates, parent.join(rel));
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let appdata = PathBuf::from(appdata);
+            for v in &variants {
+                push_dir_if_exists_unique(&mut candidates, appdata.join(v));
+            }
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let local = PathBuf::from(local);
+            for v in &variants {
+                push_dir_if_exists_unique(&mut candidates, local.join(v));
+            }
+        }
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            let user = PathBuf::from(userprofile);
+            for v in &variants {
+                push_dir_if_exists_unique(&mut candidates, user.join("Documents").join("My Games").join(v));
+                push_dir_if_exists_unique(&mut candidates, user.join("Documents").join(v));
+                push_dir_if_exists_unique(&mut candidates, user.join("Saved Games").join(v));
+            }
+            let locallow = user.join("AppData").join("LocalLow");
+            if locallow.exists() {
+                if let Ok(companies) = std::fs::read_dir(&locallow) {
+                    for company in companies.filter_map(|e| e.ok()) {
+                        let company_path = company.path();
+                        if !company_path.is_dir() {
+                            continue;
+                        }
+                        if let Ok(games) = std::fs::read_dir(&company_path) {
+                            for g in games.filter_map(|e| e.ok()) {
+                                let gp = g.path();
+                                if !gp.is_dir() {
+                                    continue;
+                                }
+                                let leaf = gp
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string().to_lowercase())
+                                    .unwrap_or_default();
+                                if variants_lc.iter().any(|v| leaf.contains(v) || v.contains(&leaf)) {
+                                    push_dir_if_exists_unique(&mut candidates, gp);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let home = PathBuf::from(home);
+            for v in &variants {
+                push_dir_if_exists_unique(&mut candidates, home.join(".local").join("share").join(v));
+                push_dir_if_exists_unique(&mut candidates, home.join(".config").join(v));
+                push_dir_if_exists_unique(&mut candidates, home.join(".renpy").join(v));
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let home = PathBuf::from(home);
+            for v in &variants {
+                push_dir_if_exists_unique(
+                    &mut candidates,
+                    home.join("Library").join("Application Support").join(v),
+                );
+                push_dir_if_exists_unique(
+                    &mut candidates,
+                    home.join("Library").join("Preferences").join(v),
+                );
+                push_dir_if_exists_unique(&mut candidates, home.join("Library").join("RenPy").join(v));
+            }
+        }
+    }
+
+    candidates.into_iter().filter(|d| dir_has_files(d)).collect()
+}
+
+#[tauri::command]
+fn backup_save_files(
+    game_path: String,
+    output_path: Option<String>,
+) -> Result<SaveBackupResult, String> {
+    let game = PathBuf::from(&game_path);
+    let dirs = detect_save_dirs(&game_path);
+    if dirs.is_empty() {
+        return Err("No common save directories were detected for this game.".to_string());
+    }
+
+    let zip_path = if let Some(out) = output_path {
+        PathBuf::from(out)
+    } else {
+        let base = app_data_root().join("save-backups");
+        std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+        let label = game
+            .file_stem()
+            .map(|n| sanitize_name_for_filename(&n.to_string_lossy()))
+            .unwrap_or_else(|| "game".to_string());
+        base.join(format!("{}-{}.zip", label, now_ms()))
+    };
+
+    if let Some(parent) = zip_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let file = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let mut files_added = 0usize;
+    for (idx, dir) in dirs.iter().enumerate() {
+        let root_label = format!(
+            "{:02}_{}",
+            idx + 1,
+            sanitize_name_for_filename(
+                &dir.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "save".to_string())
+            )
+        );
+        for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let rel = match entry.path().strip_prefix(dir) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let zip_name = format!(
+                "{}/{}",
+                root_label,
+                rel.to_string_lossy().replace('\\', "/")
+            );
+            zip.start_file(zip_name, options).map_err(|e| e.to_string())?;
+            let mut src = std::fs::File::open(entry.path()).map_err(|e| e.to_string())?;
+            std::io::copy(&mut src, &mut zip).map_err(|e| e.to_string())?;
+            files_added += 1;
+        }
+    }
+
+    if files_added == 0 {
+        return Err("Detected save folders contain no files to back up.".to_string());
+    }
+
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(SaveBackupResult {
+        zip_path: zip_path.to_string_lossy().to_string(),
+        files: files_added,
+        directories: dirs
+            .iter()
+            .map(|d| d.to_string_lossy().to_string())
+            .collect(),
+    })
 }
 
 fn push_rust_log(app: Option<&AppHandle>, level: &str, message: impl Into<String>) {
@@ -104,12 +367,12 @@ fn parse_panic_payload(panic_info: &std::panic::PanicHookInfo<'_>) -> String {
 }
 
 fn write_crash_report(app: &AppHandle, report: &CrashReport) {
-    if let Ok(mut dir) = app.path().app_data_dir() {
-        let _ = std::fs::create_dir_all(&dir);
-        dir.push(CRASH_REPORT_FILE);
-        if let Ok(json) = serde_json::to_string_pretty(report) {
-            let _ = std::fs::write(dir, json);
-        }
+    let path = crash_report_path(app, CRASH_REPORT_FILE);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(report) {
+        let _ = std::fs::write(path, json);
     }
 }
 
@@ -495,6 +758,106 @@ struct LutrisGameEntry {
     config_path: String,
 }
 
+#[derive(Serialize, Clone)]
+struct InteropGameEntry {
+    name: String,
+    game_id: String,
+    exe: String,
+    args: Option<String>,
+    source: String, // "playnite" | "gog-galaxy"
+}
+
+#[cfg(windows)]
+fn normalize_windows_path(path: &str) -> String {
+    path.trim().trim_matches('"').replace('/', "\\")
+}
+
+#[cfg(windows)]
+fn path_exists_file(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    p.is_file()
+}
+
+#[cfg(windows)]
+fn looks_executable(path: &std::path::Path) -> bool {
+    path.extension()
+        .map(|e| {
+            matches!(
+                e.to_string_lossy().to_lowercase().as_str(),
+                "exe" | "bat" | "cmd" | "com" | "lnk"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn score_exe_candidate(path: &std::path::Path) -> i64 {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut score = 0i64;
+    if !is_generic_name(&stem) {
+        score += 30;
+    }
+    if let Ok(meta) = path.metadata() {
+        score += (meta.len() / 1024) as i64;
+    }
+    let lower = path.to_string_lossy().to_lowercase();
+    if lower.contains("unins") || lower.contains("crashhandler") || lower.contains("setup") {
+        score -= 5000;
+    }
+    score
+}
+
+#[cfg(windows)]
+fn find_best_exe_in_install_dir(install_dir: &str) -> Option<String> {
+    let root = std::path::Path::new(install_dir);
+    if !root.is_dir() {
+        return None;
+    }
+    let mut best: Option<(i64, String)> = None;
+    for entry in WalkDir::new(root)
+        .max_depth(3)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let p = entry.path();
+        if !looks_executable(p) {
+            continue;
+        }
+        let score = score_exe_candidate(p);
+        let s = p.to_string_lossy().to_string();
+        match &best {
+            Some((old, _)) if *old >= score => {}
+            _ => best = Some((score, s)),
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+#[cfg(windows)]
+fn candidate_from_paths(primary: Option<String>, install_dir: Option<String>) -> Option<String> {
+    if let Some(raw) = primary {
+        let p = normalize_windows_path(&raw);
+        if !p.is_empty() {
+            if path_exists_file(&p) {
+                return Some(p);
+            }
+            if let Some(dir) = &install_dir {
+                let joined = std::path::Path::new(dir).join(&p);
+                if joined.is_file() {
+                    return Some(joined.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    install_dir.and_then(|dir| find_best_exe_in_install_dir(&dir))
+}
+
 #[cfg(not(windows))]
 fn is_wine_prefix_dir(path: &std::path::Path) -> bool {
     path.join("drive_c").is_dir() && path.join("system.reg").is_file()
@@ -857,6 +1220,320 @@ fn import_lutris_games() -> Vec<LutrisGameEntry> {
     }
 }
 
+#[cfg(windows)]
+fn sqlite_table_columns(conn: &Connection, table: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let pragma = format!("PRAGMA table_info({table})");
+    let Ok(mut stmt) = conn.prepare(&pragma) else {
+        return out;
+    };
+    let Ok(mut rows) = stmt.query([]) else {
+        return out;
+    };
+    while let Ok(Some(row)) = rows.next() {
+        if let Ok(name) = row.get::<_, String>(1) {
+            out.insert(name.to_lowercase());
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+fn first_existing_column(cols: &HashSet<String>, candidates: &[&str]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|c| cols.contains(&c.to_lowercase()))
+        .map(|s| (*s).to_string())
+}
+
+#[cfg(windows)]
+fn row_value_opt(row: &rusqlite::Row<'_>, idx: usize) -> Option<String> {
+    let v = row.get_ref(idx).ok()?;
+    match v {
+        ValueRef::Null => None,
+        ValueRef::Text(t) => Some(String::from_utf8_lossy(t).trim().to_string()),
+        ValueRef::Integer(i) => Some(i.to_string()),
+        ValueRef::Real(f) => Some(f.to_string()),
+        ValueRef::Blob(_) => None,
+    }
+}
+
+#[tauri::command]
+fn import_playnite_games() -> Vec<InteropGameEntry> {
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+    #[cfg(windows)]
+    {
+        let appdata = std::env::var("APPDATA").unwrap_or_default();
+        let db_path = std::path::Path::new(&appdata)
+            .join("Playnite")
+            .join("library")
+            .join("games.db");
+        if !db_path.is_file() {
+            return Vec::new();
+        }
+        let Ok(conn) = Connection::open(db_path) else {
+            return Vec::new();
+        };
+
+        let cols = sqlite_table_columns(&conn, "Games");
+        if cols.is_empty() {
+            return Vec::new();
+        }
+        let id_col = first_existing_column(&cols, &["GameId", "Id", "ID"]);
+        let name_col = first_existing_column(&cols, &["Name", "name"]);
+        let exe_col = first_existing_column(
+            &cols,
+            &["GameActionPath", "LaunchPath", "ExecutablePath", "Path"],
+        );
+        let install_col = first_existing_column(&cols, &["InstallDirectory", "InstallationPath"]);
+        let args_col = first_existing_column(&cols, &["CommandLine", "Arguments", "LaunchArguments"]);
+        let installed_col = first_existing_column(&cols, &["IsInstalled", "Installed"]);
+        let Some(name_col) = name_col else {
+            return Vec::new();
+        };
+        if exe_col.is_none() && install_col.is_none() {
+            return Vec::new();
+        }
+
+        let mut selected_cols: Vec<String> = vec![name_col.clone()];
+        if let Some(c) = &id_col {
+            selected_cols.push(c.clone());
+        }
+        if let Some(c) = &exe_col {
+            selected_cols.push(c.clone());
+        }
+        if let Some(c) = &install_col {
+            selected_cols.push(c.clone());
+        }
+        if let Some(c) = &args_col {
+            selected_cols.push(c.clone());
+        }
+        if let Some(c) = &installed_col {
+            selected_cols.push(c.clone());
+        }
+
+        let sql = format!("SELECT {} FROM Games", selected_cols.join(", "));
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            return Vec::new();
+        };
+        let Ok(mut rows) = stmt.query([]) else {
+            return Vec::new();
+        };
+
+        let mut out: Vec<InteropGameEntry> = Vec::new();
+        let mut seen_exe = HashSet::<String>::new();
+        while let Ok(Some(row)) = rows.next() {
+            let mut idx = 0usize;
+            let name = row_value_opt(row, idx).unwrap_or_else(|| "Playnite Game".to_string());
+            idx += 1;
+
+            let game_id = if id_col.is_some() {
+                let v = row_value_opt(row, idx).unwrap_or_else(|| name.clone());
+                idx += 1;
+                v
+            } else {
+                name.clone()
+            };
+
+            let raw_exe = if exe_col.is_some() {
+                let v = row_value_opt(row, idx);
+                idx += 1;
+                v
+            } else {
+                None
+            };
+            let install_dir = if install_col.is_some() {
+                let v = row_value_opt(row, idx).map(|s| normalize_windows_path(&s));
+                idx += 1;
+                v
+            } else {
+                None
+            };
+            let args = if args_col.is_some() {
+                let v = row_value_opt(row, idx);
+                idx += 1;
+                v
+            } else {
+                None
+            };
+            let installed = if installed_col.is_some() {
+                let val = row_value_opt(row, idx);
+                idx += 1;
+                match val {
+                    None => true,
+                    Some(v) => matches!(
+                        v.to_lowercase().as_str(),
+                        "1" | "true" | "yes" | "installed"
+                    ),
+                }
+            } else {
+                true
+            };
+            let _ = idx;
+            if !installed {
+                continue;
+            }
+            let exe = candidate_from_paths(
+                raw_exe.map(|s| normalize_windows_path(&s)),
+                install_dir.clone(),
+            );
+            let Some(exe) = exe else {
+                continue;
+            };
+            let key = exe.to_lowercase();
+            if !seen_exe.insert(key) {
+                continue;
+            }
+
+            out.push(InteropGameEntry {
+                name,
+                game_id,
+                exe,
+                args: args.filter(|s| !s.trim().is_empty()),
+                source: "playnite".to_string(),
+            });
+        }
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out
+    }
+}
+
+#[cfg(windows)]
+fn read_gog_product_titles(conn: &Connection) -> HashMap<String, String> {
+    let mut map = HashMap::<String, String>::new();
+    let cols = sqlite_table_columns(conn, "Products");
+    if cols.is_empty() {
+        return map;
+    }
+    let id_col = first_existing_column(&cols, &["productId", "product_id", "id", "Id"]);
+    let title_col = first_existing_column(&cols, &["title", "name", "Title", "Name"]);
+    let (Some(id_col), Some(title_col)) = (id_col, title_col) else {
+        return map;
+    };
+    let sql = format!("SELECT {id_col}, {title_col} FROM Products");
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return map;
+    };
+    let Ok(mut rows) = stmt.query([]) else {
+        return map;
+    };
+    while let Ok(Some(row)) = rows.next() {
+        let id = row_value_opt(row, 0).unwrap_or_default();
+        let title = row_value_opt(row, 1).unwrap_or_default();
+        if !id.is_empty() && !title.is_empty() {
+            map.insert(id, title);
+        }
+    }
+    map
+}
+
+#[tauri::command]
+fn import_gog_galaxy_games() -> Vec<InteropGameEntry> {
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+    #[cfg(windows)]
+    {
+        let program_data = std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData".to_string());
+        let db_path = std::path::Path::new(&program_data)
+            .join("GOG.com")
+            .join("Galaxy")
+            .join("storage")
+            .join("galaxy-2.0.db");
+        if !db_path.is_file() {
+            return Vec::new();
+        }
+
+        let Ok(conn) = Connection::open(db_path) else {
+            return Vec::new();
+        };
+        let cols = sqlite_table_columns(&conn, "InstalledBaseProducts");
+        if cols.is_empty() {
+            return Vec::new();
+        }
+        let id_col = first_existing_column(&cols, &["productId", "product_id", "id", "Id"]);
+        let install_col = first_existing_column(&cols, &["installationPath", "install_path", "path"]);
+        let exe_col = first_existing_column(
+            &cols,
+            &["executablePath", "launchPath", "playTaskPath", "executable_path"],
+        );
+        let args_col = first_existing_column(&cols, &["arguments", "launchArguments", "commandLine"]);
+        let (Some(id_col), Some(install_col)) = (id_col, install_col) else {
+            return Vec::new();
+        };
+
+        let mut select_cols = vec![id_col.clone(), install_col.clone()];
+        if let Some(c) = &exe_col {
+            select_cols.push(c.clone());
+        }
+        if let Some(c) = &args_col {
+            select_cols.push(c.clone());
+        }
+        let sql = format!("SELECT {} FROM InstalledBaseProducts", select_cols.join(", "));
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            return Vec::new();
+        };
+        let Ok(mut rows) = stmt.query([]) else {
+            return Vec::new();
+        };
+        let titles = read_gog_product_titles(&conn);
+
+        let mut out = Vec::<InteropGameEntry>::new();
+        let mut seen_exe = HashSet::<String>::new();
+        while let Ok(Some(row)) = rows.next() {
+            let mut idx = 0usize;
+            let game_id = row_value_opt(row, idx).unwrap_or_default();
+            idx += 1;
+            let install = row_value_opt(row, idx).map(|s| normalize_windows_path(&s));
+            idx += 1;
+            let raw_exe = if exe_col.is_some() {
+                let v = row_value_opt(row, idx).map(|s| normalize_windows_path(&s));
+                idx += 1;
+                v
+            } else {
+                None
+            };
+            let args = if args_col.is_some() {
+                let v = row_value_opt(row, idx);
+                idx += 1;
+                v
+            } else {
+                None
+            };
+            let _ = idx;
+            if game_id.is_empty() {
+                continue;
+            }
+            let exe = candidate_from_paths(raw_exe, install);
+            let Some(exe) = exe else {
+                continue;
+            };
+            let key = exe.to_lowercase();
+            if !seen_exe.insert(key) {
+                continue;
+            }
+
+            let name = titles
+                .get(&game_id)
+                .cloned()
+                .unwrap_or_else(|| format!("GOG {}", game_id));
+            out.push(InteropGameEntry {
+                name,
+                game_id,
+                exe,
+                args: args.filter(|s| !s.trim().is_empty()),
+                source: "gog-galaxy".to_string(),
+            });
+        }
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out
+    }
+}
+
 #[tauri::command]
 fn split_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
@@ -1165,7 +1842,7 @@ async fn check_app_update() -> Result<Option<AppUpdateInfo>, String> {
 /// Download the update archive, extract it next to the current executable, and
 /// launch a tiny platform script that will copy the files over once we exit.
 ///
-/// Keeps all user data safe: localStorage lives in AppData, not the install dir.
+/// Keeps user data safe: default mode uses AppData, portable mode keeps data next to the executable.
 #[tauri::command]
 async fn apply_update(app: AppHandle, download_url: String) -> Result<(), String> {
     use std::io::Write;
@@ -1645,6 +2322,11 @@ fn save_string_to_file(path: String, contents: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn read_string_from_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_recent_logs(limit: Option<usize>) -> Vec<RustLogEntry> {
     let logs = rust_log_buffer().lock().unwrap();
     let take_n = limit.unwrap_or(200).min(MAX_RUST_LOGS);
@@ -1663,20 +2345,63 @@ fn clear_recent_logs() -> Result<(), String> {
 
 #[tauri::command]
 fn get_last_crash_report(app: AppHandle) -> Option<CrashReport> {
-    let mut path = app.path().app_data_dir().ok()?;
-    path.push(CRASH_REPORT_FILE);
+    let path = crash_report_path(&app, CRASH_REPORT_FILE);
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
 }
 
 #[tauri::command]
 fn clear_last_crash_report(app: AppHandle) -> Result<(), String> {
-    let mut path = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    path.push(CRASH_REPORT_FILE);
+    let path = crash_report_path(&app, CRASH_REPORT_FILE);
     if path.exists() {
         std::fs::remove_file(path).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct StorageBootstrap {
+    portable: bool,
+    entries: HashMap<String, String>,
+}
+
+const PORTABLE_STORAGE_FILE: &str = "portable_storage.json";
+
+#[tauri::command]
+fn get_storage_bootstrap() -> Result<StorageBootstrap, String> {
+    if !is_portable_mode() {
+        return Ok(StorageBootstrap {
+            portable: false,
+            entries: HashMap::new(),
+        });
+    }
+
+    let path = app_data_root().join(PORTABLE_STORAGE_FILE);
+    if !path.exists() {
+        return Ok(StorageBootstrap {
+            portable: true,
+            entries: HashMap::new(),
+        });
+    }
+
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let entries: HashMap<String, String> = serde_json::from_str(&raw).unwrap_or_default();
+    Ok(StorageBootstrap {
+        portable: true,
+        entries,
+    })
+}
+
+#[tauri::command]
+fn persist_storage_snapshot(entries: HashMap<String, String>) -> Result<(), String> {
+    if !is_portable_mode() {
+        return Ok(());
+    }
+    let dir = app_data_root();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(PORTABLE_STORAGE_FILE);
+    let raw = serde_json::to_string(&entries).map_err(|e| e.to_string())?;
+    std::fs::write(path, raw).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1706,6 +2431,8 @@ pub fn run() {
             run_winetricks,
             install_dxvk_vkd3d,
             import_lutris_games,
+            import_playnite_games,
+            import_gog_galaxy_games,
             launch_game,
             kill_game,
             delete_game,
@@ -1714,6 +2441,10 @@ pub fn run() {
             apply_update,
             fetch_f95_metadata,
             fetch_dlsite_metadata,
+            fetch_vndb_metadata,
+            fetch_mangagamer_metadata,
+            fetch_johren_metadata,
+            fetch_fakku_metadata,
             search_suggest_links,
             f95_login,
             f95_logout,
@@ -1721,6 +2452,9 @@ pub fn run() {
             dlsite_login,
             dlsite_logout,
             dlsite_is_logged_in,
+            fakku_login,
+            fakku_logout,
+            fakku_is_logged_in,
             update_game,
             preview_update,
             get_screenshots,
@@ -1728,14 +2462,21 @@ pub fn run() {
             open_screenshots_folder,
             take_screenshot_manual,
             save_screenshot_tags,
+            overwrite_screenshot_png,
+            delete_screenshot_file,
+            get_screenshot_data_url,
+            backup_save_files,
             import_steam_playtime,
             set_tray_tooltip,
             fetch_rss,
             save_string_to_file,
+            read_string_from_file,
             get_recent_logs,
             clear_recent_logs,
             get_last_crash_report,
             clear_last_crash_report,
+            get_storage_bootstrap,
+            persist_storage_snapshot,
         ])
         .setup(|app| {
             push_rust_log(Some(app.handle()), "info", "LIBMALY started");

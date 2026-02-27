@@ -12,6 +12,8 @@
     "cli:default",
     "deep-link:default",
     "global-shortcut:default",
+    "notification:default",
+    "notification:allow-request-permission",
     "core:window:allow-set-fullscreen",
     "core:window:allow-is-fullscreen"
   ]

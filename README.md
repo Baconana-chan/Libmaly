@@ -17,12 +17,19 @@ LIBMALY is focused on unmanaged/standalone games (including F95zone and DLsite):
 - Home / Feed / Stats views
 - Developer grouping filter (`By Developer`)
 - NSFW blur/reveal gate
+- Light / Dark / OLED themes + accent color
+- Theme scheduler (manual / OS / time-based)
+- Back/Forward navigation history
+- Migration wizard: move game folders without losing local data
 
 ### Metadata
-- Link games to F95zone/DLsite pages
+- Link games to F95zone/DLsite/VNDB/MangaGamer/Johren/FAKKU
 - Fetch title, version, developer/circle, tags, overview, media, and more
 - F95/DLsite login support for age-gated pages
+- FAKKU login support
 - Batch metadata refresh
+- Metadata diff + per-game version history timeline
+- Wishlist support
 
 ### Launching
 - Direct launch + per-game launch args
@@ -32,18 +39,23 @@ LIBMALY is focused on unmanaged/standalone games (including F95zone and DLsite):
 - CLI launch:
   - `libmaly launch <name>`
 - Global/per-game executable override and pinned executables
+- Tray integration + startup in tray
 
 ### Tracking & Notes
 - Session tracking (total time, last played/session, launch count)
 - Timeline + per-session notes
 - Markdown game notes
 - Steam playtime import
+- All-time stats view + weekly activity widgets
+- Completion statuses
+- Personal rating/review (multiple rating scales + category ratings)
 
 ### Screenshots
 - In-game gallery with tags + ZIP export
 - Manual screenshot command
 - Windows capture path + non-Windows global hotkey flow
 - Auto-screenshot interval
+- Screenshot annotation before save
 
 ### Diagnostics
 - In-app Rust Log Viewer (level filter + export + copy diagnostics JSON)
@@ -59,6 +71,16 @@ LIBMALY is focused on unmanaged/standalone games (including F95zone and DLsite):
 - DXVK/VKD3D detection + one-click install
 - Winetricks verb runner (e.g. `vcrun2019`, `d3dx9`)
 - Lutris import (games + per-game runner/prefix mapping)
+
+### Import & Interop
+- Playnite import
+- GOG Galaxy import
+- Deep link + CLI launch integration for external tools
+
+### Sync & Backup
+- Cloud config export/import JSON (library state, stats, metadata, notes, collections, settings)
+- Save-file backup (detect common save directories, zip on demand or on game exit)
+- Portable mode (store data next to executable using `portable.mode` marker)
 
 ## Tech Stack
 
@@ -118,8 +140,8 @@ libmaly/
 ## Data & Privacy
 
 - Local-first app: no mandatory cloud, no telemetry requirement in default flow.
-- Main app state is stored in local WebView storage.
-- Rust-side logs/crash report and screenshots are stored in app data directory.
+- Default mode: app state is stored in local WebView storage; Rust-side files in app data directory.
+- Portable mode: state/logs/screenshots/cookies/backups are stored next to the executable (`libmaly-data`).
 
 ## Roadmap
 

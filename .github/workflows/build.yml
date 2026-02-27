@@ -170,3 +170,72 @@ jobs:
             src-tauri/target/${{ matrix.platform.target }}/release/bundle/appimage/*.AppImage
             src-tauri/target/${{ matrix.platform.target }}/release/bundle/deb/*.deb
             src-tauri/target/${{ matrix.platform.target }}/release/bundle/dmg/*.dmg
+
+  # ── Optional portable package (Windows) ───────────────────────────────────
+  portable-windows:
+    name: Build Portable (Windows x64)
+    needs: preflight
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install JS dependencies
+        run: bun install
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-x86_64-pc-windows-msvc-portable-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-x86_64-pc-windows-msvc-portable-cargo-
+
+      - name: Build Tauri app (portable binaries)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: >-
+            --target x86_64-pc-windows-msvc
+            --bundles none
+
+      - name: Create portable folder + marker
+        shell: pwsh
+        run: |
+          $releaseDir = "src-tauri/target/x86_64-pc-windows-msvc/release"
+          $outDir = "portable/libmaly-portable-windows-x64"
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+
+          Copy-Item "$releaseDir/libmaly.exe" "$outDir/libmaly.exe" -Force
+          Get-ChildItem "$releaseDir/*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $outDir $_.Name) -Force
+          }
+
+          New-Item -ItemType File -Path (Join-Path $outDir "portable.mode") -Force | Out-Null
+          "Run libmaly.exe from this folder. 'portable.mode' enables portable data storage near the executable." |
+            Set-Content -Path (Join-Path $outDir "README-portable.txt")
+
+      - name: Archive portable package
+        shell: pwsh
+        run: |
+          $zipPath = "portable/libmaly-portable-windows-x64.zip"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          Compress-Archive -Path "portable/libmaly-portable-windows-x64/*" -DestinationPath $zipPath
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmaly-Portable-Windows-x64
+          retention-days: 14
+          path: portable/libmaly-portable-windows-x64.zip

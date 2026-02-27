@@ -4,9 +4,7 @@
 
 ## 🎨 UI / UX
 
-- [x] **Themes** — Dark (current), Light, OLED-black; accent colour picker
-- [x] **Theme scheduler** — auto-switch Light ↔ Dark based on time of day or OS setting
-- [x] **Back / Forward navigation** — browser-style history for jumping between views
+
 
 ---
 
@@ -18,24 +16,21 @@
 
 ## 🌐 Metadata
 
-- [ ] **VNDB support** — fetch metadata from vndb.org for visual novels (cover, tags, relations, release date)
-- [ ] **MangaGamer / Johren / Fakku support** — additional store scrapers
+
 
 ---
 
 ## 🖼️ Screenshots
 
-- [ ] **Screenshot annotation** — simple draw / text overlay before saving
+
 
 ---
 
 ## ☁️ Sync & Backup
 
-- [ ] **Cloud config sync** — export/import full library state (stats, metadata, notes, collections) as JSON
 - [ ] **Google Drive / Dropbox auto-backup** — optional periodic upload of library JSON to a cloud folder
 - [ ] **Save-file backup** — detect common save directories and zip them on demand or on exit
 - [ ] **Save-file cloud sync** — upload save zips to a configured folder (Google Drive, local NAS, etc.)
-- [ ] **Migration wizard** — "Move game folder" that updates all internal paths without losing stats/metadata
 - [ ] **Multiple library profiles** — separate profiles for different PCs or users; switchable from the tray
 
 ---
@@ -48,13 +43,12 @@
 
 ## 📥 Import & Interop
 
-- [ ] **Import from Playnite / GOG Galaxy** — read existing launchers' databases and merge into library
+
 
 ---
 
 ## 🛠️ Technical
 
-- [ ] **Portable mode** — store all data next to the exe instead of AppData (USB-stick installs)
 - [ ] **i18n / l10n** — internationalisation framework; provide RU, JA, ZH translations
 - [ ] **Plugin system** — allow JS/WASM plugins to add metadata sources or UI panels
 - [ ] **REST API mode** — optional local HTTP server so external scripts can query/control the library
@@ -63,7 +57,6 @@
 
 ## 🤝 Community / Social (long-term)
 
-- [ ] **Review & rating** — personal 1–10 rating + short review stored locally; exportable
 - [ ] **Achievement tracker** — manual checklist per game for tracking in-game routes or achievements
 - [ ] **Public wishlist** — export a sharable static HTML page of your collection/wishlist
 - [ ] **Friend activity** — optional peer-to-peer "what are friends playing" via a relay server
@@ -100,6 +93,9 @@
 - [x] **Scroll-to-selected** — sidebar scrolls to keep selected game visible
 - [x] **Fullscreen cover wall** — kiosk mode hiding all chrome; just the game grid
 - [x] **Export library as HTML/CSV** — sharable static page or spreadsheet of your collection
+- [x] **Themes** — Dark (current), Light, OLED-black; accent colour picker
+- [x] **Theme scheduler** — auto-switch Light ↔ Dark based on time of day or OS setting
+- [x] **Back / Forward navigation** — browser-style history for jumping between views
 
 ### Stats & Tracking
 - [x] **Play history log** — timestamped session log per game shown as a timeline (max 50 entries)
@@ -124,6 +120,8 @@
 - [x] **Metadata diff view** — when re-fetching, show "changed: version 0.9 → 1.0" before applying
 - [x] **Game version history** — log each time you update a game (date + note); shown as timeline entries
 - [x] **Developer grouping** — sidebar section "By Developer"; click to filter all games from one circle/studio
+- [x] **VNDB support** — fetch metadata from vndb.org for visual novels (cover, tags, relations, release date)
+- [x] **MangaGamer / Johren / Fakku support** — additional store scrapers
 
 ### Notifications & Tray
 - [x] **Update checker** — notification when a linked F95/DLsite game has a new version posted
@@ -141,6 +139,7 @@
 - [x] **Screenshot tagging** — label screenshots ("ending", "bug", "funny moment"); filterable gallery
 - [x] **Non-Windows screenshot** — global hotkey via X11/Wayland on Linux; CGWindow on macOS
 - [x] **Export gallery** — zip all screenshots for a game and save / share
+- [x] **Screenshot annotation** — simple draw / text overlay before saving
 
 ### Wine / Proton
 - [x] **Global Wine/Proton config** — set Wine binary and prefix globally; used for all non-Windows games
@@ -159,8 +158,17 @@
 ### Import & Interop
 - [x] **Deep link protocol** — `libmaly://launch/<game-path>` URI scheme for external tools
 - [x] **CLI interface** — `libmaly launch <name>` from a terminal
+- [x] **Import from Playnite / GOG Galaxy** — read existing launchers' databases and merge into library
 
 ### Technical
 - [x] **Log viewer** — in-app console showing recent Rust-side errors/warnings for debugging
 - [x] **Crash reporter** — catch panics and offer to copy a report to clipboard
 - [x] **Tray icon on macOS** — verify/fix `NSStatusItem` behaviour once macOS build is stable
+- [x] **Portable mode** — store all data next to the exe instead of AppData (USB-stick installs)
+
+### Community / Social (long-term)
+- [x] **Review & rating** — personal 1–10 rating + short review stored locally; exportable
+
+### Sync & Backup
+- [x] **Cloud config sync** — export/import full library state (stats, metadata, notes, collections) as JSON
+- [x] **Migration wizard** — "Move game folder" that updates all internal paths without losing stats/metadata

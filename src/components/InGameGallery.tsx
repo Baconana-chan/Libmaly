@@ -10,12 +10,14 @@ interface ScreenshotItem {
 export function InGameGallery({
   shots,
   onTake,
+  onAnnotate,
   onOpenFolder,
   onExportZip,
   onUpdateTags,
 }: {
   shots: ScreenshotItem[];
   onTake: () => void;
+  onAnnotate: () => void;
   onOpenFolder: () => void;
   onExportZip: () => void;
   onUpdateTags: (filename: string, tags: string[]) => void;
@@ -69,6 +71,22 @@ export function InGameGallery({
               <circle cx="12" cy="13" r="4" />
             </svg>
             Capture
+          </button>
+          <button
+            onClick={onAnnotate}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs"
+            style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-accent-muted)" }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "var(--color-accent-deep)";
+              e.currentTarget.style.color = "var(--color-accent)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "var(--color-panel-3)";
+              e.currentTarget.style.color = "var(--color-text-muted)";
+            }}
+            title="Capture and annotate before saving (F10 hotkey while game is running)"
+          >
+            Annotate
           </button>
           <button
             onClick={onOpenFolder}
@@ -180,7 +198,19 @@ export function InGameGallery({
             >
               F12
             </kbd>{" "}
-            while a game is running, or click Capture above.
+            for quick capture or{" "}
+            <kbd
+              style={{
+                background: "var(--color-panel-3)",
+                color: "var(--color-text-muted)",
+                padding: "1px 5px",
+                borderRadius: "3px",
+                fontSize: "10px",
+              }}
+            >
+              F10
+            </kbd>{" "}
+            for annotate mode.
           </p>
         </div>
       ) : (

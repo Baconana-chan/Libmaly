@@ -16,10 +16,13 @@ import { NsfwOverlay } from "./components/common/NsfwOverlay";
 import { GameDetail } from "./components/game/GameDetail";
 import { AppUpdateModal } from "./components/modals/AppUpdateModal";
 import { CrashReportModal, LogViewerModal } from "./components/modals/DiagnosticsModals";
+import { MigrationWizardModal, SettingsModal } from "./components/modals/SettingsModal";
+import { ScreenshotAnnotateModal } from "./components/modals/ScreenshotAnnotateModal";
 import { FeedView } from "./components/views/FeedView";
 import { HomeView } from "./components/views/HomeView";
 import { StatsView } from "./components/views/StatsView";
 import { mergeFolderGames, mergeFolderMtimes } from "./lib/scanner";
+import { appStorageGetItem, appStorageSetItem } from "./lib/appStorage";
 import "./App.css";
 
 // ─── Virtual list hook ────────────────────────────────────────────────────────
@@ -136,6 +139,7 @@ interface GameMetadata {
   cover_url?: string;
   screenshots: string[];
   tags: string[];
+  relations?: string[];
   engine?: string;
   os?: string;
   language?: string;
@@ -193,6 +197,11 @@ interface CrashReport {
   location: string;
   backtrace: string;
 }
+interface SaveBackupResult {
+  zip_path: string;
+  files: number;
+  directories: string[];
+}
 
 type LogLevelFilter = "all" | "error" | "warn" | "info";
 
@@ -227,7 +236,28 @@ interface GameCustomization {
   timeLimitMins?: number;
   /** Free-form user tags */
   customTags?: string[];
+  /** Legacy personal score (kept for backward compatibility) */
+  personalRating?: number;
+  /** Personal short review stored locally */
+  personalReview?: string;
+  /** 0..100 manual overall score */
+  overallScore100?: number;
+  /** Rating source mode */
+  ratingMode?: "manual" | "categories";
+  /** Category scores in 0..100 */
+  categoryRatings?: Partial<Record<RatingCategoryKey, number>>;
 }
+
+type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
+type RatingCategoryKey = "gameplay" | "story" | "soundtrack" | "visuals" | "characters" | "performance";
+const RATING_CATEGORIES: { key: RatingCategoryKey; label: string }[] = [
+  { key: "gameplay", label: "Gameplay" },
+  { key: "story", label: "Story" },
+  { key: "soundtrack", label: "Soundtrack" },
+  { key: "visuals", label: "Visuals" },
+  { key: "characters", label: "Characters" },
+  { key: "performance", label: "Performance" },
+];
 
 interface SearchResultItem {
   title: string;
@@ -330,6 +360,14 @@ interface LutrisGameEntry {
   config_path: string;
 }
 
+interface InteropGameEntry {
+  name: string;
+  game_id: string;
+  exe: string;
+  args?: string;
+  source: string;
+}
+
 const SK_SETTINGS = "libmaly_app_settings-v1";
 interface AppSettings {
   updateCheckerEnabled: boolean;
@@ -337,6 +375,7 @@ interface AppSettings {
   trayTooltipEnabled: boolean;
   startupWithWindows: boolean;
   themeMode: "dark" | "light" | "oled";
+  ratingScale: RatingScale;
   themeScheduleMode: "manual" | "os" | "time";
   dayThemeMode: "light" | "dark";
   nightThemeMode: "dark" | "oled";
@@ -344,14 +383,37 @@ interface AppSettings {
   darkStartHour: number;
   accentColor: string;
   blurNsfwContent: boolean;
-  rssFeeds: { url: string; name: string }[];
+  rssFeeds: { url: string; name: string; enabled?: boolean }[];
   metadataAutoRefetchDays: number;
   autoScreenshotInterval: number;
+  saveBackupOnExit: boolean;
   bossKeyEnabled?: boolean;
   bossKeyCode?: number;
   bossKeyAction?: "hide" | "kill";
   bossKeyMuteSystem?: boolean;
   bossKeyFallbackUrl?: string;
+}
+
+interface CloudSyncPayloadV1 {
+  schema: "libmaly-cloud-sync-v1";
+  exportedAt: string;
+  appVersion?: string;
+  data: Partial<{
+    libraryFolders: LibraryFolder[];
+    games: Game[];
+    stats: Record<string, GameStats>;
+    metadata: Record<string, GameMetadata>;
+    hiddenGames: Record<string, boolean>;
+    favGames: Record<string, boolean>;
+    customizations: Record<string, GameCustomization>;
+    notes: Record<string, string>;
+    collections: Collection[];
+    launchConfig: LaunchConfig;
+    sessionLog: SessionEntry[];
+    wishlist: WishlistItem[];
+    history: GameHistoryMap;
+    appSettings: AppSettings;
+  }>;
 }
 const DEFAULT_SETTINGS: AppSettings = {
   updateCheckerEnabled: false,
@@ -359,6 +421,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   trayTooltipEnabled: false,
   startupWithWindows: false,
   themeMode: "dark",
+  ratingScale: "10",
   themeScheduleMode: "manual",
   dayThemeMode: "light",
   nightThemeMode: "dark",
@@ -367,10 +430,14 @@ const DEFAULT_SETTINGS: AppSettings = {
   accentColor: "#66c0f4",
   blurNsfwContent: true,
   rssFeeds: [
-    { url: "https://f95zone.to/sam/latest_alpha/latest_data.php?cmd=rss&cat=games", name: "F95zone Latest" }
+    { url: "https://f95zone.to/sam/latest_alpha/latest_data.php?cmd=rss&cat=games", name: "F95zone Latest", enabled: true },
+    { url: "https://rss.tia-chan.top/official", name: "VNDB Official (via vndb-rss)", enabled: true },
+    { url: "https://rss.tia-chan.top/unofficial", name: "VNDB Unofficial (via vndb-rss)", enabled: false },
+    { url: "https://rss.tia-chan.top/offi-jp", name: "VNDB Official JP (via vndb-rss)", enabled: false },
   ],
   metadataAutoRefetchDays: 0,
   autoScreenshotInterval: 0,
+  saveBackupOnExit: false,
   bossKeyEnabled: false,
   bossKeyCode: 0x7A, // F11
   bossKeyAction: "hide",
@@ -390,14 +457,14 @@ interface Collection {
 }
 
 type SortMode = "name" | "lastPlayed" | "playtime" | "custom";
-type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "unlinked" | "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play" | string;
+type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku" | "unlinked" | "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play" | string;
 type LaunchRequest = { mode: "path" | "name"; value: string };
 
 function loadCache<T>(key: string, fallback: T): T {
-  try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : fallback; }
+  try { const r = appStorageGetItem(key); return r ? JSON.parse(r) : fallback; }
   catch { return fallback; }
 }
-function saveCache(key: string, val: unknown) { localStorage.setItem(key, JSON.stringify(val)); }
+function saveCache(key: string, val: unknown) { appStorageSetItem(key, JSON.stringify(val)); }
 
 function normalizeHexColor(input: string, fallback: string) {
   const x = (input || "").trim();
@@ -416,6 +483,54 @@ function shiftHexColor(hex: string, amount: number) {
   return `#${toHex(r * factor)}${toHex(g * factor)}${toHex(b * factor)}`;
 }
 
+function clampScore100(v: number) {
+  return Math.max(0, Math.min(100, Math.round(v)));
+}
+
+function formatScoreForScale(score100: number, scale: RatingScale) {
+  const s = clampScore100(score100);
+  if (scale === "10") return `${Math.round(s / 10)}/10`;
+  if (scale === "10_decimal") return `${(s / 10).toFixed(1)}/10`;
+  if (scale === "100") return `${s}/100`;
+  if (scale === "5_star") return `${(s / 20).toFixed(1)}/5`;
+  if (s <= 40) return "😞";
+  if (s <= 75) return "😐";
+  return "😄";
+}
+
+function categoryAverageScore100(custom?: GameCustomization) {
+  if (!custom?.categoryRatings) return undefined;
+  const values = RATING_CATEGORIES
+    .map((c) => custom.categoryRatings?.[c.key])
+    .filter((v): v is number => typeof v === "number" && !Number.isNaN(v))
+    .map(clampScore100);
+  if (values.length === 0) return undefined;
+  return Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+}
+
+function resolveOverallScore100(custom?: GameCustomization) {
+  if (!custom) return undefined;
+  if (custom.ratingMode === "categories") {
+    const avg = categoryAverageScore100(custom);
+    if (typeof avg === "number") return avg;
+  }
+  if (typeof custom.overallScore100 === "number") return clampScore100(custom.overallScore100);
+  if (typeof custom.personalRating === "number") return clampScore100(custom.personalRating * 10);
+  return categoryAverageScore100(custom);
+}
+
+function mergeDefaultRssFeeds(existing: { url: string; name: string; enabled?: boolean }[] | undefined) {
+  const base = (existing || []).map((f) => ({ ...f, enabled: f.enabled !== false }));
+  const seen = new Set(base.map((f) => f.url.trim().toLowerCase()));
+  for (const def of DEFAULT_SETTINGS.rssFeeds) {
+    const key = def.url.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    base.push({ ...def, enabled: def.enabled !== false });
+    seen.add(key);
+  }
+  return base;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatTime(s: number) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
@@ -431,8 +546,54 @@ function heroGradient(name: string) {
 }
 function isF95Url(url: string) { return url.includes("f95zone.to"); }
 function isDLsiteUrl(url: string) { return url.includes("dlsite.com"); }
+function isVNDBUrl(url: string) { return /vndb\.org\/v\d+/i.test(url); }
+function isMangaGamerUrl(url: string) { return /mangagamer\.com/i.test(url); }
+function isJohrenUrl(url: string) { return /johren\.net/i.test(url); }
+function isFakkuUrl(url: string) { return /fakku\.net/i.test(url); }
+function detectMetadataSourceFromUrl(url: string): GameMetadata["source"] | null {
+  if (isF95Url(url)) return "f95";
+  if (isDLsiteUrl(url)) return "dlsite";
+  if (isVNDBUrl(url)) return "vndb";
+  if (isMangaGamerUrl(url)) return "mangagamer";
+  if (isJohrenUrl(url)) return "johren";
+  if (isFakkuUrl(url)) return "fakku";
+  return null;
+}
+function metadataFetchCommand(source: GameMetadata["source"]) {
+  if (source === "f95") return "fetch_f95_metadata";
+  if (source === "dlsite") return "fetch_dlsite_metadata";
+  if (source === "vndb") return "fetch_vndb_metadata";
+  if (source === "mangagamer") return "fetch_mangagamer_metadata";
+  if (source === "johren") return "fetch_johren_metadata";
+  if (source === "fakku") return "fetch_fakku_metadata";
+  return null;
+}
+function metadataSourceLabel(source?: string) {
+  if (source === "f95") return "F95zone";
+  if (source === "dlsite") return "DLsite";
+  if (source === "vndb") return "VNDB";
+  if (source === "mangagamer") return "MangaGamer";
+  if (source === "johren") return "Johren";
+  if (source === "fakku") return "FAKKU";
+  return "Unknown";
+}
 function normalizePathForMatch(path: string) {
   return path.trim().replace(/\\/g, "/").toLowerCase();
+}
+function normalizePathNoCase(path: string) {
+  return path.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+}
+function remapPathByRoot(path: string, oldRoot: string, newRoot: string): string | null {
+  const src = normalizePathNoCase(path);
+  const oldN = normalizePathNoCase(oldRoot);
+  const newN = normalizePathNoCase(newRoot);
+  const srcL = src.toLowerCase();
+  const oldL = oldN.toLowerCase();
+  if (!(srcL === oldL || srcL.startsWith(`${oldL}/`))) return null;
+  const suffix = src.slice(oldN.length);
+  const mappedUnix = `${newN}${suffix}`;
+  const preferBackslash = newRoot.includes("\\") && !newRoot.includes("/");
+  return preferBackslash ? mappedUnix.replace(/\//g, "\\") : mappedUnix;
 }
 function parseDeepLinkUrl(rawUrl: string): LaunchRequest | null {
   try {
@@ -593,6 +754,66 @@ function DLsiteLoginModal({ onClose, onSuccess }: { onClose: () => void; onSucce
   );
 }
 
+function FakkuLoginModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const doLogin = async () => {
+    if (!email || !pass) return;
+    setLoading(true); setError("");
+    try {
+      const ok = await invoke<boolean>("fakku_login", { email, password: pass });
+      if (ok) { onSuccess(); onClose(); }
+      else setError("Login failed — check your credentials.");
+    } catch (e) { setError(String(e)); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.8)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-8 h-8 rounded flex items-center justify-center font-bold text-[10px]"
+            style={{ background: "#da4c96", color: "var(--color-white)" }}>FK</div>
+          <h2 className="text-lg font-bold" style={{ color: "var(--color-white)" }}>Sign in to FAKKU</h2>
+        </div>
+        <p className="text-xs mb-4" style={{ color: "var(--color-text-muted)" }}>
+          Used to keep an authenticated session and reduce age-check interruptions while fetching metadata.
+        </p>
+        <div className="space-y-3">
+          <input type="email" placeholder="Email" value={email}
+            onInput={(e) => setEmail((e.target as HTMLInputElement).value)}
+            autoComplete="email"
+            className="w-full px-3 py-2 rounded text-sm outline-none"
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
+          <input type="password" placeholder="Password" value={pass}
+            onInput={(e) => setPass((e.target as HTMLInputElement).value)}
+            onKeyDown={(e) => e.key === "Enter" && doLogin()}
+            autoComplete="current-password"
+            className="w-full px-3 py-2 rounded text-sm outline-none"
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
+        </div>
+        {error && <p className="mt-2 text-xs" style={{ color: "var(--color-danger)" }}>{error}</p>}
+        <div className="flex gap-3 justify-end mt-5">
+          <button onClick={onClose}
+            className="px-4 py-2 rounded text-sm"
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
+          <button onClick={doLogin} disabled={loading || !email || !pass}
+            className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
+            style={{ background: "#da4c96", color: "var(--color-white)" }}>
+            {loading && <span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />}
+            Sign In
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Metadata Diff Modal ──────────────────────────────────────────────────────
 function MetadataDiffModal({ oldMeta, newMeta, onConfirm, onClose }: {
   oldMeta: GameMetadata;
@@ -671,7 +892,7 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const src = isF95Url(url) ? "f95" : isDLsiteUrl(url) ? "dlsite" : null;
+  const src = detectMetadataSourceFromUrl(url);
 
   const [suggestions, setSuggestions] = useState<SearchResultItem[] | null>(null);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
@@ -693,11 +914,12 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
 
   const doFetch = async (targetUrl = url) => {
     if (!targetUrl) return;
-    const targetSrc = isF95Url(targetUrl) ? "f95" : isDLsiteUrl(targetUrl) ? "dlsite" : null;
-    if (!targetSrc) { setError("Paste a valid F95zone or DLsite URL."); return; }
+    const targetSrc = detectMetadataSourceFromUrl(targetUrl);
+    if (!targetSrc) { setError("Paste a valid F95zone, DLsite, VNDB, MangaGamer, Johren or FAKKU URL."); return; }
     setLoading(true); setError("");
     try {
-      const cmd = targetSrc === "f95" ? "fetch_f95_metadata" : "fetch_dlsite_metadata";
+      const cmd = metadataFetchCommand(targetSrc);
+      if (!cmd) throw new Error(`Unsupported source: ${targetSrc}`);
       const meta = await invoke<GameMetadata>(cmd, { url: targetUrl.trim() });
       onFetched(meta); onClose();
     } catch (e) { setError(String(e)); }
@@ -711,22 +933,34 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
       <div className="rounded-lg p-6 w-[480px] shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
         <h2 className="text-lg font-bold mb-1" style={{ color: "var(--color-white)" }}>Link a Game Page</h2>
         <p className="text-xs mb-4" style={{ color: "var(--color-text-muted)" }}>
-          Paste an F95zone thread URL or DLsite product page URL to fetch cover art,
+          Paste an F95zone, DLsite, VNDB, MangaGamer, Johren or FAKKU URL to fetch cover art,
           description and tags for <b style={{ color: "var(--color-text)" }}>{gameName}</b>.
         </p>
         <div className="flex gap-2 mb-4">
-          {(["f95", "dlsite"] as const).map((s) => (
+          {(["f95", "dlsite", "vndb", "mangagamer", "johren", "fakku"] as const).map((s) => (
             <span key={s} className="px-2 py-0.5 rounded text-xs font-semibold"
               style={{
-                background: src === s ? (s === "f95" ? "var(--color-warning)" : "var(--color-danger-strong)") : "var(--color-border-soft)",
+                background: src === s
+                  ? (s === "f95"
+                    ? "var(--color-warning)"
+                    : s === "dlsite"
+                      ? "var(--color-danger-strong)"
+                      : s === "vndb"
+                        ? "var(--color-accent-dark)"
+                        : s === "mangagamer"
+                          ? "#7c5cff"
+                          : s === "johren"
+                            ? "#5a6bff"
+                            : "#da4c96")
+                  : "var(--color-border-soft)",
                 color: src === s ? (s === "f95" ? "var(--color-black-strong)" : "var(--color-white)") : "var(--color-text-muted)",
               }}>
-              {s === "f95" ? "F95zone" : "DLsite"}
+              {metadataSourceLabel(s)}
             </span>
           ))}
         </div>
         <input type="text"
-          placeholder="https://f95zone.to/threads/…   or   https://www.dlsite.com/…"
+          placeholder="https://f95zone.to/...  /  https://www.dlsite.com/...  /  https://vndb.org/v...  /  https://www.mangagamer.com/...  /  https://www.johren.net/...  /  https://www.fakku.net/..."
           value={url}
           onInput={(e) => { setUrl((e.target as HTMLInputElement).value); setError(""); }}
           onKeyDown={(e) => e.key === "Enter" && doFetch()}
@@ -2256,511 +2490,126 @@ function LutrisImportModal({ games, onImport, onClose }: {
   );
 }
 
-// ─── Settings Modal ────────────────────────────────────────────────────────────
-function SettingsModal({
-  f95LoggedIn, dlsiteLoggedIn, libraryFolders, syncState, platform, launchConfig,
-  appUpdate, appSettings,
-  onF95Login, onF95Logout, onDLsiteLogin, onDLsiteLogout, onRemoveFolder,
-  onRescanAll, onWineSettings, onSteamImport, onLutrisImport, onAppUpdate, onSaveSettings, onClose,
-  onExportCSV, onExportHTML, onBatchMetadataRefresh, batchRefreshStatus
+// ─── Playnite / GOG Import Modal ───────────────────────────────────────────
+function InteropImportModal({
+  games,
+  command,
+  title,
+  subtitle,
+  accent,
+  onImport,
+  onClose,
 }: {
-  f95LoggedIn: boolean; dlsiteLoggedIn: boolean; libraryFolders: { path: string }[]; syncState: string;
-  platform: string; launchConfig: { enabled: boolean; runner: string };
-  appUpdate: { version: string } | null; appSettings: AppSettings;
-  onF95Login: () => void; onF95Logout: () => void;
-  onDLsiteLogin: () => void; onDLsiteLogout: () => void;
-  onRemoveFolder: (p: string) => void;
-  onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void; onLutrisImport: () => void;
-  onAppUpdate: () => void; onSaveSettings: (s: AppSettings) => void; onClose: () => void;
-  onExportCSV: () => void; onExportHTML: () => void;
-  onBatchMetadataRefresh: () => void;
-  batchRefreshStatus: string | null;
+  games: Game[];
+  command: "import_playnite_games" | "import_gog_galaxy_games";
+  title: string;
+  subtitle: string;
+  accent: string;
+  onImport: (entries: InteropGameEntry[]) => void;
+  onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "wine">("general");
-  const tabs: { id: typeof tab; label: string }[] = [
-    { id: "general", label: "General" },
-    { id: "scanner", label: "Scanner" },
-    { id: "import", label: "Import" },
-    { id: "rss", label: "RSS Feeds" },
-    ...(platform !== "windows" ? [{ id: "wine" as const, label: "Wine / Proton" }] : []),
-  ];
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [rows, setRows] = useState<{ entry: InteropGameEntry; checked: boolean; exists: boolean }[]>([]);
+
+  useEffect(() => {
+    invoke<InteropGameEntry[]>(command)
+      .then((entries) => {
+        const normalized = entries
+          .filter((e) => !!e.exe)
+          .map((e) => {
+            const exists = games.some((g) => normalizePathForMatch(g.path) === normalizePathForMatch(e.exe));
+            return { entry: e, checked: true, exists };
+          });
+        setRows(normalized);
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [command, games]);
+
+  const toggle = (exe: string) => {
+    setRows((prev) => prev.map((r) => (r.entry.exe === exe ? { ...r, checked: !r.checked } : r)));
+  };
+
+  const apply = () => {
+    onImport(rows.filter((r) => r.checked).map((r) => r.entry));
+    onClose();
+  };
+
   return (
-    <div className="fixed inset-0 z-[9990] flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.75)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="rounded-xl shadow-2xl flex flex-col overflow-hidden"
-        style={{ width: 480, maxHeight: "80vh", background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
-
-        {/* Header */}
-        <div className="flex items-center gap-3 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: "var(--color-border-soft)" }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
-          <h2 className="font-bold text-base flex-1" style={{ color: "var(--color-white)" }}>Settings</h2>
-          <button onClick={onClose} style={{ color: "var(--color-text-dim)", fontSize: 18, lineHeight: 1 }}>✕</button>
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.82)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="rounded-xl shadow-2xl w-[700px] max-h-[82vh] flex flex-col"
+        style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center gap-3 px-5 py-3 border-b" style={{ borderColor: "var(--color-border-card)" }}>
+          <h2 className="font-bold text-sm" style={{ color: "var(--color-white)" }}>{title}</h2>
+          <div className="flex-1" />
+          <button onClick={onClose} className="text-sm" style={{ color: "var(--color-text-dim)" }}>✕</button>
         </div>
-
-        {/* Tab bar */}
-        <div className="flex gap-0.5 px-4 pt-3 flex-shrink-0">
-          {tabs.map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              className="px-3 py-1.5 rounded-t text-xs font-medium"
-              style={{
-                background: tab === t.id ? "var(--color-bg-elev)" : "transparent",
-                color: tab === t.id ? "var(--color-accent)" : "var(--color-text-dim)",
-                borderBottom: tab === t.id ? "2px solid var(--color-accent)" : "2px solid transparent",
-              }}>
-              {t.label}
+        <div className="px-5 py-3 text-xs" style={{ color: "var(--color-text-muted)" }}>
+          {subtitle}
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 pb-4"
+          style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+          {loading && <p style={{ color: "var(--color-text-muted)" }}>Reading launcher database…</p>}
+          {error && <p style={{ color: "var(--color-danger)" }}>{error}</p>}
+          {!loading && !error && rows.length === 0 && (
+            <p style={{ color: "var(--color-text-muted)" }}>No importable games found.</p>
+          )}
+          {!loading && !error && rows.length > 0 && (
+            <div className="space-y-2">
+              {rows.map((r) => (
+                <label key={`${r.entry.source}:${r.entry.game_id}:${r.entry.exe}`} className="block rounded p-2 cursor-pointer"
+                  style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                  <div className="flex items-start gap-2">
+                    <input type="checkbox" checked={r.checked} onChange={() => toggle(r.entry.exe)} className="mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm truncate" style={{ color: "var(--color-text)" }}>{r.entry.name}</p>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: r.exists ? "var(--color-success-bg)" : "var(--color-panel)", color: r.exists ? "var(--color-success)" : "var(--color-text-muted)" }}>
+                          {r.exists ? "Exists" : "New"}
+                        </span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded uppercase" style={{ background: "var(--color-panel-3)", color: accent }}>
+                          {r.entry.source}
+                        </span>
+                      </div>
+                      <p className="text-[10px] mt-0.5 break-all font-mono" style={{ color: "var(--color-text-dim)" }}>{r.entry.exe}</p>
+                      {r.entry.args && (
+                        <p className="text-[10px] mt-0.5 break-all font-mono" style={{ color: "var(--color-text-muted)" }}>args: {r.entry.args}</p>
+                      )}
+                    </div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+        {!loading && rows.length > 0 && (
+          <div className="flex gap-3 justify-end px-5 py-3 border-t" style={{ borderColor: "var(--color-border-card)" }}>
+            <button onClick={onClose} className="px-3 py-1.5 rounded text-xs" style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
+              Cancel
             </button>
-          ))}
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4"
-          style={{ background: "var(--color-bg-elev)", scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
-
-          {tab === "general" && (
-            <>
-              <section className="space-y-2">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>F95zone</h3>
-                {f95LoggedIn ? (
-                  <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
-                    style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ background: "var(--color-warning)" }} />
-                      <span className="text-sm" style={{ color: "var(--color-warning)" }}>Logged in</span>
-                    </div>
-                    <button onClick={onF95Logout}
-                      className="text-xs px-3 py-1 rounded"
-                      style={{ background: "var(--color-warning-bg)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>
-                      Sign out
-                    </button>
-                  </div>
-                ) : (
-                  <button onClick={() => { onClose(); onF95Login(); }}
-                    className="w-full py-2 rounded-lg text-sm text-left px-3 flex items-center gap-2"
-                    style={{ background: "var(--color-panel)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /><polyline points="10 17 15 12 10 7" /><line x1="15" y1="12" x2="3" y2="12" />
-                    </svg>
-                    Sign in to F95zone
-                  </button>
-                )}
-              </section>
-
-              {/* DLsite */}
-              <section className="space-y-2">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>DLsite</h3>
-                {dlsiteLoggedIn ? (
-                  <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
-                    style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ background: "var(--color-danger-strong)" }} />
-                      <span className="text-sm" style={{ color: "var(--color-danger-strong)" }}>Logged in</span>
-                    </div>
-                    <button onClick={onDLsiteLogout}
-                      className="text-xs px-3 py-1 rounded"
-                      style={{ background: "var(--color-danger-bg)", color: "var(--color-danger-strong)", border: "1px solid #6a2020" }}>
-                      Sign out
-                    </button>
-                  </div>
-                ) : (
-                  <button onClick={() => { onClose(); onDLsiteLogin(); }}
-                    className="w-full py-2 rounded-lg text-sm text-left px-3 flex items-center gap-2"
-                    style={{ background: "var(--color-panel)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
-                    <div className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0"
-                      style={{ background: "var(--color-danger-strong)", color: "var(--color-white)" }}>DL</div>
-                    Sign in to DLsite
-                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>age-gate bypass</span>
-                  </button>
-                )}
-              </section>
-
-              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>System & Notifications</h3>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  <input type="checkbox" checked={appSettings.startupWithWindows}
-                    onChange={(e) => onSaveSettings({ ...appSettings, startupWithWindows: e.currentTarget.checked })} />
-                  Start minimized in tray with Windows
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  <input type="checkbox" checked={appSettings.updateCheckerEnabled}
-                    onChange={(e) => onSaveSettings({ ...appSettings, updateCheckerEnabled: e.currentTarget.checked })} />
-                  Check for game updates (F95/DLsite)
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  <input type="checkbox" checked={appSettings.sessionToastEnabled}
-                    onChange={(e) => onSaveSettings({ ...appSettings, sessionToastEnabled: e.currentTarget.checked })} />
-                  Show system notification on session end
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  <input type="checkbox" checked={appSettings.trayTooltipEnabled}
-                    onChange={(e) => onSaveSettings({ ...appSettings, trayTooltipEnabled: e.currentTarget.checked })} />
-                  Live session duration in tray tooltip
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  <input type="checkbox" checked={appSettings.blurNsfwContent}
-                    onChange={(e) => onSaveSettings({ ...appSettings, blurNsfwContent: e.currentTarget.checked })} />
-                  Blur adult/NSFW covers (Click to reveal)
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="Automatically take a screenshot while a game is running">
-                  Auto-screenshot interval (mins)
-                  <input type="number" min="0" className="w-12 px-1 py-1 bg-transparent border rounded outline-none text-center ml-2"
-                    style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
-                    value={appSettings.autoScreenshotInterval || 0}
-                    onChange={e => onSaveSettings({ ...appSettings, autoScreenshotInterval: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
-                  <span className="text-[10px] ml-2" style={{ color: "var(--color-text-dim)" }}>(0 to disable)</span>
-                </label>
-              </section>
-
-              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Appearance</h3>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  Theme schedule
-                  <select
-                    className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                    style={{ borderColor: "var(--color-border)" }}
-                    value={appSettings.themeScheduleMode || "manual"}
-                    onChange={(e) => onSaveSettings({ ...appSettings, themeScheduleMode: e.currentTarget.value as "manual" | "os" | "time" })}
-                  >
-                    <option value="manual" style={{ background: "var(--color-panel-2)" }}>Manual</option>
-                    <option value="os" style={{ background: "var(--color-panel-2)" }}>Follow OS</option>
-                    <option value="time" style={{ background: "var(--color-panel-2)" }}>By Time</option>
-                  </select>
-                </label>
-                {(appSettings.themeScheduleMode || "manual") === "manual" && (
-                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                    Theme
-                    <select
-                      className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                      style={{ borderColor: "var(--color-border)" }}
-                      value={appSettings.themeMode || "dark"}
-                      onChange={(e) => onSaveSettings({ ...appSettings, themeMode: e.currentTarget.value as "dark" | "light" | "oled" })}
-                    >
-                      <option value="dark" style={{ background: "var(--color-panel-2)" }}>Dark</option>
-                      <option value="light" style={{ background: "var(--color-panel-2)" }}>Light</option>
-                      <option value="oled" style={{ background: "var(--color-panel-2)" }}>OLED Black</option>
-                    </select>
-                  </label>
-                )}
-                {(appSettings.themeScheduleMode || "manual") === "time" && (
-                  <>
-                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      Day theme
-                      <select
-                        className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                        style={{ borderColor: "var(--color-border)" }}
-                        value={appSettings.dayThemeMode || "light"}
-                        onChange={(e) => onSaveSettings({ ...appSettings, dayThemeMode: e.currentTarget.value as "light" | "dark" })}
-                      >
-                        <option value="light" style={{ background: "var(--color-panel-2)" }}>Light</option>
-                        <option value="dark" style={{ background: "var(--color-panel-2)" }}>Dark</option>
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      Night theme
-                      <select
-                        className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                        style={{ borderColor: "var(--color-border)" }}
-                        value={appSettings.nightThemeMode || "dark"}
-                        onChange={(e) => onSaveSettings({ ...appSettings, nightThemeMode: e.currentTarget.value as "dark" | "oled" })}
-                      >
-                        <option value="dark" style={{ background: "var(--color-panel-2)" }}>Dark</option>
-                        <option value="oled" style={{ background: "var(--color-panel-2)" }}>OLED Black</option>
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      Light starts at
-                      <input
-                        type="number"
-                        min="0"
-                        max="23"
-                        className="ml-2 w-14 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                        style={{ borderColor: "var(--color-border)" }}
-                        value={Math.max(0, Math.min(23, appSettings.lightStartHour ?? DEFAULT_SETTINGS.lightStartHour))}
-                        onChange={(e) => onSaveSettings({ ...appSettings, lightStartHour: Math.max(0, Math.min(23, parseInt(e.currentTarget.value) || 0)) })}
-                      />
-                      <span className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>00-23</span>
-                    </label>
-                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      Dark starts at
-                      <input
-                        type="number"
-                        min="0"
-                        max="23"
-                        className="ml-2 w-14 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                        style={{ borderColor: "var(--color-border)" }}
-                        value={Math.max(0, Math.min(23, appSettings.darkStartHour ?? DEFAULT_SETTINGS.darkStartHour))}
-                        onChange={(e) => onSaveSettings({ ...appSettings, darkStartHour: Math.max(0, Math.min(23, parseInt(e.currentTarget.value) || 0)) })}
-                      />
-                      <span className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>00-23</span>
-                    </label>
-                  </>
-                )}
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  Accent color
-                  <input
-                    type="color"
-                    className="ml-2 w-8 h-6 border rounded cursor-pointer"
-                    style={{ borderColor: "var(--color-border)", background: "transparent" }}
-                    value={normalizeHexColor(appSettings.accentColor || DEFAULT_SETTINGS.accentColor, DEFAULT_SETTINGS.accentColor)}
-                    onChange={(e) => onSaveSettings({ ...appSettings, accentColor: e.currentTarget.value })}
-                  />
-                  <input
-                    type="text"
-                    className="ml-1 w-24 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)] font-mono text-xs"
-                    style={{ borderColor: "var(--color-border)" }}
-                    value={normalizeHexColor(appSettings.accentColor || DEFAULT_SETTINGS.accentColor, DEFAULT_SETTINGS.accentColor)}
-                    onChange={(e) => onSaveSettings({ ...appSettings, accentColor: normalizeHexColor(e.currentTarget.value, DEFAULT_SETTINGS.accentColor) })}
-                  />
-                </label>
-              </section>
-
-              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Panic Button (Boss Key)</h3>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="Press a global hotkey to instantly hide the game and open something else.">
-                  <input type="checkbox" checked={appSettings.bossKeyEnabled}
-                    onChange={(e) => onSaveSettings({ ...appSettings, bossKeyEnabled: e.currentTarget.checked })} />
-                  Enable Panic Button
-                </label>
-                {appSettings.bossKeyEnabled && (
-                  <div className="pl-6 space-y-3 mt-2">
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      Hotkey:
-                      <select value={appSettings.bossKeyCode || 0x7A}
-                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyCode: parseInt(e.currentTarget.value) })}
-                        className="bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]" style={{ borderColor: "var(--color-border)" }}>
-                        {[...Array(11)].map((_, i) => (
-                          <option key={i} value={0x70 + i} style={{ background: "var(--color-panel-2)" }}>F{i + 1}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      Action:
-                      <select value={appSettings.bossKeyAction || "hide"}
-                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyAction: e.currentTarget.value as "hide" | "kill" })}
-                        className="bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]" style={{ borderColor: "var(--color-border)" }}>
-                        <option value="hide" style={{ background: "var(--color-panel-2)" }}>Hide Window (Smooth, but audio keeps playing)</option>
-                        <option value="kill" style={{ background: "var(--color-panel-2)" }}>Force Close Game (Stops audio instantly)</option>
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      <input type="checkbox" checked={appSettings.bossKeyMuteSystem}
-                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyMuteSystem: e.currentTarget.checked })} />
-                      Also mute system volume (Shows Windows volume overlay)
-                    </label>
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      Fallback App / URL:
-                      <input type="text" placeholder="e.g. notepad.exe or https://google.com" className="bg-transparent border rounded px-2 py-1 outline-none flex-1 text-[var(--color-text)]"
-                        style={{ borderColor: "var(--color-border)" }} value={appSettings.bossKeyFallbackUrl || ""}
-                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyFallbackUrl: e.currentTarget.value })} />
-                    </label>
-                  </div>
-                )}
-              </section>
-
-              <section className="space-y-4 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Export Library</h3>
-                <div className="flex gap-2">
-                  <button onClick={onExportCSV} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>CSV Spreadsheet</button>
-                  <button onClick={onExportHTML} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>HTML Webpage</button>
-                </div>
-              </section>
-
-              <section className="space-y-2 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Library Folders</h3>
-                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
-                  {libraryFolders.length === 0 ? (
-                    <p className="px-3 py-3 text-xs" style={{ color: "var(--color-text-dim)" }}>No folders added yet.</p>
-                  ) : (
-                    libraryFolders.map((f) => {
-                      const label = f.path.replace(/\\/g, "/").split("/").pop() ?? f.path;
-                      return (
-                        <div key={f.path} className="flex items-center gap-2 px-3 py-2 border-b last:border-0"
-                          style={{ borderColor: "var(--color-border-soft)" }}>
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
-                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                          </svg>
-                          <span className="flex-1 text-xs truncate" style={{ color: "var(--color-text-muted)" }} title={f.path}>{label}</span>
-                          <button onClick={() => onRemoveFolder(f.path)}
-                            className="text-[11px] px-1.5 rounded"
-                            style={{ color: "var(--color-text-dim)" }}
-                            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--color-danger)")}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = "var(--color-text-dim)")}>×</button>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </section>
-
-              {appUpdate && (
-                <section className="space-y-2">
-                  <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Updates</h3>
-                  <button onClick={() => { onClose(); onAppUpdate(); }}
-                    className="w-full py-2 rounded-lg text-sm px-3 flex items-center gap-2 font-semibold"
-                    style={{ background: "var(--color-success-bg)", color: "var(--color-success)", border: "1px solid var(--color-success-border)" }}>
-                    ↑ v{appUpdate.version} available — click to install
-                  </button>
-                </section>
-              )}
-            </>
-          )}
-
-          {tab === "rss" && (
-            <section className="space-y-4">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>RSS Feeds</h3>
-              <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Track game updates and discovering new releases.</p>
-
-              <div className="space-y-2">
-                {(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds).map((feed, idx) => (
-                  <div key={idx} className="flex gap-2 p-3 rounded" style={{ background: "var(--color-panel-alt)", border: "1px solid var(--color-border)" }}>
-                    <div className="flex-1 space-y-2">
-                      <input type="text" value={feed.name} placeholder="Feed Name"
-                        className="w-full bg-transparent text-sm font-semibold outline-none" style={{ color: "var(--color-text)" }}
-                        onChange={(e) => {
-                          const nextFeeds = [...(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds)];
-                          nextFeeds[idx] = { ...feed, name: (e.target as HTMLInputElement).value };
-                          onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
-                        }} />
-                      <input type="text" value={feed.url} placeholder="Feed URL"
-                        className="w-full bg-transparent text-xs w-full outline-none" style={{ color: "var(--color-text-muted)" }}
-                        onChange={(e) => {
-                          const nextFeeds = [...(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds)];
-                          nextFeeds[idx] = { ...feed, url: (e.target as HTMLInputElement).value };
-                          onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
-                        }} />
-                    </div>
-                    <button onClick={() => {
-                      const nextFeeds = (appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds).filter((_, i) => i !== idx);
-                      onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
-                    }}
-                      className="text-[var(--color-danger)] hover:text-white mt-1" style={{ width: 24, height: 24 }}>✕</button>
-                  </div>
-                ))}
-
-                <button onClick={() => {
-                  const nextFeeds = [...(appSettings.rssFeeds || DEFAULT_SETTINGS.rssFeeds), { name: "New Feed", url: "" }];
-                  onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
-                }}
-                  className="w-full py-2 flex items-center justify-center gap-2 rounded text-sm text-[var(--color-text)] hover:text-white"
-                  style={{ border: "1px dashed var(--color-border)" }}>
-                  + Add RSS Feed
-                </button>
-              </div>
-            </section>
-          )}
-
-          {tab === "scanner" && (
-            <section className="space-y-6">
-              <div className="space-y-3">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Library Scanner</h3>
-                <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                  Force a full re-scan of all library folders. Use this if new games were added to the folders outside of LIBMALY, or if some entries are missing.
-                </p>
-                <button onClick={() => { onRescanAll(); onClose(); }}
-                  disabled={syncState !== "idle"}
-                  className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
-                  style={{ background: "var(--color-border)", color: "var(--color-text)", border: "1px solid #3d7a9b" }}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
-                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-                  </svg>
-                  Force Rescan All Folders
-                </button>
-              </div>
-
-              <div className="space-y-3 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Metadata Refetch</h3>
-                <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                  Update metadata for all currently linked games (runs in the background).
-                </p>
-                <button onClick={onBatchMetadataRefresh} disabled={!!batchRefreshStatus}
-                  className="w-full py-2.5 rounded text-sm font-semibold disabled:opacity-50"
-                  style={{ background: "var(--color-accent-dark)", color: "var(--color-white)", border: "1px solid var(--color-accent-mid)" }}>
-                  {batchRefreshStatus || "Refetch All Linked Games"}
-                </button>
-                <label className="flex items-center gap-2 text-sm mt-3" style={{ color: "var(--color-text-muted)" }}>
-                  Auto-refetch metadata older than
-                  <input type="number" min="0" className="w-12 px-1 py-1 bg-transparent border rounded outline-none text-center"
-                    style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
-                    value={appSettings.metadataAutoRefetchDays || 0}
-                    onChange={e => onSaveSettings({ ...appSettings, metadataAutoRefetchDays: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
-                  days (0 to disable)
-                </label>
-              </div>
-            </section>
-          )}
-
-          {tab === "import" && (
-            <section className="space-y-3">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Steam Playtime Import</h3>
-              <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                Read playtime data from Steam's <code style={{ color: "var(--color-code-accent)" }}>localconfig.vdf</code> and pre-fill hours for games that match titles in your library. Only overrides your tracked time if Steam's value is higher.
-              </p>
-              <button onClick={() => { onSteamImport(); onClose(); }}
-                className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
-                style={{ background: "#1a3050", color: "var(--color-accent)", border: "1px solid #2a5080" }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "#1e3a60")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "#1a3050")}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2C6.48 2 2 6.48 2 12l5.84 2.41c.53-.32 1.14-.51 1.8-.51.07 0 .14 0 .21.01L12 10.5V10.42c0-2.52 2.04-4.58 4.56-4.58 2.52 0 4.56 2.04 4.56 4.58 0 2.52-2.04 4.56-4.56 4.56h-.1l-3.5 2.53c0 .06.01.12.01.18 0 1.89-1.53 3.42-3.42 3.42-1.67 0-3.07-1.2-3.36-2.79L2.17 14C3.14 18.55 7.15 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2z" />
-                </svg>
-                Import from Steam…
-              </button>
-
-              <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>Lutris Import</h3>
-                <p className="text-xs leading-relaxed mb-2" style={{ color: "var(--color-text-muted)" }}>
-                  Import Lutris game entries and apply their Wine prefix/runner as per-game override.
-                </p>
-                <button
-                  onClick={() => { onLutrisImport(); onClose(); }}
-                  className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
-                  style={{ background: "#2a1f3a", color: "#b08ee8", border: "1px solid #5a3a8a" }}
-                >
-                  Import from Lutris…
-                </button>
-              </div>
-            </section>
-          )}
-
-          {tab === "wine" && platform !== "windows" && (
-            <section className="space-y-3">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Wine / Proton</h3>
-              <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                Configure the Wine or Proton runtime used to launch Windows games on Linux or macOS.
-              </p>
-              <button onClick={() => { onWineSettings(); onClose(); }}
-                className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
-                style={{
-                  background: launchConfig.enabled ? "#2a1f3a" : "var(--color-panel)",
-                  color: launchConfig.enabled ? "#b08ee8" : "var(--color-text-muted)",
-                  border: `1px solid ${launchConfig.enabled ? "#5a3a8a" : "var(--color-border)"}`,
-                }}>
-                🍷 {launchConfig.enabled ? `${launchConfig.runner.charAt(0).toUpperCase() + launchConfig.runner.slice(1)} active — Change…` : "Configure Wine / Proton…"}
-              </button>
-            </section>
-          )}
-        </div>
+            <button onClick={apply} className="px-4 py-1.5 rounded text-xs font-semibold" style={{ background: accent, color: "var(--color-white)" }}>
+              Apply {rows.filter((r) => r.checked).length}
+            </button>
+          </div>
+        )}
       </div>
-    </div >
+    </div>
   );
 }
 
-// ─── Version Timeline ─────────────────────────────────────────────────────────
-
-// ─── Game Detail ──────────────────────────────────────────────────────────────
-
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// ─── Migration Wizard ────────────────────────────────────────────────────────
 export default function App() {
   // ── Migrate legacy single-path storage to new multi-folder array ────────────
   const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>(() => {
     const stored = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
     if (stored.length > 0) return stored;
     // Backward compat: promote old single scanned-path
-    const legacy = localStorage.getItem(SK_PATH);
+    const legacy = appStorageGetItem(SK_PATH);
     if (legacy) return [{ path: legacy }];
     return [];
   });
@@ -2794,6 +2643,8 @@ export default function App() {
   const [f95LoggedIn, setF95LoggedIn] = useState(false);
   const [showDLsiteLogin, setShowDLsiteLogin] = useState(false);
   const [dlsiteLoggedIn, setDlsiteLoggedIn] = useState(false);
+  const [showFakkuLogin, setShowFakkuLogin] = useState(false);
+  const [fakkuLoggedIn, setFakkuLoggedIn] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "compact" | "grid">(() => loadCache("libmaly_view_mode", "list"));
   const [isAppReady, setIsAppReady] = useState(false);
@@ -2822,18 +2673,155 @@ export default function App() {
   };
 
   const handleExportCSV = async () => {
-    let csv = "Name,Path,Source,Tags,Playtime (s),Uninstalled\n";
+    let csv = "Name,Path,Source,Tags,Playtime (s),Overall Rating,Rating Scale,Gameplay,Story,Soundtrack,Visuals,Characters,Performance,Review,Uninstalled\n";
     for (const g of games) {
       const name = customizations[g.path]?.displayName || metadata[g.path]?.title || g.name;
       const src = metadata[g.path]?.source || "";
       const tags = (metadata[g.path]?.tags || []).join(";");
       const pt = stats[g.path]?.totalTime || 0;
-      csv += `"${name.replace(/"/g, '""')}","${g.path.replace(/"/g, '""')}","${src}","${tags}",${pt},${g.uninstalled ? "yes" : "no"}\n`;
+      const custom = customizations[g.path];
+      const overall100 = resolveOverallScore100(custom);
+      const overall = typeof overall100 === "number" ? formatScoreForScale(overall100, appSettings.ratingScale) : "";
+      const c = custom?.categoryRatings || {};
+      const gameplay = typeof c.gameplay === "number" ? formatScoreForScale(c.gameplay, appSettings.ratingScale) : "";
+      const story = typeof c.story === "number" ? formatScoreForScale(c.story, appSettings.ratingScale) : "";
+      const soundtrack = typeof c.soundtrack === "number" ? formatScoreForScale(c.soundtrack, appSettings.ratingScale) : "";
+      const visuals = typeof c.visuals === "number" ? formatScoreForScale(c.visuals, appSettings.ratingScale) : "";
+      const characters = typeof c.characters === "number" ? formatScoreForScale(c.characters, appSettings.ratingScale) : "";
+      const performance = typeof c.performance === "number" ? formatScoreForScale(c.performance, appSettings.ratingScale) : "";
+      const review = (customizations[g.path]?.personalReview || "").replace(/\r?\n/g, "\\n");
+      csv += `"${name.replace(/"/g, '""')}","${g.path.replace(/"/g, '""')}","${src}","${tags}",${pt},"${overall}","${appSettings.ratingScale}","${gameplay}","${story}","${soundtrack}","${visuals}","${characters}","${performance}","${review.replace(/"/g, '""')}",${g.uninstalled ? "yes" : "no"}\n`;
     }
     const savePath = await save({ defaultPath: "libmaly_export.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
     if (savePath) {
       await invoke("save_string_to_file", { path: savePath, contents: csv });
     }
+  };
+
+  const handleExportCloudState = async () => {
+    const payload: CloudSyncPayloadV1 = {
+      schema: "libmaly-cloud-sync-v1",
+      exportedAt: new Date().toISOString(),
+      appVersion,
+      data: {
+        libraryFolders,
+        games,
+        stats,
+        metadata,
+        hiddenGames,
+        favGames,
+        customizations,
+        notes,
+        collections,
+        launchConfig,
+        sessionLog,
+        wishlist,
+        history,
+        appSettings,
+      },
+    };
+    const savePath = await save({
+      defaultPath: `libmaly-cloud-sync-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    }).catch(() => null);
+    if (!savePath || typeof savePath !== "string") return;
+    await invoke("save_string_to_file", { path: savePath, contents: JSON.stringify(payload, null, 2) }).catch((e) => {
+      alert("Failed to export cloud config: " + e);
+    });
+  };
+
+  const handleImportCloudState = async () => {
+    const selectedPath = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    }).catch(() => null);
+    if (!selectedPath || typeof selectedPath !== "string") return;
+
+    let parsed: any;
+    try {
+      const raw = await invoke<string>("read_string_from_file", { path: selectedPath });
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      alert("Could not read/parse JSON: " + e);
+      return;
+    }
+
+    const data: CloudSyncPayloadV1["data"] = parsed?.schema === "libmaly-cloud-sync-v1"
+      ? (parsed.data || {})
+      : (parsed?.data || parsed || {});
+
+    if (!data || typeof data !== "object") {
+      alert("Invalid cloud sync file.");
+      return;
+    }
+
+    if (!confirm("Import will replace current local library state for included sections. Continue?")) return;
+
+    if (Array.isArray(data.libraryFolders)) {
+      setLibraryFolders(data.libraryFolders);
+      saveCache(SK_FOLDERS, data.libraryFolders);
+    }
+    if (Array.isArray(data.games)) {
+      setGames(data.games);
+      saveCache(SK_GAMES, data.games);
+      if (selected && !data.games.some((g) => g.path === selected.path)) setSelected(null);
+    }
+    if (data.stats && typeof data.stats === "object") {
+      setStats(data.stats);
+      saveCache(SK_STATS, data.stats);
+    }
+    if (data.metadata && typeof data.metadata === "object") {
+      setMetadata(data.metadata);
+      saveCache(SK_META, data.metadata);
+    }
+    if (data.hiddenGames && typeof data.hiddenGames === "object") {
+      setHiddenGames(data.hiddenGames);
+      saveCache(SK_HIDDEN, data.hiddenGames);
+    }
+    if (data.favGames && typeof data.favGames === "object") {
+      setFavGames(data.favGames);
+      saveCache(SK_FAVS, data.favGames);
+    }
+    if (data.customizations && typeof data.customizations === "object") {
+      setCustomizations(data.customizations);
+      saveCache(SK_CUSTOM, data.customizations);
+    }
+    if (data.notes && typeof data.notes === "object") {
+      setNotes(data.notes);
+      saveCache(SK_NOTES, data.notes);
+    }
+    if (Array.isArray(data.collections)) {
+      setCollections(data.collections);
+      saveCache(SK_COLLECTIONS, data.collections);
+    }
+    if (data.launchConfig && typeof data.launchConfig === "object") {
+      setLaunchConfig({ ...DEFAULT_LAUNCH_CONFIG, ...data.launchConfig });
+      saveCache(SK_LAUNCH, { ...DEFAULT_LAUNCH_CONFIG, ...data.launchConfig });
+    }
+    if (Array.isArray(data.sessionLog)) {
+      setSessionLog(data.sessionLog);
+      saveCache(SK_SESSION_LOG, data.sessionLog);
+    }
+    if (Array.isArray(data.wishlist)) {
+      setWishlist(data.wishlist);
+      saveCache(SK_WISHLIST, data.wishlist);
+    }
+    if (data.history && typeof data.history === "object") {
+      setHistory(data.history);
+      saveCache(SK_HISTORY, data.history);
+    }
+    if (data.appSettings && typeof data.appSettings === "object") {
+      const nextSettings: AppSettings = {
+        ...DEFAULT_SETTINGS,
+        ...data.appSettings,
+        rssFeeds: mergeDefaultRssFeeds((data.appSettings as Partial<AppSettings>).rssFeeds),
+      };
+      setAppSettings(nextSettings);
+      saveCache(SK_SETTINGS, nextSettings);
+    }
+
+    alert("Cloud config imported.");
   };
 
   const handleExportHTML = async () => {
@@ -2848,16 +2836,29 @@ export default function App() {
       const name = customizations[g.path]?.displayName || metadata[g.path]?.title || g.name;
       const cvr = customizations[g.path]?.coverUrl || metadata[g.path]?.cover_url || "";
       const pt = stats[g.path]?.totalTime || 0;
+      const custom = customizations[g.path];
+      const overall100 = resolveOverallScore100(custom);
+      const review = custom?.personalReview || "";
       const hours = pt >= 3600 ? Math.floor(pt / 3600) + "h " : "";
       const mins = Math.floor((pt % 3600) / 60) + "m";
       const ptStr = pt > 0 ? `<div style="font-size: 11px; color: var(--color-text-muted); margin-top: 5px;">🕓 ${hours}${mins}</div>` : "";
+      const ratingStr = typeof overall100 === "number"
+        ? `<div style="font-size: 11px; color: #e8c35a; margin-top: 4px;">★ ${formatScoreForScale(overall100, appSettings.ratingScale)}</div>`
+        : "";
+      const categoryStr = custom?.categoryRatings
+        ? `<div style="font-size: 10px; color: var(--color-text-muted); margin-top: 4px;">${RATING_CATEGORIES.map((cat) => {
+          const v = custom.categoryRatings?.[cat.key];
+          return typeof v === "number" ? `${cat.label}: ${formatScoreForScale(v, appSettings.ratingScale)}` : "";
+        }).filter(Boolean).join(" · ")}</div>`
+        : "";
+      const reviewStr = review ? `<p style="font-size: 11px; color: var(--color-text-muted); margin: 6px 0 0 0; white-space: pre-wrap;">${review.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>` : "";
 
       const src = metadata[g.path]?.source;
       const url = metadata[g.path]?.source_url;
       const sourceStr = src && url ? `<a href="${url}" target="_blank" style="display: inline-block; font-size: 10px; margin-top: 5px; color: var(--color-accent); text-decoration: none; border: 1px solid var(--color-border); padding: 2px 6px; border-radius: 4px;">↗ ${src}</a>` : "";
 
       const img = cvr ? `<img src="${cvr}" />` : `<div style="aspect-ratio: 2/3; background: var(--color-border); display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 12px; font-weight: bold; color: rgba(255,255,255,0.5);">NO COVER</div>`;
-      html += `<div class="card">${img}<h3>${name}</h3>${sourceStr}${ptStr}</div>`;
+      html += `<div class="card">${img}<h3>${name}</h3>${sourceStr}${ptStr}${ratingStr}${categoryStr}${reviewStr}</div>`;
     }
     html += `</div></body></html>`;
     const savePath = await save({ defaultPath: "libmaly_library.html", filters: [{ name: "HTML", extensions: ["html"] }] });
@@ -2867,6 +2868,7 @@ export default function App() {
   };
 
   const [screenshots, setScreenshots] = useState<Record<string, Screenshot[]>>({});
+  const [pendingAnnotatedShot, setPendingAnnotatedShot] = useState<{ gamePath: string; shot: Screenshot } | null>(null);
   const [hiddenGames, setHiddenGames] = useState<Record<string, boolean>>(() => loadCache(SK_HIDDEN, {}));
   const [favGames, setFavGames] = useState<Record<string, boolean>>(() => loadCache(SK_FAVS, {}));
   const [customizations, setCustomizations] = useState<Record<string, GameCustomization>>(() => loadCache(SK_CUSTOM, {}));
@@ -2954,7 +2956,14 @@ export default function App() {
       return updated;
     });
   };
-  const [appSettings, setAppSettings] = useState<AppSettings>(() => ({ ...DEFAULT_SETTINGS, ...loadCache(SK_SETTINGS, DEFAULT_SETTINGS) }));
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => {
+    const cached = loadCache(SK_SETTINGS, DEFAULT_SETTINGS) as Partial<AppSettings>;
+    return {
+      ...DEFAULT_SETTINGS,
+      ...cached,
+      rssFeeds: mergeDefaultRssFeeds(cached.rssFeeds),
+    };
+  });
   const appSettingsRef = useRef(appSettings);
   useEffect(() => { appSettingsRef.current = appSettings; }, [appSettings]);
   useEffect(() => {
@@ -3056,7 +3065,9 @@ export default function App() {
     });
   }, [activeMainTab, selected?.path]);
   const currentLocationTitle = useMemo(() => {
-    if (selected) return gameDisplayName(selected);
+    if (selected) {
+      return customizations[selected.path]?.displayName ?? metadata[selected.path]?.title ?? selected.name;
+    }
     if (activeMainTab === "feed") return "News & Updates";
     if (activeMainTab === "stats") return "All-Time Stats";
     return "Library";
@@ -3103,6 +3114,10 @@ export default function App() {
   const [showSteamImport, setShowSteamImport] = useState(false);
   /** Show the Lutris import modal */
   const [showLutrisImport, setShowLutrisImport] = useState(false);
+  /** Show the Playnite import modal */
+  const [showPlayniteImport, setShowPlayniteImport] = useState(false);
+  /** Show the GOG Galaxy import modal */
+  const [showGogImport, setShowGogImport] = useState(false);
   /** Wishlisted unowned games */
   const [wishlist, setWishlist] = useState<WishlistItem[]>(() => loadCache(SK_WISHLIST, []));
 
@@ -3142,6 +3157,7 @@ export default function App() {
   useEffect(() => {
     invoke<boolean>("f95_is_logged_in").then(setF95LoggedIn).catch(() => { });
     invoke<boolean>("dlsite_is_logged_in").then(setDlsiteLoggedIn).catch(() => { });
+    invoke<boolean>("fakku_is_logged_in").then(setFakkuLoggedIn).catch(() => { });
     invoke<string>("get_platform").then(setPlatform).catch(() => { });
     getVersion().then(setAppVersion).catch(() => { });
     // Check for a newer release on GitHub (once per startup, never again)
@@ -3155,7 +3171,7 @@ export default function App() {
     }
     // Initial incremental sync for all known library folders
     const folders = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
-    const legacyPath = localStorage.getItem(SK_PATH);
+    const legacyPath = appStorageGetItem(SK_PATH);
     const roots = folders.length > 0 ? folders : (legacyPath ? [{ path: legacyPath }] : []);
     if (roots.length > 0) {
       runIncrementalSyncAll(roots).finally(() => setIsAppReady(true));
@@ -3188,16 +3204,25 @@ export default function App() {
       const p = ev.payload as { path: string; duration_secs: number };
       updateStats(p.path, p.duration_secs);
       setRunningGamePath(null);
+      if (appSettingsRef.current.saveBackupOnExit) {
+        backupSaveFilesForPath(p.path, true).catch((e) => {
+          console.error("Save backup on exit failed:", e);
+        });
+      }
       if (appSettingsRef.current.sessionToastEnabled) {
         isPermissionGranted().then(granted => {
-          if (!granted) return requestPermission().then(r => r === "granted" || r === "default" ? true : false);
+          if (!granted) {
+            return requestPermission()
+              .then(r => r === "granted" || r === "default" ? true : false)
+              .catch(() => false);
+          }
           return true;
         }).then(granted => {
           if (granted) {
             const title = customizationsRef.current[p.path]?.displayName ?? metadataRef.current[p.path]?.title ?? gamesRef.current.find(g => g.path === p.path)?.name ?? "Game";
             sendNotification({ title: "Session Ended", body: `Played ${title} for ${formatTime(p.duration_secs)}` });
           }
-        });
+        }).catch(() => { });
       }
       if (appSettingsRef.current.trayTooltipEnabled) {
         invoke("set_tray_tooltip", { tooltip: "LIBMALY" }).catch(() => null);
@@ -3332,11 +3357,7 @@ export default function App() {
 
     const intervalId = setInterval(async () => {
       try {
-        const shot = await invoke<Screenshot>("take_screenshot_manual");
-        setScreenshots((prev) => ({
-          ...prev,
-          [runningGamePath]: [shot, ...(prev[runningGamePath] ?? [])],
-        }));
+        await captureScreenshotForPath(runningGamePath, false);
       } catch (e) {
         console.error("Auto-screenshot failed:", e);
       }
@@ -3352,13 +3373,9 @@ export default function App() {
     registerGlobalShortcut("F12", async () => {
       if (!active) return;
       try {
-        const shot = await invoke<Screenshot>("take_screenshot_manual");
         const gamePath = runningGamePath || selected?.path;
         if (!gamePath) return;
-        setScreenshots((prev) => ({
-          ...prev,
-          [gamePath]: [shot, ...(prev[gamePath] ?? [])],
-        }));
+        await captureScreenshotForPath(gamePath, false);
       } catch {
         // Ignore when no active game is running.
       }
@@ -3369,6 +3386,25 @@ export default function App() {
     };
   }, [platform, runningGamePath, selected?.path]);
 
+  // Secondary global hotkey: capture + annotate before saving.
+  useEffect(() => {
+    let active = true;
+    registerGlobalShortcut("F10", async () => {
+      if (!active) return;
+      try {
+        const gamePath = runningGamePath || selected?.path;
+        if (!gamePath) return;
+        await captureScreenshotForPath(gamePath, true);
+      } catch {
+        // Ignore when no active game is running.
+      }
+    }).catch(() => { });
+    return () => {
+      active = false;
+      unregisterGlobalShortcut("F10").catch(() => { });
+    };
+  }, [runningGamePath, selected?.path]);
+
   // Background game update checker
   useEffect(() => {
     if (!appSettings.updateCheckerEnabled || games.length === 0) return;
@@ -3377,10 +3413,9 @@ export default function App() {
         const m = metadata[g.path];
         if (m && m.source_url) {
           try {
-            const res = await invoke<GameMetadata | null>(
-              m.source === "f95" ? "fetch_f95_metadata" : "fetch_dlsite_metadata",
-              { url: m.source_url }
-            );
+            const cmd = metadataFetchCommand(m.source);
+            if (!cmd) continue;
+            const res = await invoke<GameMetadata | null>(cmd, { url: m.source_url });
             if (res && res.version && m.version && res.version !== m.version) {
               setAvailableGameUpdates(prev => ({ ...prev, [g.path]: res.version! }));
             }
@@ -3522,6 +3557,39 @@ export default function App() {
     });
   };
 
+  const handleInteropImport = (entries: InteropGameEntry[]) => {
+    if (entries.length === 0) return;
+
+    setGames((prev) => {
+      const next = [...prev];
+      const seen = new Set(prev.map((g) => normalizePathForMatch(g.path)));
+      for (const e of entries) {
+        if (!e.exe) continue;
+        const key = normalizePathForMatch(e.exe);
+        if (seen.has(key)) continue;
+        next.push({ name: e.name || deriveGameName(e.exe), path: e.exe });
+        seen.add(key);
+      }
+      saveCache(SK_GAMES, next);
+      return next;
+    });
+
+    setCustomizations((prev) => {
+      const next = { ...prev };
+      for (const e of entries) {
+        if (!e.exe) continue;
+        const prevCustom = next[e.exe] ?? {};
+        next[e.exe] = {
+          ...prevCustom,
+          displayName: prevCustom.displayName ?? e.name ?? deriveGameName(e.exe),
+          launchArgs: prevCustom.launchArgs ?? e.args,
+        };
+      }
+      saveCache(SK_CUSTOM, next);
+      return next;
+    });
+  };
+
 
   // ── Persist helpers ─────────────────────────────────────────────────────────
   const applySingleScanResult = (
@@ -3654,6 +3722,123 @@ export default function App() {
       saveCache(SK_GAMES, kept);
       return kept;
     });
+  };
+
+  const handleMigrateGameFolder = async (oldRoot: string, newRoot: string): Promise<number> => {
+    const oldN = normalizePathNoCase(oldRoot);
+    const newN = normalizePathNoCase(newRoot);
+    if (!oldN || !newN) return 0;
+
+    const remap = (p: string) => remapPathByRoot(p, oldN, newN);
+    const remapOrSelf = (p: string) => remap(p) ?? p;
+    const remapRecord = <T,>(src: Record<string, T>): Record<string, T> => {
+      const out: Record<string, T> = {};
+      for (const [k, v] of Object.entries(src)) out[remapOrSelf(k)] = v;
+      return out;
+    };
+
+    const movedOldPaths = new Set<string>();
+    const nextGamesRaw = games.map((g) => {
+      const mapped = remap(g.path);
+      if (!mapped) return g;
+      movedOldPaths.add(g.path);
+      return { ...g, path: mapped };
+    });
+    const seenGamePaths = new Set<string>();
+    const nextGames = nextGamesRaw.filter((g) => {
+      const key = normalizePathForMatch(g.path);
+      if (seenGamePaths.has(key)) return false;
+      seenGamePaths.add(key);
+      return true;
+    });
+
+    const nextStats = remapRecord(stats);
+    const nextMetadata = remapRecord(metadata);
+    const nextHidden = remapRecord(hiddenGames);
+    const nextFavs = remapRecord(favGames);
+    const nextNotes = remapRecord(notes);
+    const nextHistory = remapRecord(history);
+    const nextCollections = collections.map((c) => ({
+      ...c,
+      gamePaths: Array.from(new Set(c.gamePaths.map(remapOrSelf))),
+    }));
+    const nextSessionLog = sessionLog.map((s) => ({ ...s, path: remapOrSelf(s.path) }));
+    const nextCustomOrder: Record<string, string[]> = Object.fromEntries(
+      Object.entries(customOrder).map(([k, arr]) => [k, Array.from(new Set(arr.map(remapOrSelf)))])
+    );
+    const nextFolders = libraryFolders.map((f) => ({ path: remapOrSelf(f.path) }));
+    const nextMtimes = loadCache<DirMtime[]>(SK_MTIMES, []).map((d) => ({ ...d, path: remapOrSelf(d.path) }));
+    const nextRecent = loadCache<RecentGame[]>(SK_RECENT, []).map((r) => ({ ...r, path: remapOrSelf(r.path) }));
+
+    const nextCustomizations: Record<string, GameCustomization> = {};
+    for (const [path, custom] of Object.entries(customizations)) {
+      const nextPath = remapOrSelf(path);
+      nextCustomizations[nextPath] = {
+        ...custom,
+        exeOverride: custom.exeOverride ? remapOrSelf(custom.exeOverride) : custom.exeOverride,
+        pinnedExes: custom.pinnedExes?.map((p) => ({ ...p, path: remapOrSelf(p.path) })),
+        runnerOverride: custom.runnerOverride
+          ? {
+            ...custom.runnerOverride,
+            prefixPath: custom.runnerOverride.prefixPath ? remapOrSelf(custom.runnerOverride.prefixPath) : custom.runnerOverride.prefixPath,
+            runnerPath: custom.runnerOverride.runnerPath ? remapOrSelf(custom.runnerOverride.runnerPath) : custom.runnerOverride.runnerPath,
+          }
+          : custom.runnerOverride,
+      };
+    }
+
+    setGames(nextGames); saveCache(SK_GAMES, nextGames);
+    setStats(nextStats); saveCache(SK_STATS, nextStats);
+    setMetadata(nextMetadata); saveCache(SK_META, nextMetadata);
+    setHiddenGames(nextHidden); saveCache(SK_HIDDEN, nextHidden);
+    setFavGames(nextFavs); saveCache(SK_FAVS, nextFavs);
+    setNotes(nextNotes); saveCache(SK_NOTES, nextNotes);
+    setHistory(nextHistory); saveCache(SK_HISTORY, nextHistory);
+    setCollections(nextCollections); saveCache(SK_COLLECTIONS, nextCollections);
+    setSessionLog(nextSessionLog); saveCache(SK_SESSION_LOG, nextSessionLog);
+    setCustomOrder(nextCustomOrder); saveCache(SK_ORDER, nextCustomOrder);
+    setCustomizations(nextCustomizations); saveCache(SK_CUSTOM, nextCustomizations);
+    setLibraryFolders(nextFolders); saveCache(SK_FOLDERS, nextFolders);
+    saveCache(SK_MTIMES, nextMtimes);
+    setRecentGames(nextRecent); saveCache(SK_RECENT, nextRecent);
+    invoke("set_recent_games", { games: nextRecent }).catch(() => { });
+
+    if (selected) {
+      const mapped = remap(selected.path);
+      if (mapped) {
+        const nextSelected = nextGames.find((g) => normalizePathForMatch(g.path) === normalizePathForMatch(mapped)) || null;
+        setSelected(nextSelected);
+      }
+    }
+    setRunningGamePath((prev) => (prev ? remapOrSelf(prev) : prev));
+    setDeleteTarget((prev) => (prev ? { ...prev, path: remapOrSelf(prev.path) } : prev));
+    setPendingMetaUpdate((prev) => (prev ? { ...prev, path: remapOrSelf(prev.path) } : prev));
+    setScreenshots((prev) => {
+      const next: Record<string, Screenshot[]> = {};
+      for (const [k, v] of Object.entries(prev)) next[remapOrSelf(k)] = v;
+      return next;
+    });
+    setNavHistory((prev) => prev.map((n) => ({
+      ...n,
+      selectedPath: n.selectedPath ? remapOrSelf(n.selectedPath) : null,
+    })));
+
+    return movedOldPaths.size;
+  };
+
+  const backupSaveFilesForPath = async (gamePath: string, silent = false) => {
+    try {
+      const res = await invoke<SaveBackupResult>("backup_save_files", { gamePath });
+      if (!silent) {
+        alert(`Save backup created:\n${res.zip_path}\nFiles: ${res.files}`);
+      }
+      return res;
+    } catch (e) {
+      if (!silent) {
+        alert("Save-file backup failed: " + e);
+      }
+      throw e;
+    }
   };
 
   const launchGame = async (path: string, overridePath?: string, overrideArgs?: string) => {
@@ -3811,10 +3996,9 @@ export default function App() {
       const m = metadata[p];
       try {
         let newMeta: GameMetadata | undefined;
-        if (m.source === "f95") {
-          newMeta = await invoke<GameMetadata>("fetch_f95_metadata", { url: m.source_url });
-        } else if (m.source === "dlsite") {
-          newMeta = await invoke<GameMetadata>("fetch_dlsite_metadata", { url: m.source_url });
+        const cmd = metadataFetchCommand(m.source);
+        if (cmd) {
+          newMeta = await invoke<GameMetadata>(cmd, { url: m.source_url });
         }
         if (newMeta) {
           const finalMeta = { ...newMeta, fetchedAt: Date.now() };
@@ -3863,6 +4047,41 @@ export default function App() {
     } catch (e) {
       alert("Export failed: " + e);
     }
+  };
+
+  const captureScreenshotForPath = async (gamePath: string, annotate: boolean) => {
+    const shot = await invoke<Screenshot>("take_screenshot_manual");
+    if (annotate) {
+      setPendingAnnotatedShot({ gamePath, shot });
+      return;
+    }
+    setScreenshots((prev) => ({
+      ...prev,
+      [gamePath]: [shot, ...(prev[gamePath] ?? [])],
+    }));
+  };
+
+  const handleSaveAnnotatedShot = async (dataUrl: string) => {
+    if (!pendingAnnotatedShot) return;
+    const { gamePath, shot } = pendingAnnotatedShot;
+    try {
+      await invoke("overwrite_screenshot_png", { path: shot.path, dataUrl });
+      setScreenshots((prev) => ({
+        ...prev,
+        [gamePath]: [shot, ...(prev[gamePath] ?? [])],
+      }));
+    } catch (e) {
+      alert("Failed to save annotated screenshot: " + e);
+      await invoke("delete_screenshot_file", { path: shot.path }).catch(() => { });
+    } finally {
+      setPendingAnnotatedShot(null);
+    }
+  };
+
+  const handleCancelAnnotatedShot = async () => {
+    if (!pendingAnnotatedShot) return;
+    await invoke("delete_screenshot_file", { path: pendingAnnotatedShot.shot.path }).catch(() => { });
+    setPendingAnnotatedShot(null);
   };
 
   const refreshRustLogs = async () => {
@@ -3934,8 +4153,8 @@ export default function App() {
         const m = metadata[p];
         try {
           let newMeta: GameMetadata | undefined;
-          if (m.source === "f95") newMeta = await invoke<GameMetadata>("fetch_f95_metadata", { url: m.source_url });
-          else if (m.source === "dlsite") newMeta = await invoke<GameMetadata>("fetch_dlsite_metadata", { url: m.source_url });
+          const cmd = metadataFetchCommand(m.source);
+          if (cmd) newMeta = await invoke<GameMetadata>(cmd, { url: m.source_url });
 
           if (newMeta) {
             const finalMeta = { ...newMeta, fetchedAt: Date.now() };
@@ -4115,6 +4334,10 @@ export default function App() {
         else if (filterMode === "hidden") return isHid;
         else if (filterMode === "f95") return metadata[g.path]?.source === "f95";
         else if (filterMode === "dlsite") return metadata[g.path]?.source === "dlsite";
+        else if (filterMode === "vndb") return metadata[g.path]?.source === "vndb";
+        else if (filterMode === "mangagamer") return metadata[g.path]?.source === "mangagamer";
+        else if (filterMode === "johren") return metadata[g.path]?.source === "johren";
+        else if (filterMode === "fakku") return metadata[g.path]?.source === "fakku";
         else if (filterMode === "unlinked") return !metadata[g.path];
         else if (filterMode === "Playing" || filterMode === "Completed" || filterMode === "On Hold" || filterMode === "Dropped" || filterMode === "Plan to Play") {
           return customizations[g.path]?.status === filterMode;
@@ -4265,6 +4488,7 @@ export default function App() {
 
   /** Settings modal */
   const [showSettings, setShowSettings] = useState(false);
+  const [showMigrationWizard, setShowMigrationWizard] = useState(false);
   const canGoBack = navIndex > 0;
   const canGoForward = navIndex < navHistory.length - 1;
   const goBack = useCallback(() => {
@@ -4308,6 +4532,10 @@ export default function App() {
       if (maxed) return w.unmaximize().then(() => setIsMaximized(false));
       return w.maximize().then(() => setIsMaximized(true));
     }).catch(() => { });
+  };
+  const handleTopbarDragMouseDown = (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    getCurrentWindow().startDragging().catch(() => { });
   };
   const handleCloseWindow = () => {
     getCurrentWindow().close().catch(() => { });
@@ -4368,7 +4596,11 @@ export default function App() {
             →
           </button>
         </div>
-        <div data-tauri-drag-region className="flex-1 flex items-center gap-2 px-2 overflow-hidden">
+        <div
+          className="flex-1 flex items-center gap-2 px-2 overflow-hidden cursor-move"
+          onMouseDown={handleTopbarDragMouseDown}
+          onDblClick={handleToggleMaximizeWindow}
+        >
           <span className="text-[11px] font-semibold truncate" style={{ color: "var(--color-text-soft)" }}>
             {topbarLocationTitle}
           </span>
@@ -4552,6 +4784,10 @@ export default function App() {
                     ["hidden", `👁 Hidden (${Object.keys(hiddenGames).length})`],
                     ["f95", "F95"],
                     ["dlsite", "DLsite"],
+                    ["vndb", "VNDB"],
+                    ["mangagamer", "MangaGamer"],
+                    ["johren", "Johren"],
+                    ["fakku", "FAKKU"],
                     ["unlinked", "Unlinked"],
                   ] as [FilterMode, string][]).map(([mode, label]) => (
                     <button key={mode} onClick={() => setFilterMode(mode)}
@@ -5213,6 +5449,7 @@ export default function App() {
             onOpenF95Login={() => setShowF95Login(true)}
             onClearMeta={handleClearMeta}
             onUpdate={() => setShowUpdateModal(true)}
+            onBackupSaves={() => backupSaveFilesForPath(selected.path)}
             onToggleHide={toggleHide}
             onToggleFav={toggleFav}
             onOpenCustomize={() => setShowCustomizeModal(true)}
@@ -5232,11 +5469,14 @@ export default function App() {
             onRevealNsfw={revealNsfwPath}
             onTakeScreenshot={async () => {
               try {
-                const shot = await invoke<Screenshot>("take_screenshot_manual");
-                setScreenshots((prev) => ({
-                  ...prev,
-                  [selected.path]: [shot, ...(prev[selected.path] ?? [])],
-                }));
+                await captureScreenshotForPath(selected.path, false);
+              } catch (e) {
+                alert("Screenshot failed: " + e);
+              }
+            }}
+            onAnnotateScreenshot={async () => {
+              try {
+                await captureScreenshotForPath(selected.path, true);
               } catch (e) {
                 alert("Screenshot failed: " + e);
               }
@@ -5272,6 +5512,7 @@ export default function App() {
           <SettingsModal
             f95LoggedIn={f95LoggedIn}
             dlsiteLoggedIn={dlsiteLoggedIn}
+            fakkuLoggedIn={fakkuLoggedIn}
             libraryFolders={libraryFolders}
             syncState={syncState}
             platform={platform}
@@ -5281,16 +5522,24 @@ export default function App() {
             onF95Logout={async () => { await invoke("f95_logout").catch(() => { }); setF95LoggedIn(false); }}
             onDLsiteLogin={() => setShowDLsiteLogin(true)}
             onDLsiteLogout={async () => { await invoke("dlsite_logout").catch(() => { }); setDlsiteLoggedIn(false); }}
+            onFakkuLogin={() => setShowFakkuLogin(true)}
+            onFakkuLogout={async () => { await invoke("fakku_logout").catch(() => { }); setFakkuLoggedIn(false); }}
             onRemoveFolder={handleRemoveFolder}
             onRescanAll={() => runFullScanAll(libraryFolders)}
             onWineSettings={() => setShowWineSettings(true)}
             onSteamImport={() => setShowSteamImport(true)}
             onLutrisImport={() => setShowLutrisImport(true)}
+            onPlayniteImport={() => setShowPlayniteImport(true)}
+            onGogImport={() => setShowGogImport(true)}
             onAppUpdate={() => setShowAppUpdateModal(true)}
             appSettings={appSettings}
+            defaultSettings={DEFAULT_SETTINGS}
             onSaveSettings={(s) => { setAppSettings(s); saveCache(SK_SETTINGS, s); }}
+            onOpenMigrationWizard={() => setShowMigrationWizard(true)}
             onExportCSV={handleExportCSV}
             onExportHTML={handleExportHTML}
+            onExportCloudState={handleExportCloudState}
+            onImportCloudState={handleImportCloudState}
             onClose={() => setShowSettings(false)}
             onBatchMetadataRefresh={handleBatchMetadataRefresh}
             batchRefreshStatus={batchRefreshStatus}
@@ -5303,6 +5552,15 @@ export default function App() {
             config={launchConfig}
             onSave={(c) => { setLaunchConfig(c); saveCache(SK_LAUNCH, c); }}
             onClose={() => setShowWineSettings(false)}
+          />
+        )
+      }
+      {
+        showMigrationWizard && (
+          <MigrationWizardModal
+            games={games}
+            onApply={handleMigrateGameFolder}
+            onClose={() => setShowMigrationWizard(false)}
           />
         )
       }
@@ -5434,6 +5692,14 @@ export default function App() {
         )
       }
       {
+        showFakkuLogin && (
+          <FakkuLoginModal
+            onClose={() => setShowFakkuLogin(false)}
+            onSuccess={() => setFakkuLoggedIn(true)}
+          />
+        )
+      }
+      {
         deleteTarget && (
           <div className="fixed inset-0 flex items-center justify-center z-50"
             style={{ background: "rgba(0,0,0,0.75)" }}
@@ -5496,6 +5762,41 @@ export default function App() {
             games={games}
             onImport={handleLutrisImport}
             onClose={() => setShowLutrisImport(false)}
+          />
+        )
+      }
+      {
+        showPlayniteImport && (
+          <InteropImportModal
+            games={games}
+            command="import_playnite_games"
+            title="Import from Playnite"
+            subtitle="Read installed entries from Playnite library database and merge them into LIBMALY."
+            accent="#7d68c9"
+            onImport={handleInteropImport}
+            onClose={() => setShowPlayniteImport(false)}
+          />
+        )
+      }
+      {
+        showGogImport && (
+          <InteropImportModal
+            games={games}
+            command="import_gog_galaxy_games"
+            title="Import from GOG Galaxy"
+            subtitle="Read installed GOG entries from galaxy-2.0.db and merge them into LIBMALY."
+            accent="#4f90d9"
+            onImport={handleInteropImport}
+            onClose={() => setShowGogImport(false)}
+          />
+        )
+      }
+      {
+        pendingAnnotatedShot && (
+          <ScreenshotAnnotateModal
+            shot={pendingAnnotatedShot.shot}
+            onSave={handleSaveAnnotatedShot}
+            onCancel={handleCancelAnnotatedShot}
           />
         )
       }

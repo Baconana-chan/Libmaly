@@ -1897,15 +1897,16 @@ pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>
                                     s.to_string()
                                 }
                             });
-                        if !url.is_empty() && !url.contains("category") {
-                            if push_result(SearchResultItem {
+                        if !url.is_empty()
+                            && !url.contains("category")
+                            && push_result(SearchResultItem {
                                 title,
                                 url,
                                 cover_url,
                                 source: "DLsite".into(),
-                            }) {
-                                dl_count += 1;
-                            }
+                            })
+                        {
+                            dl_count += 1;
                         }
                     }
                 }

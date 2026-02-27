@@ -31,33 +31,33 @@ pub fn is_portable_mode() -> bool {
 
 pub fn app_data_root() -> PathBuf {
     if is_portable_mode() {
-        return executable_dir()
+        executable_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("libmaly-data");
-    }
-
-    #[cfg(windows)]
-    {
-        let base = std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."));
-        return base.join("libmaly");
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let base = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(".local/share");
-        return base.join("libmaly");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let base = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("Library/Application Support");
-        return base.join("libmaly");
+            .join("libmaly-data")
+    } else {
+        #[cfg(windows)]
+        {
+            let base = std::env::var("APPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("."));
+            base.join("libmaly")
+        }
+        #[cfg(target_os = "linux")]
+        {
+            std::env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(".local/share")
+                .join("libmaly")
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("Library/Application Support")
+                .join("libmaly")
+        }
     }
 }
 
@@ -71,4 +71,3 @@ pub fn crash_report_path(app: &AppHandle, filename: &str) -> PathBuf {
         .unwrap_or_else(|_| app_data_root())
         .join(filename)
 }
-

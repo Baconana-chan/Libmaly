@@ -4,6 +4,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { getMatches } from "@tauri-apps/plugin-cli";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { marked } from "marked";
@@ -343,6 +345,7 @@ interface Collection {
 
 type SortMode = "name" | "lastPlayed" | "playtime" | "custom";
 type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "unlinked" | "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play" | string;
+type LaunchRequest = { mode: "path" | "name"; value: string };
 
 function loadCache<T>(key: string, fallback: T): T {
   try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : fallback; }
@@ -373,6 +376,36 @@ function heroGradient(name: string) {
 }
 function isF95Url(url: string) { return url.includes("f95zone.to"); }
 function isDLsiteUrl(url: string) { return url.includes("dlsite.com"); }
+function normalizePathForMatch(path: string) {
+  return path.trim().replace(/\\/g, "/").toLowerCase();
+}
+function parseDeepLinkUrl(rawUrl: string): LaunchRequest | null {
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== "libmaly:") return null;
+    if (u.hostname === "launch") {
+      const raw = u.pathname.replace(/^\/+/, "");
+      if (!raw) return null;
+      return { mode: "path", value: decodeURIComponent(raw) };
+    }
+    if (u.hostname === "launch-name") {
+      const raw = u.pathname.replace(/^\/+/, "");
+      if (!raw) return null;
+      return { mode: "name", value: decodeURIComponent(raw) };
+    }
+    return null;
+  } catch {
+    const pathMatch = rawUrl.match(/^libmaly:\/\/launch\/(.+)$/i);
+    if (pathMatch?.[1]) {
+      return { mode: "path", value: decodeURIComponent(pathMatch[1]) };
+    }
+    const nameMatch = rawUrl.match(/^libmaly:\/\/launch-name\/(.+)$/i);
+    if (nameMatch?.[1]) {
+      return { mode: "name", value: decodeURIComponent(nameMatch[1]) };
+    }
+    return null;
+  }
+}
 
 // ─── Command Palette ────────────────────────────────────────────────────────
 function CommandPalette({
@@ -1514,10 +1547,11 @@ function CustomizeModal({ game, meta, custom, onSave, onClose }: {
 }
 
 // ─── In-Game Screenshots Gallery ─────────────────────────────────────────────
-function InGameGallery({ shots, onTake, onOpenFolder, onUpdateTags }: {
+function InGameGallery({ shots, onTake, onOpenFolder, onExportZip, onUpdateTags }: {
   shots: Screenshot[];
   onTake: () => void;
   onOpenFolder: () => void;
+  onExportZip: () => void;
   onUpdateTags: (filename: string, tags: string[]) => void;
 }) {
   const [lightbox, setLightbox] = useState<Screenshot | null>(null);
@@ -1563,6 +1597,20 @@ function InGameGallery({ shots, onTake, onOpenFolder, onUpdateTags }: {
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
             </svg>
             Folder
+          </button>
+          <button onClick={onExportZip}
+            disabled={shots.length === 0}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: "#2a3f54", color: "#8f98a0", border: "1px solid #3a5469" }}
+            onMouseEnter={(e) => { if (shots.length > 0) { e.currentTarget.style.background = "#1e4060"; e.currentTarget.style.color = "#66c0f4"; } }}
+            onMouseLeave={(e) => { if (shots.length > 0) { e.currentTarget.style.background = "#2a3f54"; e.currentTarget.style.color = "#8f98a0"; } }}
+            title="Export all screenshots to a zip archive">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Export ZIP
           </button>
         </div>
 
@@ -2737,7 +2785,7 @@ function VersionTimeline({ history, onAddHistory }: {
 // ─── Game Detail ──────────────────────────────────────────────────────────────
 function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots, isHidden, isFav,
   onPlay, onStop, isRunning, runnerLabel, onDelete, onLinkPage, onOpenF95Login, onClearMeta, onUpdate,
-  onTakeScreenshot, onOpenScreenshotsFolder, onUpdateScreenshotTags, onToggleHide, onToggleFav, onOpenCustomize, onSaveCustomization, onOpenNotes, hasNotes, onManageCollections,
+  onTakeScreenshot, onOpenScreenshotsFolder, onExportGalleryZip, onUpdateScreenshotTags, onToggleHide, onToggleFav, onOpenCustomize, onSaveCustomization, onOpenNotes, hasNotes, onManageCollections,
   sessions, onEditSessionNote, appSettings, revealedNsfw, onRevealNsfw, history, onAddHistory }: {
     game: Game; stat: GameStats; meta?: GameMetadata;
     customization: GameCustomization; f95LoggedIn: boolean;
@@ -2745,7 +2793,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
     onPlay: (overridePath?: string, overrideArgs?: string) => void; onStop: () => void; isRunning: boolean; runnerLabel?: string;
     onDelete: () => void; onLinkPage: () => void;
     onOpenF95Login: () => void; onClearMeta: () => void; onUpdate: () => void;
-    onTakeScreenshot: () => void; onOpenScreenshotsFolder: () => void; onUpdateScreenshotTags: (filename: string, tags: string[]) => void;
+    onTakeScreenshot: () => void; onOpenScreenshotsFolder: () => void; onExportGalleryZip: () => void; onUpdateScreenshotTags: (filename: string, tags: string[]) => void;
     onToggleHide: () => void; onToggleFav: () => void; onOpenCustomize: () => void;
     onSaveCustomization: (changes: Partial<GameCustomization>) => void;
     onOpenNotes: () => void; hasNotes: boolean; onManageCollections: () => void;
@@ -3009,6 +3057,7 @@ function GameDetail({ game, stat, meta, customization, f95LoggedIn, screenshots,
               shots={screenshots}
               onTake={onTakeScreenshot}
               onOpenFolder={onOpenScreenshotsFolder}
+              onExportZip={onExportGalleryZip}
               onUpdateTags={onUpdateScreenshotTags}
             />
             {/* Play History */}
@@ -3792,6 +3841,7 @@ export default function App() {
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [showFilters, setShowFilters] = useState(false);
   const [showCollections, setShowCollections] = useState(false);
+  const [showDevelopers, setShowDevelopers] = useState(false);
   const [showWishlist, setShowWishlist] = useState(false);
   const [batchRefreshStatus, setBatchRefreshStatus] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("lastPlayed");
@@ -3880,6 +3930,7 @@ export default function App() {
   const [appUpdate, setAppUpdate] = useState<{ version: string; url: string; downloadUrl: string } | null>(null);
   const [showAppUpdateModal, setShowAppUpdateModal] = useState(false);
   const [showCmdPalette, setShowCmdPalette] = useState(false);
+  const [pendingLaunchRequest, setPendingLaunchRequest] = useState<LaunchRequest | null>(null);
   /** Controls the "+ Add" dropdown in the sidebar */
   const [showAddMenu, setShowAddMenu] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -3945,6 +3996,23 @@ export default function App() {
     } else {
       setIsAppReady(true);
     }
+    getMatches().then((matches: any) => {
+      const sub = matches?.subcommand;
+      if (sub?.name !== "launch") return;
+      const nameArg = sub?.matches?.args?.name?.value;
+      const value = typeof nameArg === "string" ? nameArg : Array.isArray(nameArg) ? nameArg[0] : null;
+      if (value && value.trim()) setPendingLaunchRequest({ mode: "name", value: value.trim() });
+    }).catch(() => { });
+    getCurrentDeepLinks().then((urls) => {
+      const arr = Array.isArray(urls) ? urls : [];
+      for (const rawUrl of arr) {
+        const req = parseDeepLinkUrl(rawUrl);
+        if (req) {
+          setPendingLaunchRequest(req);
+          break;
+        }
+      }
+    }).catch(() => { });
 
     const unlistenFinished = listen("game-finished", (ev: any) => {
       const p = ev.payload as { path: string; duration_secs: number };
@@ -3989,12 +4057,22 @@ export default function App() {
         openUrl(fallback).catch(console.error);
       }
     });
+    const unlistenDeepLink = onOpenUrl((urls) => {
+      for (const rawUrl of urls) {
+        const req = parseDeepLinkUrl(rawUrl);
+        if (req) {
+          setPendingLaunchRequest(req);
+          break;
+        }
+      }
+    });
 
     return () => {
       unlistenFinished.then((f) => f());
       unlistenStarted.then((f) => f());
       unlistenShot.then((f) => f());
       unlistenBoss.then((f) => f());
+      unlistenDeepLink.then((f) => f());
     };
   }, []);
 
@@ -4298,6 +4376,53 @@ export default function App() {
     catch (e) { alert("Failed to stop game: " + e); }
   };
 
+  useEffect(() => {
+    if (!pendingLaunchRequest || !isAppReady || games.length === 0) return;
+
+    const launchByPath = (requestedPath: string) => {
+      const wanted = normalizePathForMatch(requestedPath);
+      const game = games.find((g) => normalizePathForMatch(g.path) === wanted);
+      if (!game) return false;
+      setSelected(game);
+      setActiveMainTab("library");
+      launchGame(game.path);
+      return true;
+    };
+
+    const launchByName = (rawName: string) => {
+      const q = rawName.trim().toLowerCase();
+      if (!q) return false;
+      const ranked = games
+        .map((g) => {
+          const display = (customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name).toLowerCase();
+          const plain = g.name.toLowerCase();
+          const score =
+            display === q || plain === q ? 0 :
+              display.startsWith(q) || plain.startsWith(q) ? 1 :
+                (display.includes(q) || plain.includes(q) ? 2 : 99);
+          return { g, score };
+        })
+        .filter((r) => r.score < 99)
+        .sort((a, b) => a.score - b.score || a.g.name.localeCompare(b.g.name));
+      if (ranked.length === 0) return false;
+      const game = ranked[0].g;
+      setSelected(game);
+      setActiveMainTab("library");
+      launchGame(game.path);
+      return true;
+    };
+
+    const ok = pendingLaunchRequest.mode === "path"
+      ? launchByPath(pendingLaunchRequest.value)
+      : launchByName(pendingLaunchRequest.value);
+
+    if (!ok) {
+      const target = pendingLaunchRequest.mode === "path" ? "path" : "name";
+      alert(`Could not launch game by ${target}: ${pendingLaunchRequest.value}`);
+    }
+    setPendingLaunchRequest(null);
+  }, [pendingLaunchRequest, isAppReady, games, customizations, metadata]);
+
   const confirmDelete = async () => {
     if (!deleteTarget) return;
     setIsDeleting(true);
@@ -4396,6 +4521,22 @@ export default function App() {
       });
     } catch (e) {
       console.error("Failed to save screenshot tags:", e);
+    }
+  };
+
+  const handleExportScreenshotZip = async () => {
+    if (!selected) return;
+    const displayName = customizations[selected.path]?.displayName ?? metadata[selected.path]?.title ?? selected.name;
+    const safeName = displayName.replace(/[<>:"/\\|?*]+/g, "_").trim() || "screenshots";
+    const savePath = await save({
+      defaultPath: `${safeName}-screenshots.zip`,
+      filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
+    }).catch(() => null);
+    if (!savePath || typeof savePath !== "string") return;
+    try {
+      await invoke("export_screenshots_zip", { gameExe: selected.path, outputPath: savePath });
+    } catch (e) {
+      alert("Export failed: " + e);
     }
   };
 
@@ -4560,6 +4701,18 @@ export default function App() {
     return Array.from(tags).sort();
   }, [customizations]);
 
+  const developerBuckets = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const g of games) {
+      const meta = metadata[g.path];
+      const dev = (meta?.circle || meta?.developer || "").trim() || "Unknown";
+      counts.set(dev, (counts.get(dev) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }, [games, metadata]);
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     const activeCol = activeCollectionId ? collections.find((c) => c.id === activeCollectionId) : null;
@@ -4577,6 +4730,11 @@ export default function App() {
         else if (filterMode === "unlinked") return !metadata[g.path];
         else if (filterMode === "Playing" || filterMode === "Completed" || filterMode === "On Hold" || filterMode === "Dropped" || filterMode === "Plan to Play") {
           return customizations[g.path]?.status === filterMode;
+        }
+        else if (filterMode.startsWith("dev:")) {
+          const dev = filterMode.slice(4);
+          const gameDev = (metadata[g.path]?.circle || metadata[g.path]?.developer || "").trim() || "Unknown";
+          return gameDev === dev;
         }
         else if (filterMode.startsWith("tag:")) {
           const t = filterMode.slice(4);
@@ -5100,6 +5258,50 @@ export default function App() {
               </>
             )}
           </div>
+          {/* ── By Developer ── */}
+          <div className="border-b" style={{ borderColor: "#0d1117" }}>
+            <div
+              className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[#c6d4df]"
+              style={{ color: showDevelopers ? "#c6d4df" : "#4a5568" }}
+              onClick={() => setShowDevelopers(p => !p)}
+            >
+              <svg className="transition-transform duration-200" style={{ transform: showDevelopers ? "rotate(90deg)" : "rotate(0deg)" }} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="8.5" cy="7" r="4" />
+                <path d="M20 8v6" /><path d="M23 11h-6" />
+              </svg>
+              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ paddingTop: "1px" }}>By Developer</span>
+              {filterMode.startsWith("dev:") && (
+                <button onClick={(e) => { e.stopPropagation(); setFilterMode("all"); }}
+                  className="text-[9px] px-1.5 py-0.5 rounded mr-1"
+                  style={{ background: "#2a3f54", color: "#8f98a0" }}
+                  title="Clear filter">✕ clear</button>
+              )}
+            </div>
+            {showDevelopers && (
+              developerBuckets.length === 0 ? (
+                <p className="px-3 pb-2 text-[10px]" style={{ color: "#4a5568" }}>No developers yet</p>
+              ) : (
+                <div className="overflow-y-auto pb-1" style={{ maxHeight: "156px", scrollbarWidth: "thin", scrollbarColor: "#2a475e transparent" }}>
+                  {developerBuckets.map((dev) => {
+                    const active = filterMode === `dev:${dev.name}`;
+                    return (
+                      <button key={dev.name}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-left"
+                        style={{ background: active ? "#1a2e40" : "transparent" }}
+                        onClick={() => setFilterMode(active ? "all" : `dev:${dev.name}`)}
+                        onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "#1b2838"; }}
+                        onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}>
+                        <span className="flex-1 text-xs truncate" style={{ color: active ? "#66c0f4" : "#8f98a0" }}>{dev.name}</span>
+                        <span className="text-[9px] flex-shrink-0" style={{ color: "#4a5568" }}>{dev.count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )
+            )}
+          </div>
           {/* ── Wishlist ── */}
           <div className="border-b" style={{ borderColor: "#0d1117" }}>
             <div
@@ -5530,6 +5732,7 @@ export default function App() {
                 alert("Could not open folder: " + e)
               )
             }
+            onExportGalleryZip={handleExportScreenshotZip}
             onUpdateScreenshotTags={handleUpdateScreenshotTags}
             sessions={sessionLog}
             onEditSessionNote={handleEditSessionNote}

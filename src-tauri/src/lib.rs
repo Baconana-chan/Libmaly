@@ -21,7 +21,8 @@ use updater::{preview_update, update_game};
 
 mod screenshot;
 use screenshot::{
-    get_screenshots, open_screenshots_folder, save_screenshot_tags, take_screenshot_manual,
+    export_screenshots_zip, get_screenshots, open_screenshots_folder, save_screenshot_tags,
+    take_screenshot_manual,
 };
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1139,6 +1140,8 @@ fn save_string_to_file(path: String, contents: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_cli::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -1171,6 +1174,7 @@ pub fn run() {
             update_game,
             preview_update,
             get_screenshots,
+            export_screenshots_zip,
             open_screenshots_folder,
             take_screenshot_manual,
             save_screenshot_tags,

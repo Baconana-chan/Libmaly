@@ -9,6 +9,32 @@
     "beforeBuildCommand": "bun run build",
     "frontendDist": "../dist"
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "libmaly"
+        ]
+      }
+    },
+    "cli": {
+      "description": "LIBMALY game launcher CLI",
+      "subcommands": {
+        "launch": {
+          "description": "Launch a game by name",
+          "args": [
+            {
+              "name": "name",
+              "description": "Game title to launch (exact or partial match)",
+              "required": true,
+              "takesValue": true,
+              "index": 1
+            }
+          ]
+        }
+      }
+    }
+  },
   "app": {
     "windows": [
       {

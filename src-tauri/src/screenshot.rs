@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex};
 use tauri::AppHandle;
@@ -195,6 +196,55 @@ pub fn open_screenshots_folder(game_exe: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn export_screenshots_zip(game_exe: String, output_path: String) -> Result<(), String> {
+    let dir = screenshots_dir(&game_exe);
+    if !dir.exists() {
+        return Err("No screenshots found for this game.".to_string());
+    }
+
+    let mut png_files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .map(|x| x.to_string_lossy().eq_ignore_ascii_case("png"))
+                .unwrap_or(false)
+        })
+        .collect();
+    if png_files.is_empty() {
+        return Err("No screenshot files to export.".to_string());
+    }
+    png_files.sort();
+
+    let file = File::create(&output_path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    for p in png_files {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| "Invalid screenshot filename".to_string())?;
+        zip.start_file(name, options).map_err(|e| e.to_string())?;
+        let mut src = File::open(&p).map_err(|e| e.to_string())?;
+        std::io::copy(&mut src, &mut zip).map_err(|e| e.to_string())?;
+    }
+
+    let tags_path = dir.join("tags.json");
+    if tags_path.exists() {
+        zip.start_file("tags.json", options)
+            .map_err(|e| e.to_string())?;
+        let mut tags_file = File::open(tags_path).map_err(|e| e.to_string())?;
+        std::io::copy(&mut tags_file, &mut zip).map_err(|e| e.to_string())?;
+    }
+
+    zip.finish().map_err(|e| e.to_string())?;
     Ok(())
 }
 

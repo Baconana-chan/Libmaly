@@ -359,21 +359,21 @@ fn detect_wine_runners() -> Vec<WineRunner> {
     let mut seen_paths: HashSet<String> = HashSet::new();
 
     #[cfg(not(windows))]
-    let mut push_runner =
-        |name: String, path: String, kind: &str, flavor: Option<&str>| {
-            if path.is_empty() || !seen_paths.insert(path.clone()) {
-                return;
-            }
-            runners.push(WineRunner {
-                name,
-                path,
-                kind: kind.to_string(),
-                flavor: flavor.map(|s| s.to_string()),
-            });
-        };
-
-    #[cfg(not(windows))]
     {
+        macro_rules! push_runner {
+            ($name:expr, $path:expr, $kind:expr, $flavor:expr) => {{
+                let path: String = $path;
+                if !path.is_empty() && seen_paths.insert(path.clone()) {
+                    runners.push(WineRunner {
+                        name: $name,
+                        path,
+                        kind: $kind.to_string(),
+                        flavor: $flavor.map(|s: &str| s.to_string()),
+                    });
+                }
+            }};
+        }
+
         let home = std::env::var("HOME").unwrap_or_default();
 
         // ── Wine system binary ─────────────────────────────────────────────
@@ -385,7 +385,7 @@ fn detect_wine_runners() -> Vec<WineRunner> {
         ];
         for c in &wine_candidates {
             if std::path::Path::new(c).exists() {
-                push_runner("Wine".into(), c.to_string(), "wine", None);
+                push_runner!("Wine".to_string(), c.to_string(), "wine", None);
                 break;
             }
         }
@@ -394,7 +394,7 @@ fn detect_wine_runners() -> Vec<WineRunner> {
             if let Ok(out) = Command::new("which").arg("wine").output() {
                 let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if !path.is_empty() {
-                    push_runner("Wine (which)".into(), path, "wine", None);
+                    push_runner!("Wine (which)".to_string(), path, "wine", None);
                 }
             }
         }
@@ -424,7 +424,7 @@ fn detect_wine_runners() -> Vec<WineRunner> {
                     if proton_bin.exists() {
                         let lower = name.to_lowercase();
                         let is_ge = lower.contains("ge-proton") || lower.contains("proton-ge");
-                        push_runner(
+                        push_runner!(
                             name.clone(),
                             proton_bin.to_string_lossy().to_string(),
                             "proton",
@@ -462,7 +462,7 @@ fn detect_wine_runners() -> Vec<WineRunner> {
                     let is_ge = lower.contains("ge-proton")
                         || lower.contains("proton-ge")
                         || lower.starts_with("ge-");
-                    push_runner(
+                    push_runner!(
                         name,
                         proton_bin.to_string_lossy().to_string(),
                         "proton",

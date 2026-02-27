@@ -378,7 +378,7 @@ pub fn start_hotkey_listener(
 
     #[cfg(not(windows))]
     {
-        let _ = (pid, game_exe, app);
+        let _ = (pid, game_exe, app, boss_key);
         let _ = thread_id_tx.send(0);
     }
 }

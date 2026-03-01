@@ -68,12 +68,12 @@ jobs:
           - name: macOS arm64 (Apple Silicon)
             runner: macos-latest         # macos-latest = M-series arm64
             target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app
 
           - name: macOS x64 (Intel)
             runner: macos-latest         # cross-compile x86_64 from ARM runner
             target: x86_64-apple-darwin
-            bundles: dmg
+            bundles: app
 
     steps:
       - uses: actions/checkout@v4
@@ -170,6 +170,7 @@ jobs:
             src-tauri/target/${{ matrix.platform.target }}/release/bundle/appimage/*.AppImage
             src-tauri/target/${{ matrix.platform.target }}/release/bundle/deb/*.deb
             src-tauri/target/${{ matrix.platform.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.platform.target }}/release/bundle/macos/*.app
 
   # ── Optional portable package (Windows) ───────────────────────────────────
   portable-windows:
@@ -201,14 +202,12 @@ jobs:
           key: ${{ runner.os }}-x86_64-pc-windows-msvc-portable-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-x86_64-pc-windows-msvc-portable-cargo-
 
-      - name: Build Tauri app (portable binaries)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: >-
-            --target x86_64-pc-windows-msvc
-            --bundles none
+      - name: Build frontend (dist)
+        run: bun run build
+
+      - name: Build portable app binary (no installer bundles)
+        working-directory: src-tauri
+        run: cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Create portable folder + marker
         shell: pwsh

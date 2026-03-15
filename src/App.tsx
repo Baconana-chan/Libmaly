@@ -117,6 +117,7 @@ function useVirtualList<T>(
 interface Game { name: string; path: string; uninstalled?: boolean; }
 interface DirMtime { path: string; mtime: number; }
 interface GameStats { totalTime: number; lastPlayed: number; lastSession: number; launchCount: number; }
+type SessionMood = "hype" | "chill" | "chaos";
 /** One recorded play session */
 interface SessionEntry {
   id: string;        // unique: timestamp string
@@ -124,6 +125,7 @@ interface SessionEntry {
   startedAt: number; // Unix ms — when the session began
   duration: number;  // seconds
   note: string;      // optional session note, empty string if none
+  mood?: SessionMood; // optional mood tag
 }
 interface SteamEntry { app_id: string; name: string; played_minutes: number; }
 interface GameMetadata {
@@ -375,6 +377,7 @@ interface AppSettings {
   trayTooltipEnabled: boolean;
   startupWithWindows: boolean;
   themeMode: "dark" | "light" | "oled";
+  seasonalTheme: "auto" | "winter" | "summer" | "halloween" | "none";
   ratingScale: RatingScale;
   themeScheduleMode: "manual" | "os" | "time";
   dayThemeMode: "light" | "dark";
@@ -421,6 +424,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   trayTooltipEnabled: false,
   startupWithWindows: false,
   themeMode: "dark",
+  seasonalTheme: "auto",
   ratingScale: "10",
   themeScheduleMode: "manual",
   dayThemeMode: "light",
@@ -567,6 +571,13 @@ function metadataFetchCommand(source: GameMetadata["source"]) {
   if (source === "johren") return "fetch_johren_metadata";
   if (source === "fakku") return "fetch_fakku_metadata";
   return null;
+}
+function resolveSeasonFromDate(date: Date): "winter" | "summer" | "halloween" | "none" {
+  const m = date.getMonth(); // 0-11
+  if (m === 9) return "halloween";
+  if (m === 11 || m === 0 || m === 1) return "winter";
+  if (m >= 5 && m <= 7) return "summer";
+  return "none";
 }
 function metadataSourceLabel(source?: string) {
   if (source === "f95") return "F95zone";
@@ -2200,10 +2211,16 @@ function ManageCollectionsModal({ gamePath, displayTitle, collections, onToggle,
 function SessionNoteModal({ session, gameName, onSave, onDismiss }: {
   session: SessionEntry;
   gameName: string;
-  onSave: (note: string) => void;
+  onSave: (note: string, mood: SessionMood) => void;
   onDismiss: () => void;
 }) {
   const [note, setNote] = useState(session.note);
+  const [mood, setMood] = useState<SessionMood>(session.mood || "chill");
+  const moodStyles: Record<SessionMood, { label: string; color: string; bg: string }> = {
+    hype: { label: "hype", color: "var(--color-warning)", bg: "var(--color-warning-bg)" },
+    chill: { label: "chill", color: "var(--color-success)", bg: "var(--color-success-bg)" },
+    chaos: { label: "chaos", color: "var(--color-danger)", bg: "var(--color-danger-bg)" },
+  };
   return (
     <div className="fixed inset-0 z-[9999] flex items-end justify-end p-6"
       style={{ pointerEvents: "none" }}>
@@ -2229,6 +2246,27 @@ function SessionNoteModal({ session, gameName, onSave, onDismiss }: {
           <button onClick={onDismiss} style={{ color: "var(--color-text-dim)" }} className="text-sm">✕</button>
         </div>
         <div className="px-4 py-3">
+          <p className="text-[10px] mb-1.5" style={{ color: "var(--color-text-muted)" }}>Pick a session mood</p>
+          <div className="flex gap-2 mb-3">
+            {(Object.keys(moodStyles) as SessionMood[]).map((key) => {
+              const m = moodStyles[key];
+              const isActive = mood === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setMood(key)}
+                  className="px-2.5 py-1 rounded-full text-[10px] font-semibold"
+                  style={{
+                    background: isActive ? m.bg : "var(--color-panel-2)",
+                    color: isActive ? m.color : "var(--color-text-muted)",
+                    border: `1px solid ${isActive ? m.color : "var(--color-border)"}`,
+                  }}
+                >
+                  {m.label}
+                </button>
+              );
+            })}
+          </div>
           <p className="text-[10px] mb-1.5" style={{ color: "var(--color-text-muted)" }}>Add a session note (optional)</p>
           <textarea
             value={note}
@@ -2244,7 +2282,7 @@ function SessionNoteModal({ session, gameName, onSave, onDismiss }: {
           <div className="flex gap-2 justify-end mt-2">
             <button onClick={onDismiss} className="px-3 py-1 rounded text-xs"
               style={{ background: "transparent", color: "var(--color-text-dim)" }}>Skip</button>
-            <button onClick={() => onSave(note.trim())}
+            <button onClick={() => onSave(note.trim(), mood)}
               className="px-4 py-1 rounded text-xs font-semibold"
               style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>Save</button>
           </div>
@@ -2982,6 +3020,12 @@ export default function App() {
     const t = setInterval(() => setThemeClockTick(Date.now()), 60_000);
     return () => clearInterval(t);
   }, [appSettings.themeScheduleMode]);
+  const [seasonClockTick, setSeasonClockTick] = useState(Date.now());
+  useEffect(() => {
+    if (appSettings.seasonalTheme !== "auto") return;
+    const t = setInterval(() => setSeasonClockTick(Date.now()), 60 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [appSettings.seasonalTheme]);
   const effectiveThemeMode = useMemo<"dark" | "light" | "oled">(() => {
     if (appSettings.themeScheduleMode === "os") {
       return osPrefersDark ? "dark" : "light";
@@ -3010,9 +3054,15 @@ export default function App() {
     osPrefersDark,
     themeClockTick,
   ]);
+  const effectiveSeason = useMemo<"winter" | "summer" | "halloween" | "none">(() => {
+    if (appSettings.seasonalTheme === "auto") return resolveSeasonFromDate(new Date(seasonClockTick));
+    return appSettings.seasonalTheme || "none";
+  }, [appSettings.seasonalTheme, seasonClockTick]);
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.theme = effectiveThemeMode;
+    if (effectiveSeason === "none") delete root.dataset.season;
+    else root.dataset.season = effectiveSeason;
     const accent = normalizeHexColor(appSettings.accentColor, DEFAULT_SETTINGS.accentColor);
     root.style.setProperty("--color-accent", accent);
     root.style.setProperty("--color-accent-dark", shiftHexColor(accent, -0.42));
@@ -3021,7 +3071,7 @@ export default function App() {
     root.style.setProperty("--color-accent-deep", shiftHexColor(accent, -0.62));
     root.style.setProperty("--color-accent-deeper", shiftHexColor(accent, -0.68));
     root.style.setProperty("--color-accent-muted", shiftHexColor(accent, -0.46));
-  }, [effectiveThemeMode, appSettings.accentColor]);
+  }, [effectiveThemeMode, effectiveSeason, appSettings.accentColor]);
 
   const [revealedNsfw, setRevealedNsfw] = useState<Record<string, boolean>>({});
   const revealNsfwPath = useCallback((path: string) => setRevealedNsfw(p => ({ ...p, [path]: true })), []);
@@ -3457,6 +3507,7 @@ export default function App() {
       startedAt,
       duration: dur,
       note: "",
+      mood: "chill",
     };
     setSessionLog((prev) => {
       const next = [entry, ...prev];
@@ -3481,9 +3532,9 @@ export default function App() {
   };
 
   /** Save or dismiss the note for the pending session */
-  const handleSaveSessionNote = (note: string) => {
+  const handleSaveSessionNote = (note: string, mood: SessionMood) => {
     if (!pendingNoteSession) return;
-    const updated = { ...pendingNoteSession, note };
+    const updated = { ...pendingNoteSession, note, mood };
     setSessionLog((prev) => {
       const next = prev.map(s => s.id === updated.id ? updated : s);
       saveCache(SK_SESSION_LOG, next);
@@ -4253,6 +4304,24 @@ export default function App() {
   const gameDisplayName = (g: Game) =>
     customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name;
 
+  const surpriseCandidates = useMemo(() => {
+    return games.filter((g) =>
+      !hiddenGames[g.path] &&
+      customizations[g.path]?.status !== "Dropped"
+    );
+  }, [games, hiddenGames, customizations]);
+
+  const handleSurpriseLaunch = useCallback(() => {
+    if (surpriseCandidates.length === 0) {
+      alert("No eligible games to launch. Unhide a game or remove Dropped status.");
+      return;
+    }
+    const pick = surpriseCandidates[Math.floor(Math.random() * surpriseCandidates.length)];
+    openGameView(pick);
+    setActiveMainTab("library");
+    launchGame(pick.path);
+  }, [surpriseCandidates, openGameView, launchGame]);
+
   // ── Context menu state ──────────────────────────────────────────────────────
   interface CtxMenu { x: number; y: number; game: Game; }
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
@@ -4574,7 +4643,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden" style={{ background: "var(--color-bg)", color: "var(--color-text)", fontFamily: "'Arial', sans-serif" }}>
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: "linear-gradient(135deg, var(--season-overlay) 0%, var(--color-bg) 45%, var(--color-bg-elev) 100%)", color: "var(--color-text)", fontFamily: "'Arial', sans-serif" }}>
       <header className="h-8 flex items-stretch border-b select-none" style={{ background: "var(--color-panel)", borderColor: "var(--color-border-soft)" }}>
         <div className="flex items-center gap-1.5 px-2">
           <button
@@ -5249,6 +5318,21 @@ export default function App() {
                 <span className="text-xs" style={{ color: "var(--color-accent)" }}>Checking changes…</span>
               </div>
             )}
+
+            <button
+              onClick={handleSurpriseLaunch}
+              disabled={surpriseCandidates.length === 0}
+              className="w-full py-2 rounded text-xs font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60"
+              style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-2)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
+              title="Surprise me"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2l2.5 6.5L21 9l-5 4 1.5 6.5L12 16l-5.5 3.5L8 13 3 9l6.5-.5L12 2z" />
+              </svg>
+              Surprise me
+            </button>
 
             {/* ── Add dropdown ── */}
             <div ref={addMenuRef} className="relative">

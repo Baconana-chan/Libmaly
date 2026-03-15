@@ -58,6 +58,8 @@
   --color-stop-hover: #8a1e1e;
 
   --color-code-accent: #f88379;
+
+  --season-overlay: transparent;
 }
 
 :root[data-theme="light"] {
@@ -134,6 +136,30 @@
   --color-warning-bg-2: #1c1506;
   --color-warning-border: #5d4a19;
   --color-danger-bg: #2a1010;
+}
+
+:root[data-season="winter"] {
+  --season-overlay: #0a2233;
+}
+
+:root[data-season="summer"] {
+  --season-overlay: #2a2a12;
+}
+
+:root[data-season="halloween"] {
+  --season-overlay: #2b160f;
+}
+
+:root[data-theme="light"][data-season="winter"] {
+  --season-overlay: #e6f0fb;
+}
+
+:root[data-theme="light"][data-season="summer"] {
+  --season-overlay: #f2f3d6;
+}
+
+:root[data-theme="light"][data-season="halloween"] {
+  --season-overlay: #f7e2d6;
 }
 
 html, body, #root {

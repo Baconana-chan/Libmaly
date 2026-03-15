@@ -21,6 +21,7 @@ interface SessionEntry {
   startedAt: number;
   duration: number;
   note: string;
+  mood?: "hype" | "chill" | "chaos";
 }
 
 interface Screenshot {
@@ -376,6 +377,11 @@ function Milestones({ totalSecs }: { totalSecs: number }) {
 
 function SessionTimeline({ sessions, gamePath, onEditNote }: { sessions: SessionEntry[]; gamePath: string; onEditNote: (entry: SessionEntry) => void }) {
   const entries = useMemo(() => sessions.filter((s) => s.path === gamePath).sort((a, b) => b.startedAt - a.startedAt).slice(0, 50), [sessions, gamePath]);
+  const moodStyles: Record<string, { label: string; color: string; bg: string }> = {
+    hype: { label: "hype", color: "var(--color-warning)", bg: "var(--color-warning-bg)" },
+    chill: { label: "chill", color: "var(--color-success)", bg: "var(--color-success-bg)" },
+    chaos: { label: "chaos", color: "var(--color-danger)", bg: "var(--color-danger-bg)" },
+  };
   if (entries.length === 0) {
     return <div className="rounded px-3 py-4 text-center text-xs" style={{ background: "var(--color-bg-overlay)", color: "var(--color-text-dim)" }}>No sessions recorded yet — play the game to see history here.</div>;
   }
@@ -385,6 +391,7 @@ function SessionTimeline({ sessions, gamePath, onEditNote }: { sessions: Session
         const d = new Date(s.startedAt);
         const dateStr = d.toLocaleDateString("en", { month: "short", day: "numeric" });
         const timeStr = d.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" });
+        const mood = s.mood ? moodStyles[s.mood] : null;
         return (
           <div key={s.id} className="flex items-start gap-2 rounded px-2.5 py-2 group" style={{ background: "var(--color-bg-overlay)" }}>
             <div className="flex flex-col items-center flex-shrink-0 mt-0.5"><div className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--color-accent-dark)" }} /></div>
@@ -392,6 +399,12 @@ function SessionTimeline({ sessions, gamePath, onEditNote }: { sessions: Session
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[10px]" style={{ color: "var(--color-accent)" }}>{dateStr} {timeStr}</span>
                 <span className="text-[10px] font-semibold" style={{ color: "var(--color-text)" }}>{formatTime(s.duration)}</span>
+                {mood && (
+                  <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide"
+                    style={{ color: mood.color, background: mood.bg, border: `1px solid ${mood.color}55` }}>
+                    {mood.label}
+                  </span>
+                )}
               </div>
               {s.note && <p className="text-xs mt-0.5 italic" style={{ color: "var(--color-text-muted)" }}>"{s.note}"</p>}
             </div>

@@ -4,6 +4,10 @@
 
 ## 🎨 UI / UX
 
+- [ ] **Mystery launch button** — "Surprise me" launches a random game from the library (excluding hidden/dropped)
+- [ ] **Dynamic seasonal themes** — small seasonal visual presets (winter/summer/halloween) with manual switch
+- [ ] **Session mood stickers** — quick mood tag after each session (`hype` / `chill` / `chaos`) shown in play history
+
 
 
 ---
@@ -16,6 +20,8 @@
 
 ## 🌐 Metadata
 
+- [ ] **Scraper health monitor** — detect source-wide parser failures and surface per-source failure reasons in diagnostics
+
 
 
 ---
@@ -26,12 +32,34 @@
 
 ---
 
+## 🧰 Background Jobs
+
+- [ ] **Queue with retry/backoff** — unified metadata/update/sync queue with retry, exponential backoff, and concurrency limits
+
+---
+
+## 🛡️ Reliability & Recovery
+
+- [ ] **Unified storage with schema migrations** — move to a versioned state store with forward migrations and rollback on migration failure
+- [ ] **Crash-safe writes** — atomic state writes via temp + rename and a small recent-ops journal
+- [ ] **Auto-recovery mode** — safe startup mode after crash (no background refresh/scraping) with one-click recovery prompt
+- [ ] **Library integrity check** — command to validate broken paths, duplicate IDs, and invalid executables
+- [ ] **Auto-heal paths** — auto-fix moved/renamed game folders using file signatures + fuzzy matching
+- [ ] **Process lifecycle hardening** — more reliable game start/exit detection and orphan process cleanup
+- [ ] **State snapshots before risky ops** — auto snapshot before batch metadata refresh, imports, and migration wizard operations
+- [ ] **Permissions diagnostics** — detect and explain permission failures for screenshots/saves/backups with actionable fixes
+
+---
+
 ## ☁️ Sync & Backup
 
 - [ ] **Google Drive / Dropbox auto-backup** — optional periodic upload of library JSON to a cloud folder
 - [ ] **Save-file backup** — detect common save directories and zip them on demand or on exit
 - [ ] **Save-file cloud sync** — upload save zips to a configured folder (Google Drive, local NAS, etc.)
 - [ ] **Multiple library profiles** — separate profiles for different PCs or users; switchable from the tray
+- [ ] **Backup retention policy** — rotate backups by daily/weekly/monthly rules and auto-prune old archives
+- [ ] **One-click restore wizard** — restore state from backup with overwrite preview before apply
+- [ ] **Cloud sync conflict resolver** — 3-way merge for local/remote/base snapshots to avoid silent data loss
 
 ---
 
@@ -52,6 +80,23 @@
 - [ ] **i18n / l10n** — internationalisation framework; provide RU, JA, ZH translations
 - [ ] **Plugin system** — allow JS/WASM plugins to add metadata sources or UI panels
 - [ ] **REST API mode** — optional local HTTP server so external scripts can query/control the library
+- [ ] **Data consistency tests** — integration scenarios for scan → launch → crash → recovery across Windows/Linux/macOS
+- [ ] **Roadmap hygiene task** — keep README and TODO in sync for backup/sync feature status
+
+### Internal Interfaces / Types (planned)
+- [ ] **`run_integrity_check` command** — app-level command for integrity scan and JSON/UI report output
+- [ ] **`create_snapshot` command** — app-level command to create manual or pre-op state snapshots
+- [ ] **`restore_snapshot` command** — app-level command to restore from snapshot with dry-run preview support
+- [ ] **`resolve_sync_conflicts` command** — app-level command to resolve local/remote/base state conflicts
+- [ ] **Background job status model** — `queued` / `running` / `retrying` / `failed` / `permanent_failed`
+- [ ] **Integrity/restore report schema** — structured report type for UI rendering and JSON export
+
+### Reliability Test Scenarios (planned)
+- [ ] **Crash during write** — verify state remains recoverable and library is not fully lost
+- [ ] **Root folder rename** — verify automatic path healing restores most mapped games
+- [ ] **Local vs cloud conflict** — verify merge keeps playtime and notes deterministically
+- [ ] **Broken metadata source** — verify graceful degradation without blocking core UI
+- [ ] **Cross-platform backup/restore** — validate backup restore and integrity check on Windows/Linux/macOS
 
 ---
 

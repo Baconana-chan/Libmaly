@@ -10,6 +10,7 @@ interface AppSettingsLike {
   trayTooltipEnabled: boolean;
   startupWithWindows: boolean;
   themeMode: "dark" | "light" | "oled";
+  seasonalTheme: "auto" | "winter" | "summer" | "halloween" | "none";
   ratingScale: RatingScale;
   themeScheduleMode: "manual" | "os" | "time";
   dayThemeMode: "light" | "dark";
@@ -469,6 +470,21 @@ function SettingsModal({
                     </label>
                   </>
                 )}
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                  Seasonal theme
+                  <select
+                    className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
+                    style={{ borderColor: "var(--color-border)" }}
+                    value={appSettings.seasonalTheme || "auto"}
+                    onChange={(e) => onSaveSettings({ ...appSettings, seasonalTheme: e.currentTarget.value as "auto" | "winter" | "summer" | "halloween" | "none" })}
+                  >
+                    <option value="auto" style={{ background: "var(--color-panel-2)" }}>Auto</option>
+                    <option value="winter" style={{ background: "var(--color-panel-2)" }}>Winter</option>
+                    <option value="summer" style={{ background: "var(--color-panel-2)" }}>Summer</option>
+                    <option value="halloween" style={{ background: "var(--color-panel-2)" }}>Halloween</option>
+                    <option value="none" style={{ background: "var(--color-panel-2)" }}>Off</option>
+                  </select>
+                </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   Accent color
                   <input

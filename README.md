@@ -79,8 +79,8 @@ LIBMALY is focused on unmanaged/standalone games (including F95zone and DLsite):
 
 ### Sync & Backup
 - Cloud config export/import JSON (library state, stats, metadata, notes, collections, settings)
-- Save-file backup (detect common save directories, zip on demand or on game exit)
 - Portable mode (store data next to executable using `portable.mode` marker)
+- Save-file backup and save-file cloud sync are planned in the roadmap (`TODO.md`)
 
 ## Tech Stack
 

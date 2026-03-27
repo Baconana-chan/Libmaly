@@ -78,3 +78,13 @@ export function appStorageSetItem(key: string, value: string) {
   } catch {}
 }
 
+export function appStorageRemoveItem(key: string) {
+  if (portableMode) {
+    portableEntries.delete(key);
+    schedulePortableFlush();
+    return;
+  }
+  try {
+    localStorage.removeItem(key);
+  } catch {}
+}

@@ -1,6 +1,6 @@
 [package]
 name = "libmaly"
-version = "1.4.0"
+version = "1.5.0"
 description = "A personal game library manager"
 authors = ["Baconana-chan"]
 edition = "2021"
@@ -50,6 +50,7 @@ winapi = { version = "0.3", features = [
     "windef",
     "minwindef",
     "handleapi",
+    "winbase",
 ] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 

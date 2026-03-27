@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use crate::data_paths::app_data_root;
 
 // ── Cookie store with disk persistence ────────────────────────────────────
@@ -100,6 +101,267 @@ pub struct GameMetadata {
     pub product_format: Option<String>,
     pub file_format: Option<String>,
     pub file_size: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ScraperFailureKind {
+    Parser,
+    Network,
+    Http,
+    Auth,
+    NotFound,
+    Unsupported,
+    Unknown,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ScraperHealthDiagnostic {
+    pub source_id: String,
+    pub source_label: String,
+    pub overall_status: String,
+    pub source_wide_parser_failure: bool,
+    pub total_attempts: u64,
+    pub total_successes: u64,
+    pub total_failures: u64,
+    pub parser_failure_count: u64,
+    pub consecutive_parser_failures: u64,
+    pub last_success_at: Option<u64>,
+    pub last_failure_at: Option<u64>,
+    pub last_failure_kind: Option<String>,
+    pub last_failure_reason: Option<String>,
+    pub last_failure_url: Option<String>,
+    pub recent_failure_reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ScraperHealthState {
+    source_id: String,
+    source_label: String,
+    total_attempts: u64,
+    total_successes: u64,
+    total_failures: u64,
+    parser_failure_count: u64,
+    consecutive_parser_failures: u64,
+    last_success_at: Option<u64>,
+    last_failure_at: Option<u64>,
+    last_failure_kind: Option<ScraperFailureKind>,
+    last_failure_reason: Option<String>,
+    last_failure_url: Option<String>,
+    recent_failure_reasons: Vec<String>,
+}
+
+static SCRAPER_HEALTH: std::sync::OnceLock<Mutex<HashMap<String, ScraperHealthState>>> =
+    std::sync::OnceLock::new();
+const SOURCE_WIDE_PARSER_FAILURE_THRESHOLD: u64 = 3;
+const MAX_RECENT_FAILURE_REASONS: usize = 4;
+
+fn scraper_health_store() -> &'static Mutex<HashMap<String, ScraperHealthState>> {
+    SCRAPER_HEALTH.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn classify_scraper_failure(message: &str) -> ScraperFailureKind {
+    let lower = message.to_lowercase();
+    if lower.contains("unsupported") {
+        ScraperFailureKind::Unsupported
+    } else if lower.contains("not found") {
+        ScraperFailureKind::NotFound
+    } else if lower.contains("network error")
+        || lower.contains("request failed")
+        || lower.contains("connection")
+        || lower.contains("timed out")
+    {
+        ScraperFailureKind::Network
+    } else if lower.contains("http ") || lower.starts_with("http") {
+        ScraperFailureKind::Http
+    } else if lower.contains("login")
+        || lower.contains("forbidden")
+        || lower.contains("unauthorized")
+        || lower.contains("age-gate")
+    {
+        ScraperFailureKind::Auth
+    } else if lower.contains("parse failed")
+        || lower.contains("missing")
+        || lower.contains("lacked expected")
+        || lower.contains("empty or missing")
+    {
+        ScraperFailureKind::Parser
+    } else {
+        ScraperFailureKind::Unknown
+    }
+}
+
+fn remember_failure_reason(reasons: &mut Vec<String>, reason: &str) {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    reasons.retain(|x| x != trimmed);
+    reasons.push(trimmed.to_string());
+    if reasons.len() > MAX_RECENT_FAILURE_REASONS {
+        let overflow = reasons.len() - MAX_RECENT_FAILURE_REASONS;
+        reasons.drain(0..overflow);
+    }
+}
+
+fn record_scraper_result(
+    source_id: &str,
+    source_label: &str,
+    url: &str,
+    result: &Result<GameMetadata, String>,
+) {
+    let mut store = scraper_health_store().lock().unwrap();
+    let entry = store
+        .entry(source_id.to_string())
+        .or_insert_with(|| ScraperHealthState {
+            source_id: source_id.to_string(),
+            source_label: source_label.to_string(),
+            total_attempts: 0,
+            total_successes: 0,
+            total_failures: 0,
+            parser_failure_count: 0,
+            consecutive_parser_failures: 0,
+            last_success_at: None,
+            last_failure_at: None,
+            last_failure_kind: None,
+            last_failure_reason: None,
+            last_failure_url: None,
+            recent_failure_reasons: Vec::new(),
+        });
+
+    entry.total_attempts += 1;
+    match result {
+        Ok(_) => {
+            entry.total_successes += 1;
+            entry.consecutive_parser_failures = 0;
+            entry.last_success_at = Some(now_ms());
+        }
+        Err(reason) => {
+            let kind = classify_scraper_failure(reason);
+            entry.total_failures += 1;
+            entry.last_failure_at = Some(now_ms());
+            entry.last_failure_kind = Some(kind.clone());
+            entry.last_failure_reason = Some(reason.clone());
+            entry.last_failure_url = Some(url.to_string());
+            remember_failure_reason(&mut entry.recent_failure_reasons, reason);
+            if kind == ScraperFailureKind::Parser {
+                entry.parser_failure_count += 1;
+                entry.consecutive_parser_failures += 1;
+            } else {
+                entry.consecutive_parser_failures = 0;
+            }
+        }
+    }
+}
+
+fn health_status(entry: &ScraperHealthState) -> String {
+    if entry.consecutive_parser_failures >= SOURCE_WIDE_PARSER_FAILURE_THRESHOLD {
+        "parser_failed".to_string()
+    } else if entry.parser_failure_count > 0 {
+        "degraded".to_string()
+    } else {
+        "healthy".to_string()
+    }
+}
+
+fn has_text(value: Option<&String>) -> bool {
+    value.map(|x| !x.trim().is_empty()).unwrap_or(false)
+}
+
+fn validate_metadata_shape(source_id: &str, source_label: &str, meta: &GameMetadata) -> Result<(), String> {
+    if !has_text(meta.title.as_ref()) {
+        return Err(match source_id {
+            "f95" => "Missing F95 thread title selector".to_string(),
+            "dlsite" => "Missing DLsite product title selector".to_string(),
+            "vndb" => "VNDB response missing title".to_string(),
+            _ => format!("Missing {source_label} product title"),
+        });
+    }
+
+    let has_primary_fields = has_text(meta.cover_url.as_ref())
+        || has_text(meta.overview.as_ref())
+        || has_text(meta.overview_html.as_ref())
+        || has_text(meta.developer.as_ref())
+        || has_text(meta.price.as_ref())
+        || has_text(meta.version.as_ref())
+        || has_text(meta.rating.as_ref())
+        || !meta.tags.is_empty()
+        || !meta.screenshots.is_empty()
+        || !meta.relations.is_empty();
+
+    if !has_primary_fields {
+        return Err(match source_id {
+            "f95" => "F95 parser returned empty or missing expected thread fields".to_string(),
+            "dlsite" => "DLsite parser lacked expected product fields".to_string(),
+            "vndb" => "VNDB response lacked expected metadata fields".to_string(),
+            _ => format!("{source_label} parser lacked expected product fields"),
+        });
+    }
+
+    Ok(())
+}
+
+fn finalize_scrape_result(
+    source_id: &str,
+    source_label: &str,
+    url: &str,
+    result: Result<GameMetadata, String>,
+) -> Result<GameMetadata, String> {
+    let validated = match result {
+        Ok(meta) => match validate_metadata_shape(source_id, source_label, &meta) {
+            Ok(()) => Ok(meta),
+            Err(reason) => Err(reason),
+        },
+        Err(err) => Err(err),
+    };
+    record_scraper_result(source_id, source_label, url, &validated);
+    validated
+}
+
+#[tauri::command]
+pub fn get_scraper_health_snapshot() -> Vec<ScraperHealthDiagnostic> {
+    let store = scraper_health_store().lock().unwrap();
+    let mut out = store
+        .values()
+        .cloned()
+        .map(|entry| {
+            let overall_status = health_status(&entry);
+            ScraperHealthDiagnostic {
+                source_id: entry.source_id,
+                source_label: entry.source_label,
+                source_wide_parser_failure: overall_status == "parser_failed",
+                overall_status,
+                total_attempts: entry.total_attempts,
+                total_successes: entry.total_successes,
+                total_failures: entry.total_failures,
+                parser_failure_count: entry.parser_failure_count,
+                consecutive_parser_failures: entry.consecutive_parser_failures,
+                last_success_at: entry.last_success_at,
+                last_failure_at: entry.last_failure_at,
+                last_failure_kind: entry.last_failure_kind.map(|x| match x {
+                    ScraperFailureKind::Parser => "parser".to_string(),
+                    ScraperFailureKind::Network => "network".to_string(),
+                    ScraperFailureKind::Http => "http".to_string(),
+                    ScraperFailureKind::Auth => "auth".to_string(),
+                    ScraperFailureKind::NotFound => "not_found".to_string(),
+                    ScraperFailureKind::Unsupported => "unsupported".to_string(),
+                    ScraperFailureKind::Unknown => "unknown".to_string(),
+                }),
+                last_failure_reason: entry.last_failure_reason,
+                last_failure_url: entry.last_failure_url,
+                recent_failure_reasons: entry.recent_failure_reasons,
+            }
+        })
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| a.source_label.cmp(&b.source_label));
+    out
 }
 
 // ── F95zone ────────────────────────────────────────────────────────────────
@@ -607,18 +869,19 @@ fn extract_field(html_text: &str, label: &str) -> Option<String> {
 #[tauri::command]
 pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
     let normalized_url = normalize_f95_thread_url(&url);
-    let resp = http()
-        .get(&normalized_url)
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {}", e))?;
+    let result = async {
+        let resp = http()
+            .get(&normalized_url)
+            .send()
+            .await
+            .map_err(|e| format!("Network error: {}", e))?;
 
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
 
-    let body = resp.text().await.map_err(|e| e.to_string())?;
-    let doc = Html::parse_document(&body);
+        let body = resp.text().await.map_err(|e| e.to_string())?;
+        let doc = Html::parse_document(&body);
 
     // ── Title ────────────────────────────────────────────────────────
     // Remove all <a class="labelLink">...</a> spans (prefix badges like RPGM, Completed)
@@ -799,56 +1062,60 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
     // ── Rating ───────────────────────────────────────────────────────
     let rating = text_of(&doc, ".bratr-vote-content").map(|s| s.trim().to_string());
 
-    Ok(GameMetadata {
-        source: "f95".into(),
-        source_url: normalized_url,
-        title: if title.is_empty() { None } else { Some(title) },
-        version,
-        developer,
-        overview,
-        overview_html: overview_html_f95,
-        cover_url,
-        screenshots,
-        tags,
-        relations: vec![],
-        engine,
-        os,
-        language,
-        censored,
-        release_date,
-        last_updated,
-        rating,
-        price: None,
-        circle: None,
-        series: None,
-        author: None,
-        illustration: None,
-        voice_actor: None,
-        music: None,
-        age_rating: None,
-        product_format: None,
-        file_format: None,
-        file_size: None,
-    })
+        Ok(GameMetadata {
+            source: "f95".into(),
+            source_url: normalized_url.clone(),
+            title: if title.is_empty() { None } else { Some(title) },
+            version,
+            developer,
+            overview,
+            overview_html: overview_html_f95,
+            cover_url,
+            screenshots,
+            tags,
+            relations: vec![],
+            engine,
+            os,
+            language,
+            censored,
+            release_date,
+            last_updated,
+            rating,
+            price: None,
+            circle: None,
+            series: None,
+            author: None,
+            illustration: None,
+            voice_actor: None,
+            music: None,
+            age_rating: None,
+            product_format: None,
+            file_format: None,
+            file_size: None,
+        })
+    }
+    .await;
+    finalize_scrape_result("f95", "F95zone", &normalized_url, result)
 }
 
 // ── DLsite ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> {
-    let resp = dlsite_http()
-        .get(&url)
-        .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {}", e))?;
+    let result = async {
+        let resp = dlsite_http()
+            .get(&url)
+            .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
+            .send()
+            .await
+            .map_err(|e| format!("Network error: {}", e))?;
 
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
 
-    let body = resp.text().await.map_err(|e| e.to_string())?;
-    let doc = Html::parse_document(&body);
+        let body = resp.text().await.map_err(|e| e.to_string())?;
+        let doc = Html::parse_document(&body);
 
     // ── Title ────────────────────────────────────────────────────────
     let title = text_of(&doc, "#work_name")
@@ -1062,37 +1329,40 @@ pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> 
     .or(rating_from_json)
     .or_else(|| text_of(&doc, ".work_review_site_rating").filter(|r| !r.contains("{")));
 
-    Ok(GameMetadata {
-        source: "dlsite".into(),
-        source_url: url,
-        title,
-        version: None,
-        developer,
-        overview,
-        overview_html,
-        cover_url,
-        screenshots,
-        tags,
-        relations: vec![],
-        engine: None,
-        os: None,
-        language: language_dl,
-        censored: None,
-        release_date,
-        last_updated,
-        rating,
-        price,
-        circle,
-        series,
-        author,
-        illustration,
-        voice_actor,
-        music,
-        age_rating,
-        product_format,
-        file_format,
-        file_size,
-    })
+        Ok(GameMetadata {
+            source: "dlsite".into(),
+            source_url: url.clone(),
+            title,
+            version: None,
+            developer,
+            overview,
+            overview_html,
+            cover_url,
+            screenshots,
+            tags,
+            relations: vec![],
+            engine: None,
+            os: None,
+            language: language_dl,
+            censored: None,
+            release_date,
+            last_updated,
+            rating,
+            price,
+            circle,
+            series,
+            author,
+            illustration,
+            voice_actor,
+            music,
+            age_rating,
+            product_format,
+            file_format,
+            file_size,
+        })
+    }
+    .await;
+    finalize_scrape_result("dlsite", "DLsite", &url, result)
 }
 
 // ── VNDB ───────────────────────────────────────────────────────────────────
@@ -1154,34 +1424,35 @@ struct VndbResponse {
 
 #[tauri::command]
 pub async fn fetch_vndb_metadata(url: String) -> Result<GameMetadata, String> {
-    let vn_id = parse_vndb_id_from_url(&url)
-        .ok_or_else(|| "Expected VNDB URL like https://vndb.org/v1234".to_string())?;
+    let result = async {
+        let vn_id = parse_vndb_id_from_url(&url)
+            .ok_or_else(|| "Expected VNDB URL like https://vndb.org/v1234".to_string())?;
 
     let body = serde_json::json!({
         "filters": ["id", "=", vn_id],
         "fields": "id,title,alttitle,description,released,image.url,screenshots.url,tags.rating,tags.name,developers.name,developers.original,relations.relation,relations.title,relations.id"
     });
 
-    let resp = reqwest::Client::new()
-        .post("https://api.vndb.org/kana/vn")
-        .header("User-Agent", "LIBMALY/1.3")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("VNDB API request failed: {}", e))?;
+        let resp = reqwest::Client::new()
+            .post("https://api.vndb.org/kana/vn")
+            .header("User-Agent", "LIBMALY/1.3")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("VNDB API request failed: {}", e))?;
 
-    if !resp.status().is_success() {
-        return Err(format!("VNDB API HTTP {}", resp.status()));
-    }
+        if !resp.status().is_success() {
+            return Err(format!("VNDB API HTTP {}", resp.status()));
+        }
 
-    let parsed: VndbResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("VNDB API parse failed: {}", e))?;
-    let item = parsed
-        .results
-        .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
-        .ok_or_else(|| "VNDB entry not found".to_string())?;
+        let parsed: VndbResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("VNDB API parse failed: {}", e))?;
+        let item = parsed
+            .results
+            .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
+            .ok_or_else(|| "VNDB entry not found".to_string())?;
 
     let title = item.title.clone().or(item.alttitle.clone());
     let cover_url = item.image.and_then(|i| i.url);
@@ -1248,37 +1519,40 @@ pub async fn fetch_vndb_metadata(url: String) -> Result<GameMetadata, String> {
         .take(12)
         .collect::<Vec<_>>();
 
-    Ok(GameMetadata {
-        source: "vndb".into(),
-        source_url: url,
-        title,
-        version: None,
-        developer,
-        overview,
-        overview_html: None,
-        cover_url,
-        screenshots,
-        tags,
-        relations,
-        engine: None,
-        os: None,
-        language: None,
-        censored: None,
-        release_date: item.released.filter(|d| !d.is_empty() && d != "null"),
-        last_updated: None,
-        rating: None,
-        price: None,
-        circle: None,
-        series: None,
-        author: None,
-        illustration: None,
-        voice_actor: None,
-        music: None,
-        age_rating: None,
-        product_format: None,
-        file_format: None,
-        file_size: None,
-    })
+        Ok(GameMetadata {
+            source: "vndb".into(),
+            source_url: url.clone(),
+            title,
+            version: None,
+            developer,
+            overview,
+            overview_html: None,
+            cover_url,
+            screenshots,
+            tags,
+            relations,
+            engine: None,
+            os: None,
+            language: None,
+            censored: None,
+            release_date: item.released.filter(|d| !d.is_empty() && d != "null"),
+            last_updated: None,
+            rating: None,
+            price: None,
+            circle: None,
+            series: None,
+            author: None,
+            illustration: None,
+            voice_actor: None,
+            music: None,
+            age_rating: None,
+            product_format: None,
+            file_format: None,
+            file_size: None,
+        })
+    }
+    .await;
+    finalize_scrape_result("vndb", "VNDB", &url, result)
 }
 
 fn canonicalize_store_url(raw: &str) -> String {
@@ -1364,25 +1638,26 @@ async fn fetch_store_metadata(url: String) -> Result<GameMetadata, String> {
     let (source_id, source_label) =
         source_from_url(&url).ok_or_else(|| "Unsupported store URL".to_string())?;
     let source_url = canonicalize_store_url(&url);
-    let client = if source_id == "fakku" {
-        fakku_http()
-    } else {
-        reqwest::Client::new()
-    };
-    let resp = client
-        .get(&source_url)
-        .header("User-Agent", "LIBMALY/1.3")
-        .send()
-        .await
-        .map_err(|e| format!("{source_label} request failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("{source_label} HTTP {}", resp.status()));
-    }
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("{source_label} body parse failed: {e}"))?;
-    let doc = Html::parse_document(&body);
+    let result = async {
+        let client = if source_id == "fakku" {
+            fakku_http()
+        } else {
+            reqwest::Client::new()
+        };
+        let resp = client
+            .get(&source_url)
+            .header("User-Agent", "LIBMALY/1.3")
+            .send()
+            .await
+            .map_err(|e| format!("{source_label} request failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("{source_label} HTTP {}", resp.status()));
+        }
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| format!("{source_label} body parse failed: {e}"))?;
+        let doc = Html::parse_document(&body);
 
     let title = extract_meta(&doc, "og:title")
         .or_else(|| extract_meta(&doc, "twitter:title"))
@@ -1492,37 +1767,40 @@ async fn fetch_store_metadata(url: String) -> Result<GameMetadata, String> {
     );
     let price = text_first(&doc, &[".price", "[itemprop='price']", ".product-price"]);
 
-    Ok(GameMetadata {
-        source: source_id.to_string(),
-        source_url,
-        title,
-        version: None,
-        developer,
-        overview,
-        overview_html: None,
-        cover_url,
-        screenshots,
-        tags,
-        relations: Vec::new(),
-        engine: None,
-        os: None,
-        language: None,
-        censored: None,
-        release_date,
-        last_updated: None,
-        rating: None,
-        price,
-        circle: None,
-        series: None,
-        author: None,
-        illustration: None,
-        voice_actor: None,
-        music: None,
-        age_rating: None,
-        product_format: None,
-        file_format: None,
-        file_size: None,
-    })
+        Ok(GameMetadata {
+            source: source_id.to_string(),
+            source_url: source_url.clone(),
+            title,
+            version: None,
+            developer,
+            overview,
+            overview_html: None,
+            cover_url,
+            screenshots,
+            tags,
+            relations: Vec::new(),
+            engine: None,
+            os: None,
+            language: None,
+            censored: None,
+            release_date,
+            last_updated: None,
+            rating: None,
+            price,
+            circle: None,
+            series: None,
+            author: None,
+            illustration: None,
+            voice_actor: None,
+            music: None,
+            age_rating: None,
+            product_format: None,
+            file_format: None,
+            file_size: None,
+        })
+    }
+    .await;
+    finalize_scrape_result(source_id, source_label, &source_url, result)
 }
 
 #[tauri::command]

@@ -4,7 +4,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { register as registerGlobalShortcut, unregister as unregisterGlobalShortcut } from "@tauri-apps/plugin-global-shortcut";
 import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { getMatches } from "@tauri-apps/plugin-cli";
@@ -15,14 +16,14 @@ import { CommandPalette } from "./components/CommandPalette";
 import { NsfwOverlay } from "./components/common/NsfwOverlay";
 import { GameDetail } from "./components/game/GameDetail";
 import { AppUpdateModal } from "./components/modals/AppUpdateModal";
-import { CrashReportModal, LogViewerModal } from "./components/modals/DiagnosticsModals";
+import { CrashReportModal, IntegrityCheckModal, LogViewerModal, RecoveryModeModal, SnapshotRestoreModal } from "./components/modals/DiagnosticsModals";
 import { MigrationWizardModal, SettingsModal } from "./components/modals/SettingsModal";
 import { ScreenshotAnnotateModal } from "./components/modals/ScreenshotAnnotateModal";
 import { FeedView } from "./components/views/FeedView";
 import { HomeView } from "./components/views/HomeView";
 import { StatsView } from "./components/views/StatsView";
 import { mergeFolderGames, mergeFolderMtimes } from "./lib/scanner";
-import { appStorageGetItem, appStorageSetItem } from "./lib/appStorage";
+import { appStorageGetItem, appStorageRemoveItem, appStorageSetItem } from "./lib/appStorage";
 import "./App.css";
 
 // ─── Virtual list hook ────────────────────────────────────────────────────────
@@ -128,6 +129,14 @@ interface SessionEntry {
   mood?: SessionMood; // optional mood tag
 }
 interface SteamEntry { app_id: string; name: string; played_minutes: number; }
+interface SteamLibraryEntry {
+  app_id: string;
+  name: string;
+  install_dir: string;
+  library_dir: string;
+  manifest_path: string;
+  exe?: string | null;
+}
 interface GameMetadata {
   source: string;
   source_url: string;
@@ -186,6 +195,20 @@ interface Screenshot {
   tags: string[];
 }
 
+interface ScreenshotToast {
+  id: string;
+  gamePath: string;
+  screenshot: Screenshot;
+  label: string;
+}
+
+interface ScreenshotOverlayPayload {
+  gamePath: string;
+  gameTitle: string;
+  screenshot: Screenshot;
+  label?: string;
+}
+
 interface RustLogEntry {
   ts: number;
   level: string;
@@ -199,10 +222,165 @@ interface CrashReport {
   location: string;
   backtrace: string;
 }
+interface ScraperHealthDiagnostic {
+  source_id: string;
+  source_label: string;
+  overall_status: "healthy" | "degraded" | "parser_failed" | string;
+  source_wide_parser_failure: boolean;
+  total_attempts: number;
+  total_successes: number;
+  total_failures: number;
+  parser_failure_count: number;
+  consecutive_parser_failures: number;
+  last_success_at?: number | null;
+  last_failure_at?: number | null;
+  last_failure_kind?: string | null;
+  last_failure_reason?: string | null;
+  last_failure_url?: string | null;
+  recent_failure_reasons: string[];
+}
+interface IntegrityIssue {
+  severity: "error" | "warning" | string;
+  code: string;
+  message: string;
+  path?: string | null;
+  gamePath?: string | null;
+}
+interface IntegrityCheckReport {
+  scannedAt: number;
+  totalGames: number;
+  totalLibraryFolders: number;
+  errorCount: number;
+  warningCount: number;
+  issues: IntegrityIssue[];
+}
+interface AutoHealSuggestion {
+  gameName: string;
+  oldPath: string;
+  newPath: string;
+  confidence: number;
+  reason: string;
+}
+interface AutoHealReport {
+  scannedAt: number;
+  totalBrokenGames: number;
+  suggestionCount: number;
+  unresolvedPaths: string[];
+  suggestions: AutoHealSuggestion[];
+}
+interface BackupRetentionApplyResult {
+  snapshotsDeleted: number;
+  saveBackupsDeleted: number;
+  snapshotsKept: number;
+  saveBackupsKept: number;
+}
+interface PermissionDiagnostic {
+  operation: string;
+  rawError: string;
+  targetPath?: string | null;
+  appDataRoot: string;
+  portableMode: boolean;
+  summary: string;
+  probableCause: string;
+  actionableFixes: string[];
+}
+interface SnapshotResult {
+  id: string;
+  path: string;
+  createdAt: number;
+  entryCount: number;
+  label?: string | null;
+  reason?: string | null;
+}
+interface SnapshotContents extends SnapshotResult {
+  entries: Record<string, string>;
+}
+interface SnapshotPreviewItem {
+  key: string;
+  label: string;
+  status: "changed" | "same" | "missing_in_snapshot" | "new_in_snapshot";
+  currentCount: number;
+  snapshotCount: number;
+}
+interface SnapshotRestorePreview {
+  snapshot: SnapshotContents;
+  items: SnapshotPreviewItem[];
+  changedCount: number;
+  currentGames: number;
+  snapshotGames: number;
+  currentFolders: number;
+  snapshotFolders: number;
+}
+interface RecentFileOp {
+  ts: number;
+  operation: string;
+  path: string;
+  strategy: string;
+  success: boolean;
+  error?: string | null;
+}
+type BackgroundJobStatus = "queued" | "running" | "retrying" | "failed" | "permanent_failed";
+interface BackgroundJob {
+  id: string;
+  label: string;
+  status: BackgroundJobStatus;
+  detail?: string | null;
+  progressCurrent?: number | null;
+  progressTotal?: number | null;
+  attempts?: number | null;
+  updatedAt: number;
+}
+interface MetadataQueueItem {
+  path: string;
+  metadata: GameMetadata;
+}
+interface FolderQueueItem {
+  path: string;
+}
 interface SaveBackupResult {
   zip_path: string;
   files: number;
   directories: string[];
+}
+
+const BACKGROUND_JOB_BUSY_STATUSES: BackgroundJobStatus[] = ["queued", "running", "retrying"];
+const JOB_INCREMENTAL_SYNC = "incremental-sync";
+const JOB_FULL_SCAN = "full-scan";
+const JOB_INTEGRITY_CHECK = "integrity-check";
+const JOB_BATCH_METADATA_REFRESH = "batch-metadata-refresh";
+const JOB_AUTO_METADATA_REFRESH = "auto-metadata-refresh";
+const JOB_UPDATE_CHECKER = "update-checker";
+const JOB_AUTO_HEAL_PATHS = "auto-heal-paths";
+const JOB_BACKUP_RETENTION = "backup-retention";
+const DEFAULT_METADATA_QUEUE_CONCURRENCY = 2;
+const DEFAULT_METADATA_QUEUE_MAX_ATTEMPTS = 3;
+const DEFAULT_METADATA_QUEUE_BACKOFF_MS = 1500;
+
+function isBackgroundJobBusy(status: BackgroundJobStatus) {
+  return BACKGROUND_JOB_BUSY_STATUSES.includes(status);
+}
+
+function backgroundJobButtonLabel(job: BackgroundJob | null | undefined, fallback: string) {
+  if (!job) return fallback;
+  if (job.detail?.trim()) return job.detail.trim();
+  switch (job.status) {
+    case "queued":
+      return `${job.label} (Queued)`;
+    case "running":
+      return `${job.label}...`;
+    case "retrying":
+      return `${job.label} (Retrying)`;
+    case "failed":
+      return `${job.label} (Failed)`;
+    case "permanent_failed":
+      return `${job.label} (Stopped)`;
+    default:
+      return fallback;
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 type LogLevelFilter = "all" | "error" | "warn" | "info";
@@ -232,6 +410,9 @@ interface GameCustomization {
   /** Per-game launch config override for Wine/Proton (non-Windows) */
   runnerOverrideEnabled?: boolean;
   runnerOverride?: RunnerOverrideConfig;
+  /** Optional Steam integration for imported Steam titles. */
+  steamAppId?: string;
+  launchViaSteam?: boolean;
   /** Game completion status */
   status?: "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play";
   /** Daily/session time budget in minutes */
@@ -251,6 +432,7 @@ interface GameCustomization {
 }
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
+type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia";
 type RatingCategoryKey = "gameplay" | "story" | "soundtrack" | "visuals" | "characters" | "performance";
 const RATING_CATEGORIES: { key: RatingCategoryKey; label: string }[] = [
   { key: "gameplay", label: "Gameplay" },
@@ -350,6 +532,17 @@ interface PrefixInfo {
   kind: "wine" | "proton" | string;
   has_dxvk: boolean;
   has_vkd3d: boolean;
+  media: {
+    has_media_foundation: boolean;
+    has_quartz: boolean;
+    has_wmp: boolean;
+    has_lavfilters: boolean;
+    has_wmv_decoder: boolean;
+    likely_video_playback_issue: boolean;
+    summary: string;
+    notes: string[];
+    recommended_verbs: string[];
+  };
 }
 
 interface LutrisGameEntry {
@@ -376,12 +569,13 @@ interface AppSettings {
   sessionToastEnabled: boolean;
   trayTooltipEnabled: boolean;
   startupWithWindows: boolean;
-  themeMode: "dark" | "light" | "oled";
+  surpriseLaunchesImmediately: boolean;
+  themeMode: ThemeMode;
   seasonalTheme: "auto" | "winter" | "summer" | "halloween" | "none";
   ratingScale: RatingScale;
   themeScheduleMode: "manual" | "os" | "time";
-  dayThemeMode: "light" | "dark";
-  nightThemeMode: "dark" | "oled";
+  dayThemeMode: ThemeMode;
+  nightThemeMode: ThemeMode;
   lightStartHour: number;
   darkStartHour: number;
   accentColor: string;
@@ -390,6 +584,9 @@ interface AppSettings {
   metadataAutoRefetchDays: number;
   autoScreenshotInterval: number;
   saveBackupOnExit: boolean;
+  backupRetentionDailyKeep: number;
+  backupRetentionWeeklyKeep: number;
+  backupRetentionMonthlyKeep: number;
   bossKeyEnabled?: boolean;
   bossKeyCode?: number;
   bossKeyAction?: "hide" | "kill";
@@ -423,6 +620,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   sessionToastEnabled: false,
   trayTooltipEnabled: false,
   startupWithWindows: false,
+  surpriseLaunchesImmediately: true,
   themeMode: "dark",
   seasonalTheme: "auto",
   ratingScale: "10",
@@ -442,12 +640,16 @@ const DEFAULT_SETTINGS: AppSettings = {
   metadataAutoRefetchDays: 0,
   autoScreenshotInterval: 0,
   saveBackupOnExit: false,
+  backupRetentionDailyKeep: 7,
+  backupRetentionWeeklyKeep: 4,
+  backupRetentionMonthlyKeep: 6,
   bossKeyEnabled: false,
   bossKeyCode: 0x7A, // F11
   bossKeyAction: "hide",
   bossKeyMuteSystem: false,
   bossKeyFallbackUrl: "",
 };
+const SCREENSHOT_TOAST_TTL_MS = 3600;
 
 
 
@@ -470,10 +672,68 @@ function loadCache<T>(key: string, fallback: T): T {
 }
 function saveCache(key: string, val: unknown) { appStorageSetItem(key, JSON.stringify(val)); }
 
+function buildSnapshotEntries(payload: {
+  libraryFolders: LibraryFolder[];
+  games: Game[];
+  stats: Record<string, GameStats>;
+  metadata: Record<string, GameMetadata>;
+  hiddenGames: Record<string, boolean>;
+  favGames: Record<string, boolean>;
+  customizations: Record<string, GameCustomization>;
+  notes: Record<string, string>;
+  collections: Collection[];
+  launchConfig: LaunchConfig;
+  recentGames: RecentGame[];
+  customOrder: Record<string, string[]>;
+  sessionLog: SessionEntry[];
+  wishlist: WishlistItem[];
+  history: GameHistoryMap;
+  appSettings: AppSettings;
+  dirMtimes: DirMtime[];
+}) {
+  return {
+    [SK_GAMES]: JSON.stringify(payload.games),
+    [SK_MTIMES]: JSON.stringify(payload.dirMtimes),
+    [SK_FOLDERS]: JSON.stringify(payload.libraryFolders),
+    [SK_STATS]: JSON.stringify(payload.stats),
+    [SK_META]: JSON.stringify(payload.metadata),
+    [SK_HIDDEN]: JSON.stringify(payload.hiddenGames),
+    [SK_FAVS]: JSON.stringify(payload.favGames),
+    [SK_CUSTOM]: JSON.stringify(payload.customizations),
+    [SK_NOTES]: JSON.stringify(payload.notes),
+    [SK_COLLECTIONS]: JSON.stringify(payload.collections),
+    [SK_LAUNCH]: JSON.stringify(payload.launchConfig),
+    [SK_RECENT]: JSON.stringify(payload.recentGames),
+    [SK_ORDER]: JSON.stringify(payload.customOrder),
+    [SK_SESSION_LOG]: JSON.stringify(payload.sessionLog),
+    [SK_WISHLIST]: JSON.stringify(payload.wishlist),
+    [SK_HISTORY]: JSON.stringify(payload.history),
+    [SK_SETTINGS]: JSON.stringify(payload.appSettings),
+  };
+}
+
+interface SteamLaunchBridge {
+  path: string;
+  appId: string;
+  baselineMinutes: number;
+  lastSeenMinutes: number;
+  sawIncrease: boolean;
+  stalledPolls: number;
+  pollCount: number;
+}
+
 function normalizeHexColor(input: string, fallback: string) {
   const x = (input || "").trim();
   const hex = x.startsWith("#") ? x : `#${x}`;
   return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex.toLowerCase() : fallback;
+}
+
+function allowsNativeContextMenu(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  const editable = target.closest(
+    'input, textarea, select, [contenteditable=""], [contenteditable="true"], [data-allow-native-context-menu="true"]',
+  );
+  return !!editable || (target instanceof HTMLElement && target.isContentEditable);
 }
 
 function shiftHexColor(hex: string, amount: number) {
@@ -605,6 +865,40 @@ function remapPathByRoot(path: string, oldRoot: string, newRoot: string): string
   const mappedUnix = `${newN}${suffix}`;
   const preferBackslash = newRoot.includes("\\") && !newRoot.includes("/");
   return preferBackslash ? mappedUnix.replace(/\//g, "\\") : mappedUnix;
+}
+function pathDirname(path: string) {
+  const norm = path.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  const idx = norm.lastIndexOf("/");
+  if (idx <= 0) return idx === 0 ? "/" : "";
+  return norm.slice(0, idx);
+}
+function remapPathByPrefix(path: string, oldPrefix: string, newPrefix: string): string | null {
+  const src = normalizePathNoCase(path);
+  const oldN = normalizePathNoCase(oldPrefix);
+  const newN = normalizePathNoCase(newPrefix);
+  const srcL = src.toLowerCase();
+  const oldL = oldN.toLowerCase();
+  if (!(srcL === oldL || srcL.startsWith(`${oldL}/`))) return null;
+  const suffix = src.slice(oldN.length);
+  const mappedUnix = `${newN}${suffix}`;
+  const preferBackslash = newPrefix.includes("\\") && !newPrefix.includes("/");
+  return preferBackslash ? mappedUnix.replace(/\//g, "\\") : mappedUnix;
+}
+function pathSegmentsRelativeToRoot(path: string, roots: LibraryFolder[]) {
+  const normalizedPath = normalizePathNoCase(path);
+  const matchedRoot = roots
+    .slice()
+    .sort((a, b) => normalizePathNoCase(b.path).length - normalizePathNoCase(a.path).length)
+    .find((root) => {
+      const normalizedRoot = normalizePathNoCase(root.path);
+      const pathLower = normalizedPath.toLowerCase();
+      const rootLower = normalizedRoot.toLowerCase();
+      return pathLower === rootLower || pathLower.startsWith(`${rootLower}/`);
+    });
+  if (!matchedRoot) return [];
+  const rootNormalized = normalizePathNoCase(matchedRoot.path);
+  const suffix = normalizedPath.slice(rootNormalized.length).replace(/^\/+/, "");
+  return suffix ? suffix.split("/").filter(Boolean) : [];
 }
 function parseDeepLinkUrl(rawUrl: string): LaunchRequest | null {
   try {
@@ -1869,6 +2163,22 @@ function WineSettingsModal({ config, onSave, onClose }: {
     }
   };
 
+  const installMediaFixes = async (prefix: PrefixInfo) => {
+    if ((prefix.media.recommended_verbs?.length || 0) === 0) return;
+    setToolBusy(`media:${prefix.path}`);
+    try {
+      await invoke("install_prefix_media_fixes", {
+        prefix: prefix.path,
+        verbs: prefix.media.recommended_verbs,
+      });
+      await refreshPrefixes();
+    } catch (e) {
+      alert("Media compatibility fix install failed: " + e);
+    } finally {
+      setToolBusy(null);
+    }
+  };
+
   const runVerb = async (prefix: PrefixInfo) => {
     setToolBusy(`verb:${prefix.path}`);
     try {
@@ -2056,6 +2366,46 @@ function WineSettingsModal({ config, onSave, onClose }: {
                       </span>
                     </div>
                     <p className="text-[9px] mt-1 font-mono break-all" style={{ color: "var(--color-text-dim)" }}>{pfx.path}</p>
+                    <div className="mt-2 rounded px-2.5 py-2" style={{ background: "var(--color-panel-alt)", border: "1px solid var(--color-border-subtle)" }}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-semibold" style={{ color: pfx.media.likely_video_playback_issue ? "var(--color-warning)" : "var(--color-success)" }}>
+                          {pfx.media.summary}
+                        </span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: pfx.media.has_media_foundation ? "var(--color-success-bg)" : "var(--color-warning-bg)", color: pfx.media.has_media_foundation ? "var(--color-success)" : "var(--color-warning)" }}>
+                          MF {pfx.media.has_media_foundation ? "ok" : "missing"}
+                        </span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: pfx.media.has_quartz ? "var(--color-success-bg)" : "var(--color-warning-bg)", color: pfx.media.has_quartz ? "var(--color-success)" : "var(--color-warning)" }}>
+                          Quartz {pfx.media.has_quartz ? "ok" : "missing"}
+                        </span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: pfx.media.has_wmp ? "var(--color-success-bg)" : "var(--color-warning-bg)", color: pfx.media.has_wmp ? "var(--color-success)" : "var(--color-warning)" }}>
+                          WMP {pfx.media.has_wmp ? "ok" : "missing"}
+                        </span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: pfx.media.has_lavfilters ? "var(--color-success-bg)" : "var(--color-warning-bg)", color: pfx.media.has_lavfilters ? "var(--color-success)" : "var(--color-warning)" }}>
+                          LAV {pfx.media.has_lavfilters ? "ok" : "missing"}
+                        </span>
+                      </div>
+                      {pfx.media.notes.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          {pfx.media.notes.slice(0, 2).map((note) => (
+                            <p key={note} className="text-[10px] leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                              {note}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                      {pfx.media.recommended_verbs.length > 0 && (
+                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                          <span className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>
+                            Suggested fixes:
+                          </span>
+                          {pfx.media.recommended_verbs.map((verb) => (
+                            <span key={verb} className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "var(--color-bg-deep)", color: "var(--color-accent-soft)", border: "1px solid var(--color-border-subtle)" }}>
+                              {verb}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <div className="flex items-center gap-2 mt-2">
                       <button
                         onClick={() => installGraphics(pfx)}
@@ -2064,6 +2414,15 @@ function WineSettingsModal({ config, onSave, onClose }: {
                         style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)" }}
                       >
                         Install DXVK/VKD3D
+                      </button>
+                      <button
+                        onClick={() => installMediaFixes(pfx)}
+                        disabled={toolBusy === `media:${pfx.path}` || pfx.media.recommended_verbs.length === 0}
+                        className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-warning)" }}
+                        title="Install recommended media/video playback fixes via winetricks"
+                      >
+                        Install media fixes
                       </button>
                       <select
                         value={selectedVerb}
@@ -2297,7 +2656,7 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
   games: Game[];
   metadata: Record<string, GameMetadata>;
   customizations: Record<string, GameCustomization>;
-  onImport: (matched: { path: string; addSecs: number }[]) => void;
+  onImport: (matched: { path: string; addSecs: number }[]) => void | Promise<void>;
   onClose: () => void;
 }) {
   const [loading, setLoading] = useState(true);
@@ -2336,8 +2695,8 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
   const toggle = (path: string) =>
     setMatched(prev => prev.map(m => m.path === path ? { ...m, checked: !m.checked } : m));
 
-  const handleApply = () => {
-    onImport(matched.filter(m => m.checked).map(m => ({ path: m.path, addSecs: m.addSecs })));
+  const handleApply = async () => {
+    await onImport(matched.filter(m => m.checked).map(m => ({ path: m.path, addSecs: m.addSecs })));
     onClose();
   };
 
@@ -2422,10 +2781,137 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
   );
 }
 
+function SteamLibraryImportModal({ games, onImport, onClose }: {
+  games: Game[];
+  onImport: (entries: SteamLibraryEntry[]) => void | Promise<void>;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [entries, setEntries] = useState<SteamLibraryEntry[]>([]);
+  const [error, setError] = useState("");
+  const [checkedPaths, setCheckedPaths] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    invoke<SteamLibraryEntry[]>("import_steam_library")
+      .then((found) => {
+        setEntries(found);
+        const existing = new Set(games.map((g) => normalizePathForMatch(g.path)));
+        const nextChecked: Record<string, boolean> = {};
+        for (const entry of found) {
+          if (entry.exe && !existing.has(normalizePathForMatch(entry.exe))) {
+            nextChecked[entry.exe] = true;
+          }
+        }
+        setCheckedPaths(nextChecked);
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const visibleEntries = entries.filter((entry) => !!entry.exe);
+  const selected = visibleEntries.filter((entry) => entry.exe && checkedPaths[entry.exe]);
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.82)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="rounded-xl shadow-2xl w-[680px] max-h-[82vh] flex flex-col"
+        style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b flex-shrink-0" style={{ borderColor: "var(--color-border-card)" }}>
+          <div className="w-9 h-9 rounded flex items-center justify-center" style={{ background: "var(--color-panel-2)" }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--color-accent)">
+              <path d="M12 2C6.48 2 2 6.48 2 12l5.84 2.41c.53-.32 1.14-.51 1.8-.51.07 0 .14 0 .21.01L12 10.5V10.42c0-2.52 2.04-4.58 4.56-4.58 2.52 0 4.56 2.04 4.56 4.58 0 2.52-2.04 4.56-4.56 4.56h-.1l-3.5 2.53c0 .06.01.12.01.18 0 1.89-1.53 3.42-3.42 3.42-1.67 0-3.07-1.2-3.36-2.79L2.17 14C3.14 18.55 7.15 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2z" />
+            </svg>
+          </div>
+          <div>
+            <h2 className="font-bold text-base" style={{ color: "var(--color-white)" }}>Import Steam Library</h2>
+            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+              Import installed Steam games and route launches through Steam so it can keep tracking playtime.
+            </p>
+          </div>
+          <button onClick={onClose} className="ml-auto text-xl" style={{ color: "var(--color-text-dim)" }}>✕</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4"
+          style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+          {loading && (
+            <div className="flex items-center justify-center h-24 gap-3">
+              <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: "var(--color-accent)" }} />
+              <span className="text-sm" style={{ color: "var(--color-text-muted)" }}>Reading Steam manifests…</span>
+            </div>
+          )}
+          {error && <p className="text-sm" style={{ color: "var(--color-danger)" }}>{error}</p>}
+          {!loading && !error && entries.length === 0 && (
+            <p className="text-sm text-center py-8" style={{ color: "var(--color-text-muted)" }}>
+              No installed Steam manifests were found.
+            </p>
+          )}
+          {!loading && !error && entries.length > 0 && visibleEntries.length === 0 && (
+            <p className="text-sm text-center py-8" style={{ color: "var(--color-text-muted)" }}>
+              Steam games were found, but LIBMALY could not confidently detect launchable executables for them yet.
+            </p>
+          )}
+          {!loading && !error && visibleEntries.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs mb-2" style={{ color: "var(--color-text-muted)" }}>
+                {visibleEntries.length} importable Steam game{visibleEntries.length !== 1 ? "s" : ""} found.
+              </p>
+              {visibleEntries.map((entry) => {
+                const exe = entry.exe!;
+                const exists = games.some((g) => normalizePathForMatch(g.path) === normalizePathForMatch(exe));
+                return (
+                  <label key={entry.app_id} className="flex items-start gap-3 rounded-lg px-3 py-2 cursor-pointer"
+                    style={{ background: "var(--color-panel-2)", opacity: exists ? 0.65 : 1 }}>
+                    <input
+                      type="checkbox"
+                      checked={!!checkedPaths[exe]}
+                      disabled={exists}
+                      onChange={() => setCheckedPaths((prev) => ({ ...prev, [exe]: !prev[exe] }))}
+                      className="mt-1 rounded"
+                      style={{ accentColor: "var(--color-accent)" }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm truncate" style={{ color: "var(--color-text)" }}>{entry.name}</p>
+                      <p className="text-[10px] break-all" style={{ color: "var(--color-text-dim)" }}>
+                        AppID {entry.app_id} · {exe}
+                      </p>
+                      <p className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                        {exists ? "Already in your library" : "Will be imported with Steam launch bridge enabled"}
+                      </p>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {!loading && visibleEntries.length > 0 && (
+          <div className="flex gap-3 justify-end px-6 py-4 border-t flex-shrink-0" style={{ borderColor: "var(--color-border-card)" }}>
+            <button onClick={onClose} className="px-4 py-2 rounded text-sm"
+              style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
+            <button
+              onClick={async () => {
+                await onImport(selected);
+                onClose();
+              }}
+              disabled={selected.length === 0}
+              className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50"
+              style={{ background: "#1a3050", color: "var(--color-accent)", border: "1px solid #2a5080" }}
+            >
+              Import {selected.length} Steam game{selected.length !== 1 ? "s" : ""}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Lutris Import Modal ────────────────────────────────────────────────────
 function LutrisImportModal({ games, onImport, onClose }: {
   games: Game[];
-  onImport: (entries: LutrisGameEntry[]) => void;
+  onImport: (entries: LutrisGameEntry[]) => void | Promise<void>;
   onClose: () => void;
 }) {
   const [loading, setLoading] = useState(true);
@@ -2453,8 +2939,8 @@ function LutrisImportModal({ games, onImport, onClose }: {
     );
   };
 
-  const apply = () => {
-    onImport(rows.filter((r) => r.checked).map((r) => r.entry));
+  const apply = async () => {
+    await onImport(rows.filter((r) => r.checked).map((r) => r.entry));
     onClose();
   };
 
@@ -2543,7 +3029,7 @@ function InteropImportModal({
   title: string;
   subtitle: string;
   accent: string;
-  onImport: (entries: InteropGameEntry[]) => void;
+  onImport: (entries: InteropGameEntry[]) => void | Promise<void>;
   onClose: () => void;
 }) {
   const [loading, setLoading] = useState(true);
@@ -2569,8 +3055,8 @@ function InteropImportModal({
     setRows((prev) => prev.map((r) => (r.entry.exe === exe ? { ...r, checked: !r.checked } : r)));
   };
 
-  const apply = () => {
-    onImport(rows.filter((r) => r.checked).map((r) => r.entry));
+  const apply = async () => {
+    await onImport(rows.filter((r) => r.checked).map((r) => r.entry));
     onClose();
   };
 
@@ -2732,7 +3218,11 @@ export default function App() {
     }
     const savePath = await save({ defaultPath: "libmaly_export.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
     if (savePath) {
-      await invoke("save_string_to_file", { path: savePath, contents: csv });
+      try {
+        await invoke("save_string_to_file", { path: savePath, contents: csv });
+      } catch (e) {
+        await showPermissionDiagnostic("export the CSV file", savePath, e);
+      }
     }
   };
 
@@ -2763,9 +3253,11 @@ export default function App() {
       filters: [{ name: "JSON", extensions: ["json"] }],
     }).catch(() => null);
     if (!savePath || typeof savePath !== "string") return;
-    await invoke("save_string_to_file", { path: savePath, contents: JSON.stringify(payload, null, 2) }).catch((e) => {
-      alert("Failed to export cloud config: " + e);
-    });
+    try {
+      await invoke("save_string_to_file", { path: savePath, contents: JSON.stringify(payload, null, 2) });
+    } catch (e) {
+      await showPermissionDiagnostic("export the cloud backup", savePath, e);
+    }
   };
 
   const handleImportCloudState = async () => {
@@ -2795,6 +3287,11 @@ export default function App() {
     }
 
     if (!confirm("Import will replace current local library state for included sections. Continue?")) return;
+    try {
+      await ensureSnapshotBeforeRiskyOp("before-cloud-import", "Before importing cloud state");
+    } catch {
+      return;
+    }
 
     if (Array.isArray(data.libraryFolders)) {
       setLibraryFolders(data.libraryFolders);
@@ -2901,12 +3398,17 @@ export default function App() {
     html += `</div></body></html>`;
     const savePath = await save({ defaultPath: "libmaly_library.html", filters: [{ name: "HTML", extensions: ["html"] }] });
     if (savePath) {
-      await invoke("save_string_to_file", { path: savePath, contents: html });
+      try {
+        await invoke("save_string_to_file", { path: savePath, contents: html });
+      } catch (e) {
+        await showPermissionDiagnostic("export the HTML library page", savePath, e);
+      }
     }
   };
 
   const [screenshots, setScreenshots] = useState<Record<string, Screenshot[]>>({});
   const [pendingAnnotatedShot, setPendingAnnotatedShot] = useState<{ gamePath: string; shot: Screenshot } | null>(null);
+  const [screenshotToasts, setScreenshotToasts] = useState<ScreenshotToast[]>([]);
   const [hiddenGames, setHiddenGames] = useState<Record<string, boolean>>(() => loadCache(SK_HIDDEN, {}));
   const [favGames, setFavGames] = useState<Record<string, boolean>>(() => loadCache(SK_FAVS, {}));
   const [customizations, setCustomizations] = useState<Record<string, GameCustomization>>(() => loadCache(SK_CUSTOM, {}));
@@ -2927,13 +3429,26 @@ export default function App() {
   const [showDevelopers, setShowDevelopers] = useState(false);
   const [showWishlist, setShowWishlist] = useState(false);
   const [showLogViewer, setShowLogViewer] = useState(false);
+  const [showSnapshotRestore, setShowSnapshotRestore] = useState(false);
+  const [integrityReport, setIntegrityReport] = useState<IntegrityCheckReport | null>(null);
+  const [snapshots, setSnapshots] = useState<SnapshotResult[]>([]);
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false);
+  const [selectedSnapshotPath, setSelectedSnapshotPath] = useState<string | null>(null);
+  const [snapshotPreview, setSnapshotPreview] = useState<SnapshotRestorePreview | null>(null);
+  const [snapshotPreviewLoading, setSnapshotPreviewLoading] = useState(false);
+  const [snapshotPreviewError, setSnapshotPreviewError] = useState<string | null>(null);
+  const [restoringSnapshot, setRestoringSnapshot] = useState(false);
   const [rustLogs, setRustLogs] = useState<RustLogEntry[]>([]);
+  const [recentFileOps, setRecentFileOps] = useState<RecentFileOp[]>([]);
   const [crashReport, setCrashReport] = useState<CrashReport | null>(null);
+  const [recoveryMode, setRecoveryMode] = useState(false);
+  const [showRecoveryPrompt, setShowRecoveryPrompt] = useState(false);
+  const [scraperHealth, setScraperHealth] = useState<ScraperHealthDiagnostic[]>([]);
   const [logLevelFilter, setLogLevelFilter] = useState<LogLevelFilter>("all");
   const [appVersion, setAppVersion] = useState<string>("unknown");
   const [isUiActive, setIsUiActive] = useState<boolean>(true);
   const [liveSessionExtraSec, setLiveSessionExtraSec] = useState<number>(0);
-  const [batchRefreshStatus, setBatchRefreshStatus] = useState<string | null>(null);
+  const [backgroundJobs, setBackgroundJobs] = useState<Record<string, BackgroundJob>>({});
   const [sortMode, setSortMode] = useState<SortMode>("lastPlayed");
   /** custom-order map: contextKey -> ordered array of game paths */
   const [customOrder, setCustomOrder] = useState<Record<string, string[]>>(
@@ -2941,6 +3456,8 @@ export default function App() {
   );
   /** path currently being dragged in the sidebar */
   const dragPath = useRef<string | null>(null);
+  const activeBackgroundJobIds = useRef<Set<string>>(new Set());
+  const screenshotToastTimeoutsRef = useRef<Record<string, number>>({});
 
   // ── UI states ──
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadCache("libmaly_sidebar_w", 256));
@@ -3026,7 +3543,7 @@ export default function App() {
     const t = setInterval(() => setSeasonClockTick(Date.now()), 60 * 60 * 1000);
     return () => clearInterval(t);
   }, [appSettings.seasonalTheme]);
-  const effectiveThemeMode = useMemo<"dark" | "light" | "oled">(() => {
+  const effectiveThemeMode = useMemo<ThemeMode>(() => {
     if (appSettings.themeScheduleMode === "os") {
       return osPrefersDark ? "dark" : "light";
     }
@@ -3162,6 +3679,8 @@ export default function App() {
   const [pendingNoteSession, setPendingNoteSession] = useState<SessionEntry | null>(null);
   /** Show the Steam import modal */
   const [showSteamImport, setShowSteamImport] = useState(false);
+  /** Show the Steam library import modal */
+  const [showSteamLibraryImport, setShowSteamLibraryImport] = useState(false);
   /** Show the Lutris import modal */
   const [showLutrisImport, setShowLutrisImport] = useState(false);
   /** Show the Playnite import modal */
@@ -3173,6 +3692,7 @@ export default function App() {
 
   /** Game version history */
   const [history, setHistory] = useState<GameHistoryMap>(() => loadCache(SK_HISTORY, {}));
+  const [steamLaunchBridge, setSteamLaunchBridge] = useState<SteamLaunchBridge | null>(null);
   /** Pending metadata update requiring confirmation */
   const [pendingMetaUpdate, setPendingMetaUpdate] = useState<{
     path: string;
@@ -3184,6 +3704,124 @@ export default function App() {
     setActiveMainTab("library");
     setSelected(game);
   }, []);
+
+  const resolveGameTitle = useCallback((gamePath: string) =>
+    customizationsRef.current[gamePath]?.displayName
+    ?? metadataRef.current[gamePath]?.title
+    ?? gamesRef.current.find((game) => game.path === gamePath)?.name
+    ?? "Unknown game"
+  , []);
+
+  const ensureScreenshotOverlayWindow = useCallback(async () => {
+    const existing = await WebviewWindow.getByLabel("screenshot-overlay");
+    if (existing) return existing;
+    const overlayUrl = new URL("/overlay.html", window.location.origin).toString();
+    const created = new WebviewWindow("screenshot-overlay", {
+      url: overlayUrl,
+      title: "LIBMALY Screenshot Overlay",
+      width: 380,
+      height: 220,
+      visible: false,
+      decorations: false,
+      transparent: true,
+      shadow: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      focus: false,
+      focusable: false,
+    });
+    created.once("tauri://created", async () => {
+      await created.setAlwaysOnTop(true).catch(() => {});
+      await created.setSkipTaskbar(true).catch(() => {});
+      await created.setIgnoreCursorEvents(true).catch(() => {});
+      await created.hide().catch(() => {});
+    });
+    return created;
+  }, []);
+
+  const emitScreenshotOverlay = useCallback(async (
+    gamePath: string,
+    screenshot: Screenshot,
+    label = "Screenshot saved",
+  ) => {
+    const payload: ScreenshotOverlayPayload = {
+      gamePath,
+      gameTitle: resolveGameTitle(gamePath),
+      screenshot,
+      label,
+    };
+    try {
+      await ensureScreenshotOverlayWindow();
+      await emitTo("screenshot-overlay", "libmaly://screenshot-overlay-show", payload);
+    } catch {
+      // Ignore overlay errors; screenshot capture itself already succeeded.
+    }
+  }, [ensureScreenshotOverlayWindow, resolveGameTitle]);
+
+  const dismissScreenshotToast = useCallback((id: string) => {
+    const timeoutId = screenshotToastTimeoutsRef.current[id];
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+      delete screenshotToastTimeoutsRef.current[id];
+    }
+    setScreenshotToasts((prev) => prev.filter((toast) => toast.id !== id));
+  }, []);
+
+  const queueScreenshotToast = useCallback((gamePath: string, screenshot: Screenshot, label = "Screenshot saved") => {
+    const id = `${screenshot.path}:${Date.now()}`;
+    setScreenshotToasts((prev) => [
+      { id, gamePath, screenshot, label },
+      ...prev.filter((toast) => toast.screenshot.path !== screenshot.path),
+    ].slice(0, 4));
+    const timeoutId = window.setTimeout(() => dismissScreenshotToast(id), SCREENSHOT_TOAST_TTL_MS);
+    screenshotToastTimeoutsRef.current[id] = timeoutId;
+  }, [dismissScreenshotToast]);
+
+  const recordScreenshotCapture = useCallback((
+    gamePath: string,
+    screenshot: Screenshot,
+    options?: { showToast?: boolean; showOverlay?: boolean; label?: string },
+  ) => {
+    setScreenshots((prev) => {
+      const existing = prev[gamePath] ?? [];
+      if (existing.some((shot) => shot.path === screenshot.path)) return prev;
+      return {
+        ...prev,
+        [gamePath]: [screenshot, ...existing],
+      };
+    });
+    if (options?.showToast !== false) {
+      queueScreenshotToast(gamePath, screenshot, options?.label);
+    }
+    if (options?.showOverlay !== false) {
+      void emitScreenshotOverlay(gamePath, screenshot, options?.label);
+    }
+  }, [emitScreenshotOverlay, queueScreenshotToast]);
+
+  useEffect(() => () => {
+    for (const timeoutId of Object.values(screenshotToastTimeoutsRef.current)) {
+      window.clearTimeout(timeoutId);
+    }
+    screenshotToastTimeoutsRef.current = {};
+  }, []);
+
+  const runDeferredStartupTasks = useCallback(async () => {
+    if (!appSettingsRef.current.updateCheckerEnabled) return;
+    invoke<{ version: string; url: string; download_url: string } | null>("check_app_update")
+      .then((u) => { if (u) setAppUpdate({ version: u.version, url: u.url, downloadUrl: u.download_url }); })
+      .catch(() => { });
+  }, []);
+
+  useEffect(() => {
+    invoke<string>("get_platform")
+      .then((detectedPlatform) => {
+        if (detectedPlatform === "windows") {
+          void ensureScreenshotOverlayWindow();
+        }
+      })
+      .catch(() => {});
+  }, [ensureScreenshotOverlayWindow]);
 
   const handleToggleWishlist = useCallback((item: Omit<WishlistItem, 'addedAt'>) => {
     setWishlist(prev => {
@@ -3210,24 +3848,13 @@ export default function App() {
     invoke<boolean>("fakku_is_logged_in").then(setFakkuLoggedIn).catch(() => { });
     invoke<string>("get_platform").then(setPlatform).catch(() => { });
     getVersion().then(setAppVersion).catch(() => { });
-    // Check for a newer release on GitHub (once per startup, never again)
-    invoke<{ version: string; url: string; download_url: string } | null>("check_app_update")
-      .then((u) => { if (u) setAppUpdate({ version: u.version, url: u.url, downloadUrl: u.download_url }); })
-      .catch(() => { });
-    // Push stored recent games into the tray on startup
     const storedRecent = loadCache<RecentGame[]>(SK_RECENT, []);
     if (storedRecent.length > 0) {
       invoke("set_recent_games", { games: storedRecent }).catch(() => { });
     }
-    // Initial incremental sync for all known library folders
     const folders = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
     const legacyPath = appStorageGetItem(SK_PATH);
     const roots = folders.length > 0 ? folders : (legacyPath ? [{ path: legacyPath }] : []);
-    if (roots.length > 0) {
-      runIncrementalSyncAll(roots).finally(() => setIsAppReady(true));
-    } else {
-      setIsAppReady(true);
-    }
     getMatches().then((matches: any) => {
       const sub = matches?.subcommand;
       if (sub?.name !== "launch") return;
@@ -3246,9 +3873,28 @@ export default function App() {
       }
     }).catch(() => { });
     invoke<RustLogEntry[]>("get_recent_logs", { limit: 300 }).then(setRustLogs).catch(() => { });
+    invoke<RecentFileOp[]>("get_recent_file_ops", { limit: 40 }).then(setRecentFileOps).catch(() => { });
+    const continueNormalStartup = () => {
+      if (roots.length > 0) {
+        runIncrementalSyncAll(roots).finally(() => setIsAppReady(true));
+      } else {
+        setIsAppReady(true);
+      }
+      runDeferredStartupTasks();
+    };
     invoke<CrashReport | null>("get_last_crash_report").then((r) => {
-      if (r) setCrashReport(r);
-    }).catch(() => { });
+      if (r) {
+        setCrashReport(r);
+        setRecoveryMode(true);
+        setShowRecoveryPrompt(true);
+        setIsAppReady(true);
+        return;
+      }
+      continueNormalStartup();
+    }).catch(() => {
+      continueNormalStartup();
+    });
+    invoke<ScraperHealthDiagnostic[]>("get_scraper_health_snapshot").then(setScraperHealth).catch(() => { });
 
     const unlistenFinished = listen("game-finished", (ev: any) => {
       const p = ev.payload as { path: string; duration_secs: number };
@@ -3284,10 +3930,7 @@ export default function App() {
     });
     const unlistenShot = listen<{ game_exe: string; screenshot: Screenshot }>("screenshot-taken", (ev) => {
       const { game_exe, screenshot } = ev.payload;
-      setScreenshots((prev) => ({
-        ...prev,
-        [game_exe]: [screenshot, ...(prev[game_exe] ?? [])],
-      }));
+      recordScreenshotCapture(game_exe, screenshot, { showToast: true });
     });
     const unlistenBoss = listen("boss-key-pressed", async () => {
       // 1. Un-focus and minimize the main app window
@@ -3328,6 +3971,52 @@ export default function App() {
       unlistenRustLog.then((f) => f());
     };
   }, []);
+
+  useEffect(() => {
+    if (!steamLaunchBridge) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const minutes = await invoke<number | null>("get_steam_playtime_minutes", { appId: steamLaunchBridge.appId });
+        if (cancelled || typeof minutes !== "number") return;
+        if (minutes > steamLaunchBridge.lastSeenMinutes) {
+          syncSteamTrackedTotal(steamLaunchBridge.path, minutes);
+          setSteamLaunchBridge((prev) => prev && prev.appId === steamLaunchBridge.appId ? {
+            ...prev,
+            lastSeenMinutes: minutes,
+            sawIncrease: true,
+            stalledPolls: 0,
+            pollCount: prev.pollCount + 1,
+          } : prev);
+          return;
+        }
+        const nextPollCount = steamLaunchBridge.pollCount + 1;
+        const nextStalledPolls = steamLaunchBridge.sawIncrease ? steamLaunchBridge.stalledPolls + 1 : steamLaunchBridge.stalledPolls;
+        if ((steamLaunchBridge.sawIncrease && nextStalledPolls >= 3) || (!steamLaunchBridge.sawIncrease && nextPollCount >= 5)) {
+          finalizeSteamLaunchBridge(
+            steamLaunchBridge.path,
+            steamLaunchBridge.baselineMinutes,
+            minutes,
+          );
+          return;
+        }
+        setSteamLaunchBridge((prev) => prev && prev.appId === steamLaunchBridge.appId ? {
+          ...prev,
+          lastSeenMinutes: minutes,
+          stalledPolls: nextStalledPolls,
+          pollCount: nextPollCount,
+        } : prev);
+      } catch {
+        // Ignore transient Steam read failures while polling.
+      }
+    };
+    const timer = setInterval(poll, 45000);
+    void poll();
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [steamLaunchBridge]);
 
   // Synchronise autostart plugin state
   useEffect(() => {
@@ -3407,7 +4096,7 @@ export default function App() {
 
     const intervalId = setInterval(async () => {
       try {
-        await captureScreenshotForPath(runningGamePath, false);
+        await captureScreenshotForPath(runningGamePath, false, { showToast: false, showOverlay: false });
       } catch (e) {
         console.error("Auto-screenshot failed:", e);
       }
@@ -3457,29 +4146,30 @@ export default function App() {
 
   // Background game update checker
   useEffect(() => {
-    if (!appSettings.updateCheckerEnabled || games.length === 0) return;
+    if (recoveryMode || !appSettings.updateCheckerEnabled || games.length === 0) return;
     const checkUpdates = async () => {
-      for (const g of games) {
-        const m = metadata[g.path];
-        if (m && m.source_url) {
-          try {
-            const cmd = metadataFetchCommand(m.source);
-            if (!cmd) continue;
-            const res = await invoke<GameMetadata | null>(cmd, { url: m.source_url });
-            if (res && res.version && m.version && res.version !== m.version) {
-              setAvailableGameUpdates(prev => ({ ...prev, [g.path]: res.version! }));
-            }
-          } catch { }
-          // delay 2 seconds between requests to avoid rate limits
-          await new Promise(r => setTimeout(r, 2000));
-        }
-      }
+      const items = games
+        .map((g) => ({ path: g.path, metadata: metadataRef.current[g.path] }))
+        .filter((entry): entry is MetadataQueueItem => !!entry.metadata?.source_url);
+      await runMetadataQueueJob({
+        jobId: JOB_UPDATE_CHECKER,
+        label: "Update Checker",
+        items,
+        mode: "update-check",
+        concurrency: 1,
+        onItemSuccess: (path, nextMeta) => {
+          const current = metadataRef.current[path];
+          if (nextMeta.version && current?.version && nextMeta.version !== current.version) {
+            setAvailableGameUpdates(prev => ({ ...prev, [path]: nextMeta.version! }));
+          }
+        },
+      });
     };
     // Debounce initial run so it doesn't block startup
     const timer = setTimeout(checkUpdates, 5000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line
-  }, [appSettings.updateCheckerEnabled]);
+  }, [appSettings.updateCheckerEnabled, recoveryMode]);
 
   // Close the Add dropdown when clicking outside
   useEffect(() => {
@@ -3531,6 +4221,66 @@ export default function App() {
     });
   };
 
+  const syncSteamTrackedTotal = (path: string, totalMinutes: number) => {
+    const totalSecs = Math.max(0, Math.floor(totalMinutes * 60));
+    setStats((prev) => {
+      const cur = prev[path] || { totalTime: 0, lastPlayed: 0, lastSession: 0, launchCount: 0 };
+      if (totalSecs <= cur.totalTime) return prev;
+      const next = {
+        ...prev,
+        [path]: {
+          ...cur,
+          totalTime: totalSecs,
+          lastPlayed: Date.now(),
+        },
+      };
+      saveCache(SK_STATS, next);
+      return next;
+    });
+  };
+
+  const finalizeSteamLaunchBridge = (path: string, baselineMinutes: number, finalMinutes: number) => {
+    const deltaSecs = Math.max(0, Math.floor((finalMinutes - baselineMinutes) * 60));
+    if (deltaSecs > 0) {
+      const startedAt = sessionStartRef.current || (Date.now() - deltaSecs * 1000);
+      const entry: SessionEntry = {
+        id: String(startedAt),
+        path,
+        startedAt,
+        duration: deltaSecs,
+        note: "",
+        mood: "chill",
+      };
+      setSessionLog((prev) => {
+        const next = [entry, ...prev];
+        saveCache(SK_SESSION_LOG, next);
+        return next;
+      });
+      if (deltaSecs >= 30) setPendingNoteSession(entry);
+    }
+    setStats((prev) => {
+      const cur = prev[path] || { totalTime: 0, lastPlayed: 0, lastSession: 0, launchCount: 0 };
+      const totalSecs = Math.max(cur.totalTime, Math.floor(finalMinutes * 60));
+      const next = {
+        ...prev,
+        [path]: {
+          ...cur,
+          totalTime: totalSecs,
+          lastPlayed: deltaSecs > 0 ? Date.now() : cur.lastPlayed,
+          lastSession: deltaSecs > 0 ? deltaSecs : cur.lastSession,
+          launchCount: deltaSecs > 0 ? (cur.launchCount ?? 0) + 1 : (cur.launchCount ?? 0),
+        },
+      };
+      saveCache(SK_STATS, next);
+      return next;
+    });
+    setRunningGamePath((current) => current === path ? null : current);
+    setSteamLaunchBridge(null);
+    if (appSettingsRef.current.saveBackupOnExit && deltaSecs > 0) {
+      backupSaveFilesForPath(path, true).catch(() => { });
+    }
+  };
+
   /** Save or dismiss the note for the pending session */
   const handleSaveSessionNote = (note: string, mood: SessionMood) => {
     if (!pendingNoteSession) return;
@@ -3549,7 +4299,13 @@ export default function App() {
   };
 
   /** Apply Steam playtime to matching library games */
-  const handleSteamImport = (matches: { path: string; addSecs: number }[]) => {
+  const handleSteamImport = async (matches: { path: string; addSecs: number }[]) => {
+    if (matches.length === 0) return;
+    try {
+      await ensureSnapshotBeforeRiskyOp("before-steam-import", "Before importing Steam playtime");
+    } catch {
+      return;
+    }
     setStats((prev) => {
       const next = { ...prev };
       for (const m of matches) {
@@ -3564,8 +4320,52 @@ export default function App() {
     });
   };
 
-  const handleLutrisImport = (entries: LutrisGameEntry[]) => {
+  const handleSteamLibraryImport = async (entries: SteamLibraryEntry[]) => {
     if (entries.length === 0) return;
+    try {
+      await ensureSnapshotBeforeRiskyOp("before-steam-library-import", "Before importing Steam library");
+    } catch {
+      return;
+    }
+
+    setGames((prev) => {
+      const next = [...prev];
+      const seen = new Set(prev.map((g) => normalizePathForMatch(g.path)));
+      for (const entry of entries) {
+        if (!entry.exe) continue;
+        const key = normalizePathForMatch(entry.exe);
+        if (seen.has(key)) continue;
+        next.push({ name: entry.name || deriveGameName(entry.exe), path: entry.exe });
+        seen.add(key);
+      }
+      saveCache(SK_GAMES, next);
+      return next;
+    });
+
+    setCustomizations((prev) => {
+      const next = { ...prev };
+      for (const entry of entries) {
+        if (!entry.exe) continue;
+        const prevCustom = next[entry.exe] ?? {};
+        next[entry.exe] = {
+          ...prevCustom,
+          displayName: prevCustom.displayName ?? entry.name ?? deriveGameName(entry.exe),
+          steamAppId: entry.app_id,
+          launchViaSteam: true,
+        };
+      }
+      saveCache(SK_CUSTOM, next);
+      return next;
+    });
+  };
+
+  const handleLutrisImport = async (entries: LutrisGameEntry[]) => {
+    if (entries.length === 0) return;
+    try {
+      await ensureSnapshotBeforeRiskyOp("before-lutris-import", "Before importing Lutris entries");
+    } catch {
+      return;
+    }
 
     // Add missing games to library.
     setGames((prev) => {
@@ -3608,8 +4408,13 @@ export default function App() {
     });
   };
 
-  const handleInteropImport = (entries: InteropGameEntry[]) => {
+  const handleInteropImport = async (entries: InteropGameEntry[]) => {
     if (entries.length === 0) return;
+    try {
+      await ensureSnapshotBeforeRiskyOp("before-interop-import", "Before importing launcher entries");
+    } catch {
+      return;
+    }
 
     setGames((prev) => {
       const next = [...prev];
@@ -3671,33 +4476,299 @@ export default function App() {
     saveCache(SK_FOLDERS, folders);
   };
 
+  const upsertBackgroundJob = (
+    id: string,
+    patch: Omit<BackgroundJob, "id" | "updatedAt"> & Partial<Pick<BackgroundJob, "detail" | "progressCurrent" | "progressTotal" | "attempts">>,
+  ) => {
+    setBackgroundJobs((prev) => ({
+      ...prev,
+      [id]: {
+        ...prev[id],
+        id,
+        ...patch,
+        updatedAt: Date.now(),
+      },
+    }));
+  };
+
+  const clearBackgroundJob = (id: string) => {
+    setBackgroundJobs((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const isBackgroundJobActive = (id: string) => activeBackgroundJobIds.current.has(id);
+
+  const runQueueJob = async <TItem, TResult>({
+    jobId,
+    label,
+    items,
+    concurrency = 1,
+    maxAttempts = DEFAULT_METADATA_QUEUE_MAX_ATTEMPTS,
+    backoffMs = DEFAULT_METADATA_QUEUE_BACKOFF_MS,
+    getItemLabel,
+    actionLabel,
+    successLabel,
+    runItem,
+    onItemSuccess,
+  }: {
+    jobId: string;
+    label: string;
+    items: TItem[];
+    concurrency?: number;
+    maxAttempts?: number;
+    backoffMs?: number;
+    getItemLabel: (item: TItem) => string;
+    actionLabel: string;
+    successLabel: string;
+    runItem: (item: TItem) => Promise<TResult>;
+    onItemSuccess?: (item: TItem, result: TResult) => void;
+  }) => {
+    if (items.length === 0 || isBackgroundJobActive(jobId)) {
+      return { completed: 0, failed: 0, cancelled: false };
+    }
+
+    activeBackgroundJobIds.current.add(jobId);
+    upsertBackgroundJob(jobId, {
+      label,
+      status: "queued",
+      detail: `Queued ${items.length} item(s)...`,
+      progressCurrent: 0,
+      progressTotal: items.length,
+      attempts: 1,
+    });
+
+    let nextIndex = 0;
+    let completed = 0;
+    let failed = 0;
+
+    const processOne = async () => {
+      while (true) {
+        const itemIndex = nextIndex++;
+        if (itemIndex >= items.length) return;
+        const item = items[itemIndex];
+        const itemLabel = getItemLabel(item);
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          const state: BackgroundJobStatus = attempt === 1 ? "running" : "retrying";
+          upsertBackgroundJob(jobId, {
+            label,
+            status: state,
+            detail: `${actionLabel} ${completed + failed + 1} / ${items.length}: ${itemLabel} (attempt ${attempt}/${maxAttempts})`,
+            progressCurrent: completed + failed,
+            progressTotal: items.length,
+            attempts: attempt,
+          });
+          try {
+            const result = await runItem(item);
+            onItemSuccess?.(item, result);
+            completed++;
+            upsertBackgroundJob(jobId, {
+              label,
+              status: "running",
+              detail: `${successLabel} ${completed + failed} / ${items.length}`,
+              progressCurrent: completed + failed,
+              progressTotal: items.length,
+              attempts: attempt,
+            });
+            break;
+          } catch (e) {
+            if (attempt < maxAttempts) {
+              upsertBackgroundJob(jobId, {
+                label,
+                status: "retrying",
+                detail: `Retrying ${itemLabel} after error: ${String(e)}`,
+                progressCurrent: completed + failed,
+                progressTotal: items.length,
+                attempts: attempt,
+              });
+              await sleep(Math.min(backoffMs * (2 ** (attempt - 1)), 12000));
+              continue;
+            }
+            failed++;
+            upsertBackgroundJob(jobId, {
+              label,
+              status: "failed",
+              detail: `Failed ${failed} item(s). Last error on ${itemLabel}: ${String(e)}`,
+              progressCurrent: completed + failed,
+              progressTotal: items.length,
+              attempts: attempt,
+            });
+          }
+        }
+      }
+    };
+
+    try {
+      const workerCount = Math.max(1, Math.min(concurrency, items.length));
+      await Promise.all(Array.from({ length: workerCount }, () => processOne()));
+      if (failed > 0) {
+        upsertBackgroundJob(jobId, {
+          label,
+          status: "failed",
+          detail: `${label} finished with ${failed} failed item(s) out of ${items.length}.`,
+          progressCurrent: completed + failed,
+          progressTotal: items.length,
+          attempts: maxAttempts,
+        });
+      } else {
+        clearBackgroundJob(jobId);
+      }
+      return { completed, failed, cancelled: false };
+    } finally {
+      activeBackgroundJobIds.current.delete(jobId);
+    }
+  };
+
+  const fetchMetadataForPath = async (currentMeta: GameMetadata) => {
+    const cmd = metadataFetchCommand(currentMeta.source);
+    if (!cmd || !currentMeta.source_url) return null;
+    const result = await invoke<GameMetadata | null>(cmd, { url: currentMeta.source_url });
+    return result ? { ...result, fetchedAt: Date.now() } : null;
+  };
+
+  const applyMetadataUpdate = (path: string, nextMeta: GameMetadata) => {
+    setMetadata((prev) => {
+      const next = { ...prev, [path]: nextMeta };
+      saveCache(SK_META, next);
+      return next;
+    });
+  };
+
+  const runMetadataQueueJob = async ({
+    jobId,
+    label,
+    items,
+    mode,
+    concurrency = DEFAULT_METADATA_QUEUE_CONCURRENCY,
+    maxAttempts = DEFAULT_METADATA_QUEUE_MAX_ATTEMPTS,
+    backoffMs = DEFAULT_METADATA_QUEUE_BACKOFF_MS,
+    onItemSuccess,
+  }: {
+    jobId: string;
+    label: string;
+    items: MetadataQueueItem[];
+    mode: "refresh" | "update-check";
+    concurrency?: number;
+    maxAttempts?: number;
+    backoffMs?: number;
+    onItemSuccess?: (path: string, meta: GameMetadata) => void;
+  }) => {
+    return runQueueJob<MetadataQueueItem, GameMetadata | null>({
+      jobId,
+      label,
+      items,
+      concurrency,
+      maxAttempts,
+      backoffMs,
+      getItemLabel: (item) => item.path,
+      actionLabel: mode === "update-check" ? "Checking" : "Updating",
+      successLabel: mode === "update-check" ? "Checked" : "Updated",
+      runItem: (item) => fetchMetadataForPath(item.metadata),
+      onItemSuccess: (item, nextMeta) => {
+        if (nextMeta) {
+          onItemSuccess?.(item.path, nextMeta);
+        }
+      },
+    });
+  };
+
+  const runFolderSyncQueueJob = async ({
+    jobId,
+    label,
+    folders,
+    scanMode,
+  }: {
+    jobId: string;
+    label: string;
+    folders: LibraryFolder[];
+    scanMode: "incremental" | "full";
+  }) => {
+    let workingGames = gamesRef.current;
+    let workingMtimes = loadCache<DirMtime[]>(SK_MTIMES, []);
+
+    const runFolderScan = async (item: FolderQueueItem) => {
+      if (scanMode === "full") {
+        return await invoke<[Game[], DirMtime[]]>("scan_games", { path: item.path }).catch(() => [[], []] as [Game[], DirMtime[]]);
+      }
+      try {
+        return await invoke<[Game[], DirMtime[]]>("scan_games_incremental", {
+          path: item.path,
+          cachedGames: workingGames,
+          cachedMtimes: workingMtimes,
+        });
+      } catch {
+        return await invoke<[Game[], DirMtime[]]>("scan_games", { path: item.path }).catch(() => [[], []] as [Game[], DirMtime[]]);
+      }
+    };
+
+    const result = await runQueueJob<FolderQueueItem, [Game[], DirMtime[]]>({
+      jobId,
+      label,
+      items: folders.map((folder) => ({ path: folder.path })),
+      concurrency: 1,
+      maxAttempts: 2,
+      backoffMs: 1000,
+      getItemLabel: (item) => item.path,
+      actionLabel: "Scanning",
+      successLabel: "Scanned",
+      runItem: runFolderScan,
+      onItemSuccess: (item, [ng, nm]) => {
+        const merged = applySingleScanResult(workingGames, workingMtimes, ng, nm, item.path);
+        workingGames = merged.games;
+        workingMtimes = merged.mtimes;
+      },
+    });
+
+    if (result.failed === 0) {
+      persistScanState(workingGames, workingMtimes);
+    }
+    return result;
+  };
+
+  const syncJob = syncState === "full-scan"
+    ? backgroundJobs[JOB_FULL_SCAN] ?? null
+    : syncState === "syncing"
+      ? backgroundJobs[JOB_INCREMENTAL_SYNC] ?? null
+      : null;
+  const integrityCheckJob = backgroundJobs[JOB_INTEGRITY_CHECK] ?? null;
+  const batchMetadataRefreshJob = backgroundJobs[JOB_BATCH_METADATA_REFRESH] ?? null;
+  const backgroundJobSummaries = useMemo(
+    () => Object.values(backgroundJobs).sort((a, b) => b.updatedAt - a.updatedAt),
+    [backgroundJobs],
+  );
+  const integrityCheckStatus = backgroundJobButtonLabel(integrityCheckJob, "Run Library Integrity Check");
+  const batchRefreshStatus = backgroundJobButtonLabel(batchMetadataRefreshJob, "Refetch All Linked Games");
+  const autoHealPathsJob = backgroundJobs[JOB_AUTO_HEAL_PATHS] ?? null;
+  const autoHealPathsStatus = backgroundJobButtonLabel(autoHealPathsJob, "Auto-Heal Moved Paths");
+  const backupRetentionJob = backgroundJobs[JOB_BACKUP_RETENTION] ?? null;
+  const backupRetentionStatus = backgroundJobButtonLabel(backupRetentionJob, "Apply Backup Retention Now");
+  const isIntegrityCheckBusy = integrityCheckJob ? isBackgroundJobBusy(integrityCheckJob.status) : false;
+  const isBatchMetadataRefreshBusy = batchMetadataRefreshJob ? isBackgroundJobBusy(batchMetadataRefreshJob.status) : false;
+  const isAutoHealPathsBusy = autoHealPathsJob ? isBackgroundJobBusy(autoHealPathsJob.status) : false;
+  const isBackupRetentionBusy = backupRetentionJob ? isBackgroundJobBusy(backupRetentionJob.status) : false;
+
   // ── Scanning ────────────────────────────────────────────────────────────────
   const runIncrementalSyncAll = async (folders: LibraryFolder[]) => {
     if (isSyncing.current) return;
     isSyncing.current = true; setSyncState("syncing");
     try {
-      let workingGames = gamesRef.current;
-      let workingMtimes = loadCache<DirMtime[]>(SK_MTIMES, []);
-      for (const f of folders) {
-        let ng: Game[] = [];
-        let nm: DirMtime[] = [];
-        try {
-          [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games_incremental", {
-            path: f.path,
-            cachedGames: workingGames,
-            cachedMtimes: workingMtimes,
-          });
-        } catch {
-          // Fall back to full scan for this folder
-          [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: f.path }).catch(() => [[], []] as [Game[], DirMtime[]]);
-        }
-        const merged = applySingleScanResult(workingGames, workingMtimes, ng, nm, f.path);
-        workingGames = merged.games;
-        workingMtimes = merged.mtimes;
-        // Yield to the event loop between folders to keep UI responsive.
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-      persistScanState(workingGames, workingMtimes);
+      await runFolderSyncQueueJob({
+        jobId: JOB_INCREMENTAL_SYNC,
+        label: "Incremental Sync",
+        folders,
+        scanMode: "incremental",
+      });
+    } catch (e) {
+      upsertBackgroundJob(JOB_INCREMENTAL_SYNC, {
+        label: "Incremental Sync",
+        status: "permanent_failed",
+        detail: `Incremental sync failed: ${String(e)}`,
+      });
+      throw e;
     } finally {
       isSyncing.current = false; setSyncState("idle");
     }
@@ -3706,16 +4777,19 @@ export default function App() {
   const runFullScanAll = async (folders: LibraryFolder[]) => {
     setSyncState("full-scan");
     try {
-      let workingGames = gamesRef.current;
-      let workingMtimes = loadCache<DirMtime[]>(SK_MTIMES, []);
-      for (const f of folders) {
-        const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: f.path }).catch(() => [[], []] as [Game[], DirMtime[]]);
-        const merged = applySingleScanResult(workingGames, workingMtimes, ng, nm, f.path);
-        workingGames = merged.games;
-        workingMtimes = merged.mtimes;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-      persistScanState(workingGames, workingMtimes);
+      await runFolderSyncQueueJob({
+        jobId: JOB_FULL_SCAN,
+        label: "Full Rescan",
+        folders,
+        scanMode: "full",
+      });
+    } catch (e) {
+      upsertBackgroundJob(JOB_FULL_SCAN, {
+        label: "Full Rescan",
+        status: "permanent_failed",
+        detail: `Full rescan failed: ${String(e)}`,
+      });
+      throw e;
     } finally {
       setSyncState("idle");
     }
@@ -3732,9 +4806,12 @@ export default function App() {
     persistFolders(newFolders);
     setSyncState("full-scan");
     try {
-      const [ng, nm] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: sel });
-      const merged = applySingleScanResult(gamesRef.current, loadCache<DirMtime[]>(SK_MTIMES, []), ng, nm, sel);
-      persistScanState(merged.games, merged.mtimes);
+      await runFolderSyncQueueJob({
+        jobId: JOB_FULL_SCAN,
+        label: "Full Rescan",
+        folders: [{ path: sel }],
+        scanMode: "full",
+      });
     } catch (e) { alert("Failed to scan: " + e); }
     finally { setSyncState("idle"); }
   };
@@ -3779,6 +4856,11 @@ export default function App() {
     const oldN = normalizePathNoCase(oldRoot);
     const newN = normalizePathNoCase(newRoot);
     if (!oldN || !newN) return 0;
+    try {
+      await ensureSnapshotBeforeRiskyOp("before-folder-migration", `Before migrating library paths from ${oldRoot} to ${newRoot}`);
+    } catch {
+      return 0;
+    }
 
     const remap = (p: string) => remapPathByRoot(p, oldN, newN);
     const remapOrSelf = (p: string) => remap(p) ?? p;
@@ -3877,23 +4959,512 @@ export default function App() {
     return movedOldPaths.size;
   };
 
+  const applyExplicitGamePathRemaps = (pairs: { oldPath: string; newPath: string; }[]) => {
+    if (pairs.length === 0) return 0;
+    const pathMap = new Map<string, string>();
+    for (const pair of pairs) {
+      pathMap.set(normalizePathForMatch(pair.oldPath), pair.newPath);
+    }
+    const remapGamePath = (path: string) => pathMap.get(normalizePathForMatch(path)) ?? null;
+    const remapGamePathOrSelf = (path: string) => remapGamePath(path) ?? path;
+    const remapNestedFileForGame = (ownerGamePath: string, nestedPath?: string) => {
+      if (!nestedPath) return nestedPath;
+      const ownerNewPath = remapGamePath(ownerGamePath);
+      if (!ownerNewPath) return nestedPath;
+      return remapPathByPrefix(nestedPath, pathDirname(ownerGamePath), pathDirname(ownerNewPath)) ?? nestedPath;
+    };
+    const remapRecord = <T,>(src: Record<string, T>): Record<string, T> => {
+      const out: Record<string, T> = {};
+      for (const [k, v] of Object.entries(src)) out[remapGamePathOrSelf(k)] = v;
+      return out;
+    };
+
+    const touchedOldPaths = new Set<string>();
+    const nextGamesRaw = games.map((g) => {
+      const mapped = remapGamePath(g.path);
+      if (!mapped) return g;
+      touchedOldPaths.add(g.path);
+      return { ...g, path: mapped, uninstalled: false };
+    });
+    const seenGamePaths = new Set<string>();
+    const nextGames = nextGamesRaw.filter((g) => {
+      const key = normalizePathForMatch(g.path);
+      if (seenGamePaths.has(key)) return false;
+      seenGamePaths.add(key);
+      return true;
+    });
+
+    const nextStats = remapRecord(stats);
+    const nextMetadata = remapRecord(metadata);
+    const nextHidden = remapRecord(hiddenGames);
+    const nextFavs = remapRecord(favGames);
+    const nextNotes = remapRecord(notes);
+    const nextHistory = remapRecord(history);
+    const nextCollections = collections.map((c) => ({
+      ...c,
+      gamePaths: Array.from(new Set(c.gamePaths.map(remapGamePathOrSelf))),
+    }));
+    const nextSessionLog = sessionLog.map((s) => ({ ...s, path: remapGamePathOrSelf(s.path) }));
+    const nextCustomOrder: Record<string, string[]> = Object.fromEntries(
+      Object.entries(customOrder).map(([k, arr]) => [k, Array.from(new Set(arr.map(remapGamePathOrSelf)))])
+    );
+    const nextRecent = loadCache<RecentGame[]>(SK_RECENT, []).map((r) => ({ ...r, path: remapGamePathOrSelf(r.path) }));
+
+    const nextCustomizations: Record<string, GameCustomization> = {};
+    for (const [path, custom] of Object.entries(customizations)) {
+      const nextPath = remapGamePathOrSelf(path);
+      nextCustomizations[nextPath] = {
+        ...custom,
+        exeOverride: remapNestedFileForGame(path, custom.exeOverride),
+        pinnedExes: custom.pinnedExes?.map((p) => ({ ...p, path: remapNestedFileForGame(path, p.path) || p.path })),
+        runnerOverride: custom.runnerOverride
+          ? {
+            ...custom.runnerOverride,
+            prefixPath: custom.runnerOverride.prefixPath,
+            runnerPath: custom.runnerOverride.runnerPath,
+          }
+          : custom.runnerOverride,
+      };
+    }
+
+    setGames(nextGames); saveCache(SK_GAMES, nextGames);
+    setStats(nextStats); saveCache(SK_STATS, nextStats);
+    setMetadata(nextMetadata); saveCache(SK_META, nextMetadata);
+    setHiddenGames(nextHidden); saveCache(SK_HIDDEN, nextHidden);
+    setFavGames(nextFavs); saveCache(SK_FAVS, nextFavs);
+    setNotes(nextNotes); saveCache(SK_NOTES, nextNotes);
+    setHistory(nextHistory); saveCache(SK_HISTORY, nextHistory);
+    setCollections(nextCollections); saveCache(SK_COLLECTIONS, nextCollections);
+    setSessionLog(nextSessionLog); saveCache(SK_SESSION_LOG, nextSessionLog);
+    setCustomOrder(nextCustomOrder); saveCache(SK_ORDER, nextCustomOrder);
+    setCustomizations(nextCustomizations); saveCache(SK_CUSTOM, nextCustomizations);
+    setRecentGames(nextRecent); saveCache(SK_RECENT, nextRecent);
+    invoke("set_recent_games", { games: nextRecent }).catch(() => { });
+
+    if (selected) {
+      const mapped = remapGamePath(selected.path);
+      if (mapped) {
+        const nextSelected = nextGames.find((g) => normalizePathForMatch(g.path) === normalizePathForMatch(mapped)) || null;
+        setSelected(nextSelected);
+      }
+    }
+    setRunningGamePath((prev) => (prev ? remapGamePathOrSelf(prev) : prev));
+    setDeleteTarget((prev) => (prev ? { ...prev, path: remapGamePathOrSelf(prev.path) } : prev));
+    setPendingMetaUpdate((prev) => (prev ? { ...prev, path: remapGamePathOrSelf(prev.path) } : prev));
+    setScreenshots((prev) => {
+      const next: Record<string, Screenshot[]> = {};
+      for (const [k, v] of Object.entries(prev)) next[remapGamePathOrSelf(k)] = v;
+      return next;
+    });
+    setNavHistory((prev) => prev.map((n) => ({
+      ...n,
+      selectedPath: n.selectedPath ? remapGamePathOrSelf(n.selectedPath) : null,
+    })));
+
+    return touchedOldPaths.size;
+  };
+
+  const handleAutoHealPaths = async () => {
+    if (isAutoHealPathsBusy) return;
+    upsertBackgroundJob(JOB_AUTO_HEAL_PATHS, {
+      label: "Auto-Heal Paths",
+      status: "running",
+      detail: "Scanning library folders for moved or renamed games...",
+    });
+    try {
+      const report = await invoke<AutoHealReport>("suggest_auto_heal_paths", {
+        libraryFolders,
+        games,
+      });
+      if (report.suggestions.length === 0) {
+        clearBackgroundJob(JOB_AUTO_HEAL_PATHS);
+        alert(report.totalBrokenGames === 0
+          ? "No broken game paths were detected."
+          : "No confident auto-heal matches were found. Try Migration Wizard or a manual rescan.");
+        return;
+      }
+
+      const summaryLines = [
+        `Auto-heal found ${report.suggestionCount} suggestion(s) for ${report.totalBrokenGames} broken game path(s).`,
+        "",
+        ...report.suggestions.slice(0, 8).map((x) => `${x.gameName}: ${x.oldPath} -> ${x.newPath} (${x.confidence}%)`),
+      ];
+      if (report.unresolvedPaths.length > 0) {
+        summaryLines.push("");
+        summaryLines.push(`Unresolved: ${report.unresolvedPaths.length}`);
+      }
+      const proceed = confirm(`${summaryLines.join("\n")}\n\nApply these path fixes?`);
+      if (!proceed) {
+        clearBackgroundJob(JOB_AUTO_HEAL_PATHS);
+        return;
+      }
+
+      await ensureSnapshotBeforeRiskyOp("before-auto-heal-paths", "Before auto-healing moved or renamed game paths");
+      const healed = applyExplicitGamePathRemaps(report.suggestions.map((x) => ({ oldPath: x.oldPath, newPath: x.newPath })));
+      upsertBackgroundJob(JOB_AUTO_HEAL_PATHS, {
+        label: "Auto-Heal Paths",
+        status: "running",
+        detail: `Applied ${healed} path fix(es). Refreshing library scan...`,
+      });
+      if (libraryFolders.length > 0) {
+        runIncrementalSyncAll(libraryFolders).catch(() => { });
+      }
+      clearBackgroundJob(JOB_AUTO_HEAL_PATHS);
+      alert(`Auto-heal applied ${healed} path fix(es).${report.unresolvedPaths.length > 0 ? `\nUnresolved paths: ${report.unresolvedPaths.length}` : ""}`);
+    } catch (e) {
+      upsertBackgroundJob(JOB_AUTO_HEAL_PATHS, {
+        label: "Auto-Heal Paths",
+        status: "permanent_failed",
+        detail: `Auto-heal failed: ${String(e)}`,
+      });
+      alert("Auto-heal failed: " + e);
+    }
+  };
+
+  const applyBackupRetentionPolicy = async (silent = false) => {
+    if (isBackupRetentionBusy) return null;
+    upsertBackgroundJob(JOB_BACKUP_RETENTION, {
+      label: "Backup Retention",
+      status: "running",
+      detail: "Pruning snapshots and save backups by retention policy...",
+    });
+    try {
+      const result = await invoke<BackupRetentionApplyResult>("apply_backup_retention_policy", {
+        policy: {
+          dailyKeep: Math.max(0, appSettingsRef.current.backupRetentionDailyKeep || 0),
+          weeklyKeep: Math.max(0, appSettingsRef.current.backupRetentionWeeklyKeep || 0),
+          monthlyKeep: Math.max(0, appSettingsRef.current.backupRetentionMonthlyKeep || 0),
+        },
+      });
+      clearBackgroundJob(JOB_BACKUP_RETENTION);
+      if (!silent) {
+        alert(
+          `Backup retention applied.\n` +
+          `Snapshots: kept ${result.snapshotsKept}, deleted ${result.snapshotsDeleted}\n` +
+          `Save backups: kept ${result.saveBackupsKept}, deleted ${result.saveBackupsDeleted}`
+        );
+      }
+      return result;
+    } catch (e) {
+      upsertBackgroundJob(JOB_BACKUP_RETENTION, {
+        label: "Backup Retention",
+        status: "permanent_failed",
+        detail: `Backup retention failed: ${String(e)}`,
+      });
+      if (!silent) {
+        alert("Backup retention failed: " + e);
+      }
+      return null;
+    }
+  };
+
   const backupSaveFilesForPath = async (gamePath: string, silent = false) => {
     try {
       const res = await invoke<SaveBackupResult>("backup_save_files", { gamePath });
+      await applyBackupRetentionPolicy(true);
       if (!silent) {
         alert(`Save backup created:\n${res.zip_path}\nFiles: ${res.files}`);
       }
       return res;
     } catch (e) {
       if (!silent) {
-        alert("Save-file backup failed: " + e);
+        await showPermissionDiagnostic("create the save-file backup", null, e, "Save-file backup failed");
       }
       throw e;
     }
   };
 
+  const formatPermissionDiagnostic = (diag: PermissionDiagnostic, fallbackTitle?: string) => {
+    const lines = [
+      fallbackTitle || "File operation failed.",
+      "",
+      diag.summary,
+    ];
+    if (diag.targetPath) {
+      lines.push(`Path: ${diag.targetPath}`);
+    }
+    lines.push(`Cause: ${diag.probableCause}`);
+    if (diag.actionableFixes.length > 0) {
+      lines.push("");
+      lines.push("Try this:");
+      for (const fix of diag.actionableFixes.slice(0, 4)) {
+        lines.push(`- ${fix}`);
+      }
+    }
+    return lines.join("\n");
+  };
+
+  const showPermissionDiagnostic = async (
+    operation: string,
+    targetPath: string | null,
+    error: unknown,
+    fallbackTitle?: string,
+  ) => {
+    const rawError = String(error ?? "Unknown error");
+    try {
+      const diag = await invoke<PermissionDiagnostic>("diagnose_permissions_failure", {
+        operation,
+        targetPath,
+        rawError,
+      });
+      alert(formatPermissionDiagnostic(diag, fallbackTitle));
+    } catch {
+      alert(`${fallbackTitle || "File operation failed"}: ${rawError}`);
+    }
+  };
+
+  const createStateSnapshot = async (label: string, reason: string) => {
+    const dirMtimes = loadCache<DirMtime[]>(SK_MTIMES, []);
+    const result = await invoke<SnapshotResult>("create_snapshot", {
+      request: {
+        label,
+        reason,
+        entries: buildSnapshotEntries({
+          libraryFolders,
+          games,
+          stats,
+          metadata,
+          hiddenGames,
+          favGames,
+          customizations,
+          notes,
+          collections,
+          launchConfig,
+          recentGames: loadCache<RecentGame[]>(SK_RECENT, []),
+          customOrder,
+          sessionLog,
+          wishlist,
+          history,
+          appSettings,
+          dirMtimes,
+        }),
+      },
+    });
+    await applyBackupRetentionPolicy(true);
+    return result;
+  };
+
+  const getCurrentSnapshotEntries = (): Record<string, string> => buildSnapshotEntries({
+    libraryFolders,
+    games,
+    stats,
+    metadata,
+    hiddenGames,
+    favGames,
+    customizations,
+    notes,
+    collections,
+    launchConfig,
+    recentGames: loadCache<RecentGame[]>(SK_RECENT, []),
+    customOrder,
+    sessionLog,
+    wishlist,
+    history,
+    appSettings,
+    dirMtimes: loadCache<DirMtime[]>(SK_MTIMES, []),
+  });
+
+  const ensureSnapshotBeforeRiskyOp = async (label: string, reason: string) => {
+    try {
+      return await createStateSnapshot(label, reason);
+    } catch (e) {
+      await showPermissionDiagnostic("create a safety snapshot", null, e, "Could not create a pre-operation snapshot");
+      const proceed = confirm("Snapshot creation failed. Continue without a restore point?");
+      if (!proceed) throw new Error("Snapshot creation failed and operation was cancelled.");
+      return null;
+    }
+  };
+
+  const refreshSnapshots = async () => {
+    setSnapshotsLoading(true);
+    try {
+      const next = await invoke<SnapshotResult[]>("list_snapshots");
+      setSnapshots(next);
+      const nextSelectedPath = selectedSnapshotPath && next.some((x) => x.path === selectedSnapshotPath)
+        ? selectedSnapshotPath
+        : (next[0]?.path ?? null);
+      setSelectedSnapshotPath(nextSelectedPath);
+      if (nextSelectedPath) {
+        setSnapshotPreviewLoading(true);
+        setSnapshotPreviewError(null);
+        try {
+          const preview = await invoke<SnapshotRestorePreview>("preview_restore_snapshot", {
+            path: nextSelectedPath,
+            currentEntries: getCurrentSnapshotEntries(),
+          });
+          setSnapshotPreview(preview);
+        } catch (e) {
+          setSnapshotPreview(null);
+          setSnapshotPreviewError(String(e));
+        } finally {
+          setSnapshotPreviewLoading(false);
+        }
+      } else {
+        setSnapshotPreview(null);
+        setSnapshotPreviewError(null);
+      }
+    } catch (e) {
+      alert("Could not load snapshots: " + e);
+    } finally {
+      setSnapshotsLoading(false);
+    }
+  };
+
+  const handleSelectSnapshot = async (path: string) => {
+    setSelectedSnapshotPath(path);
+    setSnapshotPreview(null);
+    setSnapshotPreviewError(null);
+    setSnapshotPreviewLoading(true);
+    try {
+      const preview = await invoke<SnapshotRestorePreview>("preview_restore_snapshot", {
+        path,
+        currentEntries: getCurrentSnapshotEntries(),
+      });
+      setSnapshotPreview(preview);
+    } catch (e) {
+      setSnapshotPreviewError(String(e));
+    } finally {
+      setSnapshotPreviewLoading(false);
+    }
+  };
+
+  const applyRestoredEntries = (entries: Record<string, string>) => {
+    const knownKeys = Object.keys(getCurrentSnapshotEntries());
+    const getParsed = <T,>(key: string, fallback: T): T => {
+      const raw = entries[key];
+      if (typeof raw !== "string") return fallback;
+      try {
+        return JSON.parse(raw) as T;
+      } catch {
+        return fallback;
+      }
+    };
+
+    for (const key of knownKeys) {
+      if (!(key in entries)) {
+        appStorageRemoveItem(key);
+      }
+    }
+    for (const [key, value] of Object.entries(entries)) {
+      appStorageSetItem(key, value);
+    }
+
+    const nextFolders = getParsed<LibraryFolder[]>(SK_FOLDERS, []);
+    const nextGames = getParsed<Game[]>(SK_GAMES, []);
+    const nextStats = getParsed<Record<string, GameStats>>(SK_STATS, {});
+    const nextMetadata = getParsed<Record<string, GameMetadata>>(SK_META, {});
+    const nextHidden = getParsed<Record<string, boolean>>(SK_HIDDEN, {});
+    const nextFavs = getParsed<Record<string, boolean>>(SK_FAVS, {});
+    const nextCustom = getParsed<Record<string, GameCustomization>>(SK_CUSTOM, {});
+    const nextNotes = getParsed<Record<string, string>>(SK_NOTES, {});
+    const nextCollections = getParsed<Collection[]>(SK_COLLECTIONS, []);
+    const nextLaunch = { ...DEFAULT_LAUNCH_CONFIG, ...getParsed<LaunchConfig>(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG) };
+    const nextRecent = getParsed<RecentGame[]>(SK_RECENT, []);
+    const nextOrder = getParsed<Record<string, string[]>>(SK_ORDER, {});
+    const nextSession = getParsed<SessionEntry[]>(SK_SESSION_LOG, []);
+    const nextWishlist = getParsed<WishlistItem[]>(SK_WISHLIST, []);
+    const nextHistory = getParsed<GameHistoryMap>(SK_HISTORY, {});
+    const nextSettings: AppSettings = {
+      ...DEFAULT_SETTINGS,
+      ...getParsed<Partial<AppSettings>>(SK_SETTINGS, DEFAULT_SETTINGS),
+    };
+    const nextMtimes = getParsed<DirMtime[]>(SK_MTIMES, []);
+
+    setLibraryFolders(nextFolders);
+    setGames(nextGames);
+    setStats(nextStats);
+    setMetadata(nextMetadata);
+    setHiddenGames(nextHidden);
+    setFavGames(nextFavs);
+    setCustomizations(nextCustom);
+    setNotes(nextNotes);
+    setCollections(nextCollections);
+    setLaunchConfig(nextLaunch);
+    setRecentGames(nextRecent);
+    setCustomOrder(nextOrder);
+    setSessionLog(nextSession);
+    setWishlist(nextWishlist);
+    setHistory(nextHistory);
+    setAppSettings(nextSettings);
+    saveCache(SK_MTIMES, nextMtimes);
+    if (selected && !nextGames.some((g) => g.path === selected.path)) {
+      setSelected(null);
+    }
+  };
+
+  const handleRestoreSnapshot = async () => {
+    if (!selectedSnapshotPath) return;
+    setRestoringSnapshot(true);
+    try {
+      await ensureSnapshotBeforeRiskyOp("before-snapshot-restore", "Before restoring a snapshot");
+      const snapshot = snapshotPreview?.snapshot && snapshotPreview.snapshot.path === selectedSnapshotPath
+        ? snapshotPreview.snapshot
+        : await invoke<SnapshotContents>("restore_snapshot", { path: selectedSnapshotPath });
+      applyRestoredEntries(snapshot.entries);
+      setShowSnapshotRestore(false);
+      setSnapshotPreview(null);
+      setSnapshotPreviewError(null);
+      alert(`Snapshot restored:\n${snapshot.path}`);
+    } catch (e) {
+      if (!String(e).includes("cancelled")) {
+        alert("Snapshot restore failed: " + e);
+      }
+    } finally {
+      setRestoringSnapshot(false);
+    }
+  };
+
+  const handleResumeNormalStartup = async () => {
+    setShowRecoveryPrompt(false);
+    setRecoveryMode(false);
+    const roots = libraryFolders.length > 0
+      ? libraryFolders
+      : (() => {
+        const legacyPath = appStorageGetItem(SK_PATH);
+        return legacyPath ? [{ path: legacyPath }] : [];
+      })();
+    if (roots.length > 0) {
+      runIncrementalSyncAll(roots).catch(() => { });
+    }
+    runDeferredStartupTasks();
+  };
+
   const launchGame = async (path: string, overridePath?: string, overrideArgs?: string) => {
     const gameCustom = customizations[path];
+
+    if (!overridePath && !overrideArgs && gameCustom?.launchViaSteam && gameCustom.steamAppId) {
+      try {
+        const baselineMinutes = await invoke<number | null>("get_steam_playtime_minutes", { appId: gameCustom.steamAppId });
+        await invoke("launch_steam_game", { appId: gameCustom.steamAppId });
+        setRunningGamePath(path);
+        sessionStartRef.current = Date.now();
+        setSteamLaunchBridge({
+          path,
+          appId: gameCustom.steamAppId,
+          baselineMinutes: baselineMinutes ?? 0,
+          lastSeenMinutes: baselineMinutes ?? 0,
+          sawIncrease: false,
+          stalledPolls: 0,
+          pollCount: 0,
+        });
+        const game = games.find((g) => g.path === path);
+        if (game) {
+          const displayName =
+            customizations[path]?.displayName ?? metadata[path]?.title ?? game.name;
+          setRecentGames((prev) => {
+            const filtered = prev.filter((r) => r.path !== path);
+            const updated = [{ name: displayName, path }, ...filtered].slice(0, 5);
+            saveCache(SK_RECENT, updated);
+            invoke("set_recent_games", { games: updated }).catch(() => { });
+            return updated;
+          });
+        }
+        return;
+      } catch (e) {
+        alert("Failed to launch through Steam: " + e);
+        return;
+      }
+    }
 
     let runner: string | null = null;
     let prefix: string | null = null;
@@ -3933,6 +5504,20 @@ export default function App() {
   };
 
   const killGame = async () => {
+    if (steamLaunchBridge) {
+      try {
+        const minutes = await invoke<number | null>("get_steam_playtime_minutes", { appId: steamLaunchBridge.appId });
+        finalizeSteamLaunchBridge(
+          steamLaunchBridge.path,
+          steamLaunchBridge.baselineMinutes,
+          minutes ?? steamLaunchBridge.lastSeenMinutes,
+        );
+        alert("Steam-managed session tracking stopped. The game itself may still be running in Steam.");
+      } catch (e) {
+        alert("Failed to stop Steam-managed session tracking: " + e);
+      }
+      return;
+    }
     try { await invoke("kill_game"); }
     catch (e) { alert("Failed to stop game: " + e); }
   };
@@ -4036,33 +5621,23 @@ export default function App() {
   };
 
   const handleBatchMetadataRefresh = async () => {
-    if (batchRefreshStatus) return;
-    const paths = Object.keys(metadata).filter(p => metadata[p]?.source_url);
-    if (paths.length === 0) return;
-    let count = 0;
-
-    for (const p of paths) {
-      count++;
-      setBatchRefreshStatus(`Updating ${count} / ${paths.length} ...`);
-      const m = metadata[p];
-      try {
-        let newMeta: GameMetadata | undefined;
-        const cmd = metadataFetchCommand(m.source);
-        if (cmd) {
-          newMeta = await invoke<GameMetadata>(cmd, { url: m.source_url });
-        }
-        if (newMeta) {
-          const finalMeta = { ...newMeta, fetchedAt: Date.now() };
-          setMetadata(prev => {
-            const next = { ...prev, [p]: finalMeta };
-            saveCache(SK_META, next);
-            return next;
-          });
-        }
-      } catch (e) { console.error(`Failed to update metadata for ${p}`, e); }
-      await new Promise(r => setTimeout(r, 2000));
+    if (batchMetadataRefreshJob && isBackgroundJobBusy(batchMetadataRefreshJob.status)) return;
+    const items = Object.keys(metadata)
+      .filter((p) => metadata[p]?.source_url)
+      .map((path) => ({ path, metadata: metadata[path] }));
+    if (items.length === 0) return;
+    try {
+      await ensureSnapshotBeforeRiskyOp("before-batch-metadata-refresh", "Before refreshing metadata for all linked games");
+    } catch {
+      return;
     }
-    setBatchRefreshStatus(null);
+    await runMetadataQueueJob({
+      jobId: JOB_BATCH_METADATA_REFRESH,
+      label: "Metadata Refetch",
+      items,
+      mode: "refresh",
+      onItemSuccess: applyMetadataUpdate,
+    });
   };
 
   const handleUpdateScreenshotTags = async (filename: string, tags: string[]) => {
@@ -4081,6 +5656,7 @@ export default function App() {
       });
     } catch (e) {
       console.error("Failed to save screenshot tags:", e);
+      await showPermissionDiagnostic("save screenshot tags", null, e, "Could not save screenshot tags");
     }
   };
 
@@ -4096,20 +5672,21 @@ export default function App() {
     try {
       await invoke("export_screenshots_zip", { gameExe: selected.path, outputPath: savePath });
     } catch (e) {
-      alert("Export failed: " + e);
+      await showPermissionDiagnostic("export screenshots", savePath, e, "Screenshot export failed");
     }
   };
 
-  const captureScreenshotForPath = async (gamePath: string, annotate: boolean) => {
+  const captureScreenshotForPath = async (
+    gamePath: string,
+    annotate: boolean,
+    options?: { showToast?: boolean; showOverlay?: boolean },
+  ) => {
     const shot = await invoke<Screenshot>("take_screenshot_manual");
     if (annotate) {
       setPendingAnnotatedShot({ gamePath, shot });
       return;
     }
-    setScreenshots((prev) => ({
-      ...prev,
-      [gamePath]: [shot, ...(prev[gamePath] ?? [])],
-    }));
+    recordScreenshotCapture(gamePath, shot, options);
   };
 
   const handleSaveAnnotatedShot = async (dataUrl: string) => {
@@ -4117,12 +5694,9 @@ export default function App() {
     const { gamePath, shot } = pendingAnnotatedShot;
     try {
       await invoke("overwrite_screenshot_png", { path: shot.path, dataUrl });
-      setScreenshots((prev) => ({
-        ...prev,
-        [gamePath]: [shot, ...(prev[gamePath] ?? [])],
-      }));
+      recordScreenshotCapture(gamePath, shot, { label: "Annotated screenshot saved" });
     } catch (e) {
-      alert("Failed to save annotated screenshot: " + e);
+      await showPermissionDiagnostic("save the annotated screenshot", shot.path, e, "Annotated screenshot save failed");
       await invoke("delete_screenshot_file", { path: shot.path }).catch(() => { });
     } finally {
       setPendingAnnotatedShot(null);
@@ -4138,6 +5712,10 @@ export default function App() {
   const refreshRustLogs = async () => {
     const logs = await invoke<RustLogEntry[]>("get_recent_logs", { limit: 300 }).catch(() => []);
     setRustLogs(logs);
+    const fileOps = await invoke<RecentFileOp[]>("get_recent_file_ops", { limit: 40 }).catch(() => []);
+    setRecentFileOps(fileOps);
+    const health = await invoke<ScraperHealthDiagnostic[]>("get_scraper_health_snapshot").catch(() => []);
+    setScraperHealth(health);
   };
 
   const clearRustLogs = async () => {
@@ -4145,12 +5723,14 @@ export default function App() {
     setRustLogs([]);
   };
 
-  const buildDiagnosticsPayload = () => {
+  const buildDiagnosticsPayload = async () => {
     const levelMatches = (l: RustLogEntry) => {
       const x = l.level.toLowerCase();
       const norm: "error" | "warn" | "info" = x.startsWith("err") ? "error" : x.startsWith("warn") ? "warn" : "info";
       return logLevelFilter === "all" ? true : norm === logLevelFilter;
     };
+    const scraperHealthSnapshot = await invoke<ScraperHealthDiagnostic[]>("get_scraper_health_snapshot").catch(() => scraperHealth);
+    setScraperHealth(scraperHealthSnapshot);
     return {
       exportedAt: new Date().toISOString(),
       app: {
@@ -4158,15 +5738,21 @@ export default function App() {
         platform,
         userAgent: navigator.userAgent,
       },
+      recoveryMode,
       levelFilter: logLevelFilter,
       crashReport,
+      integrityReport,
+      snapshotPreview,
+      scraperHealth: scraperHealthSnapshot,
+      recentFileOps,
       logs: rustLogs.filter(levelMatches),
     };
   };
 
   const handleCopyDiagnosticJson = async () => {
     try {
-      await navigator.clipboard.writeText(JSON.stringify(buildDiagnosticsPayload(), null, 2));
+      const payload = await buildDiagnosticsPayload();
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
       alert("Diagnostics JSON copied.");
     } catch {
       alert("Could not copy diagnostics JSON.");
@@ -4174,54 +5760,78 @@ export default function App() {
   };
 
   const handleExportDiagnosticLog = async () => {
-    const payload = buildDiagnosticsPayload();
+    const payload = await buildDiagnosticsPayload();
     const savePath = await save({
       defaultPath: `libmaly-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
       filters: [{ name: "JSON", extensions: ["json"] }],
     }).catch(() => null);
     if (!savePath || typeof savePath !== "string") return;
-    await invoke("save_string_to_file", { path: savePath, contents: JSON.stringify(payload, null, 2) }).catch((e) => {
-      alert("Failed to export logs: " + e);
+    try {
+      await invoke("save_string_to_file", { path: savePath, contents: JSON.stringify(payload, null, 2) });
+    } catch (e) {
+      await showPermissionDiagnostic("export diagnostics JSON", savePath, e, "Diagnostics export failed");
+    }
+  };
+
+  const handleRunIntegrityCheck = async () => {
+    upsertBackgroundJob(JOB_INTEGRITY_CHECK, {
+      label: "Integrity Check",
+      status: "queued",
+      detail: "Checking library...",
     });
+    try {
+      upsertBackgroundJob(JOB_INTEGRITY_CHECK, {
+        label: "Integrity Check",
+        status: "running",
+        detail: "Scanning folders, executables, and metadata links...",
+      });
+      const report = await invoke<IntegrityCheckReport>("run_integrity_check", {
+        libraryFolders,
+        games,
+        customizations,
+        metadata,
+      });
+      setIntegrityReport(report);
+      clearBackgroundJob(JOB_INTEGRITY_CHECK);
+    } catch (e) {
+      upsertBackgroundJob(JOB_INTEGRITY_CHECK, {
+        label: "Integrity Check",
+        status: "permanent_failed",
+        detail: `Integrity check failed: ${String(e)}`,
+      });
+      alert("Integrity check failed: " + e);
+    }
   };
 
   useEffect(() => {
-    if (!appSettings.metadataAutoRefetchDays) return;
+    if (recoveryMode || !appSettings.metadataAutoRefetchDays) return;
     let active = true;
     const run = async () => {
       const now = Date.now();
       const expiryAge = appSettings.metadataAutoRefetchDays * 24 * 60 * 60 * 1000;
 
-      const paths = Object.keys(metadata).filter(p => {
-        const m = metadata[p];
+      const items = Object.keys(metadataRef.current).filter(p => {
+        const m = metadataRef.current[p];
         if (!m.source_url) return false;
         if (!m.fetchedAt) return true;
         return now - m.fetchedAt > expiryAge;
+      }).map((path) => ({ path, metadata: metadataRef.current[path] }));
+
+      if (!active || items.length === 0) return;
+      await runMetadataQueueJob({
+        jobId: JOB_AUTO_METADATA_REFRESH,
+        label: "Auto Metadata Refresh",
+        items,
+        mode: "refresh",
+        onItemSuccess: (path, nextMeta) => {
+          if (!active) return;
+          applyMetadataUpdate(path, nextMeta);
+        },
       });
-
-      for (const p of paths) {
-        if (!active) break;
-        const m = metadata[p];
-        try {
-          let newMeta: GameMetadata | undefined;
-          const cmd = metadataFetchCommand(m.source);
-          if (cmd) newMeta = await invoke<GameMetadata>(cmd, { url: m.source_url });
-
-          if (newMeta) {
-            const finalMeta = { ...newMeta, fetchedAt: Date.now() };
-            setMetadata(prev => {
-              const next = { ...prev, [p]: finalMeta };
-              saveCache(SK_META, next);
-              return next;
-            });
-          }
-        } catch (e) { console.error(`Auto-update failed for ${p}`, e); }
-        await new Promise(r => setTimeout(r, 2000));
-      }
     };
     run();
     return () => { active = false; };
-  }, [appSettings.metadataAutoRefetchDays]); // eslint-disable-line
+  }, [appSettings.metadataAutoRefetchDays, recoveryMode]); // eslint-disable-line
 
   const handleClearMeta = () => {
     if (!selected) return;
@@ -4257,7 +5867,9 @@ export default function App() {
       !c.timeLimitMins &&
       !(c.customTags && c.customTags.length > 0) &&
       !c.runnerOverrideEnabled &&
-      !c.runnerOverride
+      !c.runnerOverride &&
+      !c.steamAppId &&
+      !c.launchViaSteam
     ) delete next[selected.path];
     else next[selected.path] = c;
     setCustomizations(next); saveCache(SK_CUSTOM, next);
@@ -4319,13 +5931,23 @@ export default function App() {
     const pick = surpriseCandidates[Math.floor(Math.random() * surpriseCandidates.length)];
     openGameView(pick);
     setActiveMainTab("library");
-    launchGame(pick.path);
+    if (appSettingsRef.current.surpriseLaunchesImmediately) {
+      launchGame(pick.path);
+    }
   }, [surpriseCandidates, openGameView, launchGame]);
 
   // ── Context menu state ──────────────────────────────────────────────────────
   interface CtxMenu { x: number; y: number; game: Game; }
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handleContextMenu = (e: MouseEvent) => {
+      if (allowsNativeContextMenu(e.target)) return;
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", handleContextMenu);
+    return () => document.removeEventListener("contextmenu", handleContextMenu);
+  }, [recordScreenshotCapture]);
   useEffect(() => {
     if (!ctxMenu) return;
     const h = (e: MouseEvent) => {
@@ -4364,9 +5986,9 @@ export default function App() {
    * Single-game dirs are flattened (rendered ungrouped).
    */
   type SidebarItem =
-    | { kind: "game"; game: Game }
-    | { kind: "group-header"; dir: string; label: string; count: number }
-    | { kind: "group-game"; game: Game; dir: string };
+    | { kind: "game"; game: Game; depth: number }
+    | { kind: "group-header"; dir: string; label: string; count: number; depth: number }
+    | { kind: "group-game"; game: Game; dir: string; depth: number };
 
 
   const allCustomTags = useMemo(() => {
@@ -4457,30 +6079,86 @@ export default function App() {
   }, [sortMode, orderKey]); // eslint-disable-line
 
   const sidebarItems = useMemo<SidebarItem[]>(() => {
-    // Count games per parent dir
-    const dirCount = new Map<string, number>();
-    for (const g of filtered) {
-      const dir = g.path.replace(/[\\/][^\\/]+$/, "");
-      dirCount.set(dir, (dirCount.get(dir) ?? 0) + 1);
-    }
-    const items: SidebarItem[] = [];
-    const seenDirs = new Set<string>();
-    for (const g of filtered) {
-      const dir = g.path.replace(/[\\/][^\\/]+$/, "");
-      const count = dirCount.get(dir) ?? 1;
-      if (count < 2) {
-        items.push({ kind: "game", game: g });
-      } else {
-        if (!seenDirs.has(dir)) {
-          seenDirs.add(dir);
-          const label = dir.replace(/\\/g, "/").split("/").pop() ?? dir;
-          items.push({ kind: "group-header", dir, label, count });
-        }
-        items.push({ kind: "group-game", game: g, dir });
+    type FolderNode = {
+      dir: string;
+      label: string;
+      children: Map<string, FolderNode>;
+      directGames: Game[];
+      totalGames: number;
+    };
+    const rootNode: FolderNode = {
+      dir: "",
+      label: "",
+      children: new Map(),
+      directGames: [],
+      totalGames: 0,
+    };
+
+    const ensureChild = (parent: FolderNode, dir: string, label: string) => {
+      let child = parent.children.get(dir);
+      if (!child) {
+        child = { dir, label, children: new Map(), directGames: [], totalGames: 0 };
+        parent.children.set(dir, child);
       }
+      return child;
+    };
+
+    for (const game of filtered) {
+      const parentDir = pathDirname(game.path);
+      const relativeSegments = pathSegmentsRelativeToRoot(parentDir, libraryFolders);
+      let cursor = rootNode;
+      const accumulated: string[] = [];
+      for (const segment of relativeSegments) {
+        accumulated.push(segment);
+        const dirKey = accumulated.join("/");
+        cursor = ensureChild(cursor, dirKey, segment);
+      }
+      cursor.directGames.push(game);
     }
+
+    const finalizeCounts = (node: FolderNode): number => {
+      let total = node.directGames.length;
+      for (const child of node.children.values()) {
+        total += finalizeCounts(child);
+      }
+      node.totalGames = total;
+      return total;
+    };
+    finalizeCounts(rootNode);
+
+    const flattenNode = (node: FolderNode, depth: number, items: SidebarItem[]) => {
+      const childNodes = Array.from(node.children.values());
+      const shouldGroup = node.dir !== "" && node.totalGames >= 2;
+      const childDepth = shouldGroup ? depth + 1 : depth;
+
+      if (shouldGroup) {
+        items.push({
+          kind: "group-header",
+          dir: node.dir,
+          label: node.label,
+          count: node.totalGames,
+          depth,
+        });
+        if (collapsedGroups.has(node.dir)) return;
+      }
+
+      childNodes.sort((a, b) => a.label.localeCompare(b.label));
+      for (const child of childNodes) {
+        flattenNode(child, childDepth, items);
+      }
+      for (const game of node.directGames) {
+        if (shouldGroup) {
+          items.push({ kind: "group-game", game, dir: node.dir, depth: childDepth });
+        } else {
+          items.push({ kind: "game", game, depth: childDepth });
+        }
+      }
+    };
+
+    const items: SidebarItem[] = [];
+    flattenNode(rootNode, 0, items);
     return items;
-  }, [filtered]);
+  }, [filtered, libraryFolders, collapsedGroups]);
 
   // ── Virtual list for sidebar (handles 1000+ games smoothly) ──────────────
   /** Items actually visible (excludes group-game rows whose group is collapsed) */
@@ -4602,10 +6280,6 @@ export default function App() {
       return w.maximize().then(() => setIsMaximized(true));
     }).catch(() => { });
   };
-  const handleTopbarDragMouseDown = (e: MouseEvent) => {
-    if (e.button !== 0) return;
-    getCurrentWindow().startDragging().catch(() => { });
-  };
   const handleCloseWindow = () => {
     getCurrentWindow().close().catch(() => { });
   };
@@ -4666,8 +6340,8 @@ export default function App() {
           </button>
         </div>
         <div
+          data-tauri-drag-region
           className="flex-1 flex items-center gap-2 px-2 overflow-hidden cursor-move"
-          onMouseDown={handleTopbarDragMouseDown}
           onDblClick={handleToggleMaximizeWindow}
         >
           <span className="text-[11px] font-semibold truncate" style={{ color: "var(--color-text-soft)" }}>
@@ -4675,10 +6349,34 @@ export default function App() {
           </span>
         </div>
         {shouldShowWindowControls && (
-          <div className="flex items-center">
-            <button onClick={handleMinimizeWindow} className="w-10 h-8 text-xs" style={{ color: "var(--color-text-muted)" }} title="Minimize">_</button>
-            <button onClick={handleToggleMaximizeWindow} className="w-10 h-8 text-xs" style={{ color: "var(--color-text-muted)" }} title={isMaximized ? "Restore" : "Maximize"}>{isMaximized ? "❐" : "□"}</button>
-            <button onClick={handleCloseWindow} className="w-10 h-8 text-xs hover:bg-red-600 hover:text-white" style={{ color: "var(--color-text-muted)" }} title="Close">✕</button>
+          <div className="flex items-center relative z-10" onMouseDown={(e) => e.stopPropagation()}>
+            <button
+              onClick={handleMinimizeWindow}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="w-10 h-8 text-xs"
+              style={{ color: "var(--color-text-muted)", pointerEvents: "auto" }}
+              title="Minimize"
+            >
+              _
+            </button>
+            <button
+              onClick={handleToggleMaximizeWindow}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="w-10 h-8 text-xs"
+              style={{ color: "var(--color-text-muted)", pointerEvents: "auto" }}
+              title={isMaximized ? "Restore" : "Maximize"}
+            >
+              {isMaximized ? "❐" : "□"}
+            </button>
+            <button
+              onClick={handleCloseWindow}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="w-10 h-8 text-xs hover:bg-red-600 hover:text-white"
+              style={{ color: "var(--color-text-muted)", pointerEvents: "auto" }}
+              title="Close"
+            >
+              ✕
+            </button>
           </div>
         )}
       </header>
@@ -4763,6 +6461,68 @@ export default function App() {
             </svg>
             {hiddenGames[ctxMenu.game.path] ? "Show game" : "Hide game"}
           </button>
+        </div>
+      )}
+
+      {screenshotToasts.length > 0 && (
+        <div className="fixed right-4 bottom-4 z-[9990] flex flex-col gap-2 pointer-events-none">
+          {screenshotToasts.map((toast) => {
+            const game = games.find((entry) => entry.path === toast.gamePath) ?? null;
+            const gameTitle = game
+              ? gameDisplayName(game)
+              : customizations[toast.gamePath]?.displayName
+                ?? metadata[toast.gamePath]?.title
+                ?? "Unknown game";
+            return (
+              <div
+                key={toast.id}
+                className="pointer-events-auto flex items-center gap-3 rounded-xl p-2.5 text-left shadow-2xl"
+                style={{
+                  width: 320,
+                  background: "color-mix(in srgb, var(--color-panel) 90%, black 10%)",
+                  border: "1px solid var(--color-border-strong)",
+                  boxShadow: "0 18px 40px rgba(0,0,0,0.35)",
+                }}
+              >
+                <button
+                  className="flex items-center gap-3 min-w-0 flex-1 text-left transition-transform hover:scale-[1.01]"
+                  onClick={() => {
+                    if (game) openGameView(game);
+                    dismissScreenshotToast(toast.id);
+                  }}
+                >
+                  <img
+                    src={convertFileSrc(toast.screenshot.path)}
+                    alt={toast.screenshot.filename}
+                    className="w-16 h-10 rounded object-cover flex-shrink-0"
+                    style={{ background: "var(--color-bg-deep)", border: "1px solid var(--color-border-subtle)" }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10px] uppercase tracking-[0.18em] font-bold" style={{ color: "var(--color-accent-soft)" }}>
+                      {toast.label}
+                    </div>
+                    <div className="text-sm font-semibold truncate" style={{ color: "var(--color-text)" }}>
+                      {gameTitle}
+                    </div>
+                    <div className="text-[11px] truncate" style={{ color: "var(--color-text-dim)" }}>
+                      {toast.screenshot.filename}
+                    </div>
+                  </div>
+                </button>
+                <button
+                  className="w-7 h-7 rounded-full text-xs flex items-center justify-center flex-shrink-0"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dismissScreenshotToast(toast.id);
+                  }}
+                  title="Dismiss"
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -5161,13 +6921,15 @@ export default function App() {
                 {vItems.map(({ item, offsetTop }) => {
                   if (item.kind === "group-header") {
                     const collapsed = collapsedGroups.has(item.dir);
+                    const indent = 10 + item.depth * 14;
                     return (
                       <button key={`hdr:${item.dir}`}
                         onClick={() => toggleGroup(item.dir)}
                         className="w-full flex items-center gap-1.5 px-2.5 py-1 text-left"
                         style={{
                           position: "absolute", top: offsetTop, left: 0, right: 0, height: 28,
-                          background: "var(--color-bg-deep)", borderBottom: "1px solid var(--color-border-subtle)"
+                          background: "var(--color-bg-deep)", borderBottom: "1px solid var(--color-border-subtle)",
+                          paddingLeft: `${indent}px`,
                         }}
                         onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-deep)")}
                         onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-bg-deep)")}>
@@ -5191,6 +6953,7 @@ export default function App() {
                   // ── Game row ──
                   const game = item.kind === "group-game" ? item.game : (item as { kind: "game"; game: Game }).game;
                   const isGrouped = item.kind === "group-game";
+                  const depth = item.depth;
                   // visibleSidebarItems already excludes collapsed group items, but keep the guard
                   if (isGrouped && collapsedGroups.has((item as { kind: "group-game"; dir: string; game: Game }).dir)) return null;
 
@@ -5244,7 +7007,7 @@ export default function App() {
                         borderTop: isDragOver ? "1px solid var(--color-accent-mid)" : undefined,
                         color: isSelected ? "var(--color-white)" : "var(--color-text-muted)",
                         opacity: isHiddenItem ? 0.6 : 1,
-                        paddingLeft: isGrouped ? "1.75rem" : undefined,
+                        paddingLeft: `${12 + depth * 18}px`,
                         cursor: sortMode === "custom" ? "grab" : undefined,
                       }}>
                       {availableGameUpdates[game.path] && (
@@ -5555,19 +7318,19 @@ export default function App() {
               try {
                 await captureScreenshotForPath(selected.path, false);
               } catch (e) {
-                alert("Screenshot failed: " + e);
+                await showPermissionDiagnostic("capture a screenshot", null, e, "Screenshot failed");
               }
             }}
             onAnnotateScreenshot={async () => {
               try {
                 await captureScreenshotForPath(selected.path, true);
               } catch (e) {
-                alert("Screenshot failed: " + e);
+                await showPermissionDiagnostic("capture a screenshot", null, e, "Screenshot failed");
               }
             }}
             onOpenScreenshotsFolder={() =>
               invoke("open_screenshots_folder", { gameExe: selected.path }).catch((e) =>
-                alert("Could not open folder: " + e)
+                showPermissionDiagnostic("open the screenshots folder", null, e, "Could not open screenshots folder")
               )
             }
             onExportGalleryZip={handleExportScreenshotZip}
@@ -5612,6 +7375,7 @@ export default function App() {
             onRescanAll={() => runFullScanAll(libraryFolders)}
             onWineSettings={() => setShowWineSettings(true)}
             onSteamImport={() => setShowSteamImport(true)}
+            onSteamLibraryImport={() => setShowSteamLibraryImport(true)}
             onLutrisImport={() => setShowLutrisImport(true)}
             onPlayniteImport={() => setShowPlayniteImport(true)}
             onGogImport={() => setShowGogImport(true)}
@@ -5620,6 +7384,13 @@ export default function App() {
             defaultSettings={DEFAULT_SETTINGS}
             onSaveSettings={(s) => { setAppSettings(s); saveCache(SK_SETTINGS, s); }}
             onOpenMigrationWizard={() => setShowMigrationWizard(true)}
+            onRunIntegrityCheck={handleRunIntegrityCheck}
+            onOpenRestoreSnapshots={() => {
+              setShowSnapshotRestore(true);
+              setSnapshotPreview(null);
+              setSnapshotPreviewError(null);
+              refreshSnapshots();
+            }}
             onExportCSV={handleExportCSV}
             onExportHTML={handleExportHTML}
             onExportCloudState={handleExportCloudState}
@@ -5627,6 +7398,46 @@ export default function App() {
             onClose={() => setShowSettings(false)}
             onBatchMetadataRefresh={handleBatchMetadataRefresh}
             batchRefreshStatus={batchRefreshStatus}
+            integrityCheckStatus={integrityCheckStatus}
+            backgroundJobs={backgroundJobSummaries}
+            syncStatusText={backgroundJobButtonLabel(syncJob, syncState === "full-scan" ? "Full rescan in progress" : syncState === "syncing" ? "Incremental sync in progress" : "Idle")}
+            isIntegrityCheckBusy={isIntegrityCheckBusy}
+            isBatchMetadataRefreshBusy={isBatchMetadataRefreshBusy}
+            onAutoHealPaths={handleAutoHealPaths}
+            autoHealPathsStatus={autoHealPathsStatus}
+            isAutoHealPathsBusy={isAutoHealPathsBusy}
+            onApplyBackupRetentionPolicy={() => { applyBackupRetentionPolicy(false).catch(() => { }); }}
+            backupRetentionStatus={backupRetentionStatus}
+            isBackupRetentionBusy={isBackupRetentionBusy}
+          />
+        )
+      }
+      {
+        integrityReport && (
+          <IntegrityCheckModal
+            report={integrityReport}
+            onClose={() => setIntegrityReport(null)}
+          />
+        )
+      }
+      {
+        showSnapshotRestore && (
+          <SnapshotRestoreModal
+            snapshots={snapshots}
+            selectedPath={selectedSnapshotPath}
+            preview={snapshotPreview}
+            previewLoading={snapshotPreviewLoading}
+            previewError={snapshotPreviewError}
+            loading={snapshotsLoading}
+            restoring={restoringSnapshot}
+            onSelect={handleSelectSnapshot}
+            onRefresh={refreshSnapshots}
+            onRestore={handleRestoreSnapshot}
+            onClose={() => {
+              setShowSnapshotRestore(false);
+              setSnapshotPreview(null);
+              setSnapshotPreviewError(null);
+            }}
           />
         )
       }
@@ -5702,7 +7513,9 @@ export default function App() {
         showLogViewer && (
           <LogViewerModal
             logs={rustLogs}
+            recentFileOps={recentFileOps}
             crashReport={crashReport}
+            scraperHealth={scraperHealth}
             levelFilter={logLevelFilter}
             onSetLevelFilter={setLogLevelFilter}
             onRefresh={refreshRustLogs}
@@ -5710,6 +7523,15 @@ export default function App() {
             onExport={handleExportDiagnosticLog}
             onCopyJson={handleCopyDiagnosticJson}
             onClose={() => setShowLogViewer(false)}
+          />
+        )
+      }
+      {
+        showRecoveryPrompt && crashReport && (
+          <RecoveryModeModal
+            report={crashReport}
+            onStaySafe={() => setShowRecoveryPrompt(false)}
+            onResume={handleResumeNormalStartup}
           />
         )
       }
@@ -5837,6 +7659,15 @@ export default function App() {
             customizations={customizations}
             onImport={handleSteamImport}
             onClose={() => setShowSteamImport(false)}
+          />
+        )
+      }
+      {
+        showSteamLibraryImport && (
+          <SteamLibraryImportModal
+            games={games}
+            onImport={handleSteamLibraryImport}
+            onClose={() => setShowSteamLibraryImport(false)}
           />
         )
       }

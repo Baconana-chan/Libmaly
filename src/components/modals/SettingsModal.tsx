@@ -2,19 +2,32 @@ import { useMemo, useState } from "preact/hooks";
 import { open } from "@tauri-apps/plugin-dialog";
 
 interface Game { name: string; path: string; }
+type BackgroundJobStatus = "queued" | "running" | "retrying" | "failed" | "permanent_failed";
+interface BackgroundJobSummary {
+  id: string;
+  label: string;
+  status: BackgroundJobStatus;
+  detail?: string | null;
+  progressCurrent?: number | null;
+  progressTotal?: number | null;
+  attempts?: number | null;
+  updatedAt: number;
+}
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
+type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia";
 interface AppSettingsLike {
   updateCheckerEnabled: boolean;
   sessionToastEnabled: boolean;
   trayTooltipEnabled: boolean;
   startupWithWindows: boolean;
-  themeMode: "dark" | "light" | "oled";
+  surpriseLaunchesImmediately: boolean;
+  themeMode: ThemeMode;
   seasonalTheme: "auto" | "winter" | "summer" | "halloween" | "none";
   ratingScale: RatingScale;
   themeScheduleMode: "manual" | "os" | "time";
-  dayThemeMode: "light" | "dark";
-  nightThemeMode: "dark" | "oled";
+  dayThemeMode: ThemeMode;
+  nightThemeMode: ThemeMode;
   lightStartHour: number;
   darkStartHour: number;
   accentColor: string;
@@ -23,12 +36,35 @@ interface AppSettingsLike {
   metadataAutoRefetchDays: number;
   autoScreenshotInterval: number;
   saveBackupOnExit: boolean;
+  backupRetentionDailyKeep: number;
+  backupRetentionWeeklyKeep: number;
+  backupRetentionMonthlyKeep: number;
   bossKeyEnabled?: boolean;
   bossKeyCode?: number;
   bossKeyAction?: "hide" | "kill";
   bossKeyMuteSystem?: boolean;
   bossKeyFallbackUrl?: string;
 }
+
+const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
+  { value: "dark", label: "Dark" },
+  { value: "light", label: "Light" },
+  { value: "oled", label: "OLED Black" },
+  { value: "mint-apple", label: "Mint Apple" },
+  { value: "hanami", label: "Hanami" },
+  { value: "dawn", label: "Dawn" },
+  { value: "sunset", label: "Sunset" },
+  { value: "crimson-moon", label: "Crimson Moon" },
+  { value: "sepia", label: "Sepia" },
+];
+
+const DAY_THEME_OPTIONS = THEME_OPTIONS.filter((theme) =>
+  ["light", "mint-apple", "hanami", "dawn"].includes(theme.value)
+);
+
+const NIGHT_THEME_OPTIONS = THEME_OPTIONS.filter((theme) =>
+  ["dark", "oled", "sunset", "crimson-moon", "sepia"].includes(theme.value)
+);
 
 function normalizePathForMatch(path: string) {
   return path.trim().replace(/\\/g, "/").toLowerCase();
@@ -181,8 +217,10 @@ function SettingsModal({
   appUpdate, appSettings,
   defaultSettings,
   onF95Login, onF95Logout, onDLsiteLogin, onDLsiteLogout, onFakkuLogin, onFakkuLogout, onRemoveFolder,
-  onRescanAll, onWineSettings, onSteamImport, onLutrisImport, onPlayniteImport, onGogImport, onAppUpdate, onSaveSettings, onOpenMigrationWizard, onClose,
-  onExportCSV, onExportHTML, onExportCloudState, onImportCloudState, onBatchMetadataRefresh, batchRefreshStatus
+  onRescanAll, onWineSettings, onSteamImport, onSteamLibraryImport, onLutrisImport, onPlayniteImport, onGogImport, onAppUpdate, onSaveSettings, onOpenMigrationWizard, onClose,
+  onRunIntegrityCheck, onOpenRestoreSnapshots, onExportCSV, onExportHTML, onExportCloudState, onImportCloudState, onBatchMetadataRefresh, batchRefreshStatus, integrityCheckStatus,
+  backgroundJobs, syncStatusText, isIntegrityCheckBusy, isBatchMetadataRefreshBusy, onAutoHealPaths, autoHealPathsStatus, isAutoHealPathsBusy,
+  onApplyBackupRetentionPolicy, backupRetentionStatus, isBackupRetentionBusy
 }: {
   f95LoggedIn: boolean; dlsiteLoggedIn: boolean; fakkuLoggedIn: boolean; libraryFolders: { path: string }[]; syncState: string;
   platform: string; launchConfig: { enabled: boolean; runner: string };
@@ -192,11 +230,24 @@ function SettingsModal({
   onDLsiteLogin: () => void; onDLsiteLogout: () => void;
   onFakkuLogin: () => void; onFakkuLogout: () => void;
   onRemoveFolder: (p: string) => void;
-  onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void; onLutrisImport: () => void; onPlayniteImport: () => void; onGogImport: () => void;
+  onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void; onSteamLibraryImport: () => void; onLutrisImport: () => void; onPlayniteImport: () => void; onGogImport: () => void;
   onAppUpdate: () => void; onSaveSettings: (s: AppSettingsLike) => void; onOpenMigrationWizard: () => void; onClose: () => void;
+  onRunIntegrityCheck: () => void;
+  onOpenRestoreSnapshots: () => void;
   onExportCSV: () => void; onExportHTML: () => void; onExportCloudState: () => void; onImportCloudState: () => void;
   onBatchMetadataRefresh: () => void;
   batchRefreshStatus: string | null;
+  integrityCheckStatus: string | null;
+  backgroundJobs: BackgroundJobSummary[];
+  syncStatusText: string;
+  isIntegrityCheckBusy: boolean;
+  isBatchMetadataRefreshBusy: boolean;
+  onAutoHealPaths: () => void;
+  autoHealPathsStatus: string | null;
+  isAutoHealPathsBusy: boolean;
+  onApplyBackupRetentionPolicy: () => void;
+  backupRetentionStatus: string | null;
+  isBackupRetentionBusy: boolean;
 }) {
   const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "wine">("general");
   const tabs: { id: typeof tab; label: string }[] = [
@@ -206,6 +257,37 @@ function SettingsModal({
     { id: "rss", label: "RSS Feeds" },
     ...(platform !== "windows" ? [{ id: "wine" as const, label: "Wine / Proton" }] : []),
   ];
+  const jobTone = (status: BackgroundJobStatus) => {
+    switch (status) {
+      case "queued":
+        return { fg: "var(--color-text-muted)", bg: "var(--color-panel-3)" };
+      case "running":
+        return { fg: "var(--color-accent)", bg: "rgba(55, 165, 216, 0.14)" };
+      case "retrying":
+        return { fg: "var(--color-warning)", bg: "var(--color-warning-bg)" };
+      case "failed":
+      case "permanent_failed":
+        return { fg: "var(--color-danger-strong)", bg: "var(--color-danger-bg)" };
+      default:
+        return { fg: "var(--color-text-muted)", bg: "var(--color-panel-3)" };
+    }
+  };
+  const jobStatusLabel = (status: BackgroundJobStatus) => {
+    switch (status) {
+      case "queued":
+        return "Queued";
+      case "running":
+        return "Running";
+      case "retrying":
+        return "Retrying";
+      case "failed":
+        return "Failed";
+      case "permanent_failed":
+        return "Stopped";
+      default:
+        return status;
+    }
+  };
   return (
     <div className="fixed inset-0 z-[9990] flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.75)" }}
@@ -348,6 +430,11 @@ function SettingsModal({
                     onChange={(e) => onSaveSettings({ ...appSettings, trayTooltipEnabled: e.currentTarget.checked })} />
                   Live session duration in tray tooltip
                 </label>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="When disabled, Surprise me only opens a random game page without launching it">
+                  <input type="checkbox" checked={appSettings.surpriseLaunchesImmediately}
+                    onChange={(e) => onSaveSettings({ ...appSettings, surpriseLaunchesImmediately: e.currentTarget.checked })} />
+                  Surprise me launches immediately
+                </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.blurNsfwContent}
                     onChange={(e) => onSaveSettings({ ...appSettings, blurNsfwContent: e.currentTarget.checked })} />
@@ -384,6 +471,42 @@ function SettingsModal({
                   />
                   Backup save files automatically on game exit
                 </label>
+                <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Backup Retention</div>
+                    <p className="mt-1 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      Keep the newest backup per day, week, and month across snapshots and automatic save backups.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      Daily
+                      <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
+                        style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                        value={appSettings.backupRetentionDailyKeep || 0}
+                        onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionDailyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
+                    </label>
+                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      Weekly
+                      <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
+                        style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                        value={appSettings.backupRetentionWeeklyKeep || 0}
+                        onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionWeeklyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
+                    </label>
+                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      Monthly
+                      <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
+                        style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                        value={appSettings.backupRetentionMonthlyKeep || 0}
+                        onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionMonthlyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
+                    </label>
+                  </div>
+                  <button onClick={onApplyBackupRetentionPolicy} disabled={isBackupRetentionBusy}
+                    className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
+                    {backupRetentionStatus || "Apply Backup Retention Now"}
+                  </button>
+                </div>
               </section>
 
               <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
@@ -408,11 +531,13 @@ function SettingsModal({
                       className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
                       style={{ borderColor: "var(--color-border)" }}
                       value={appSettings.themeMode || "dark"}
-                      onChange={(e) => onSaveSettings({ ...appSettings, themeMode: e.currentTarget.value as "dark" | "light" | "oled" })}
+                      onChange={(e) => onSaveSettings({ ...appSettings, themeMode: e.currentTarget.value as ThemeMode })}
                     >
-                      <option value="dark" style={{ background: "var(--color-panel-2)" }}>Dark</option>
-                      <option value="light" style={{ background: "var(--color-panel-2)" }}>Light</option>
-                      <option value="oled" style={{ background: "var(--color-panel-2)" }}>OLED Black</option>
+                      {THEME_OPTIONS.map((theme) => (
+                        <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
+                          {theme.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
                 )}
@@ -424,10 +549,13 @@ function SettingsModal({
                         className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
                         style={{ borderColor: "var(--color-border)" }}
                         value={appSettings.dayThemeMode || "light"}
-                        onChange={(e) => onSaveSettings({ ...appSettings, dayThemeMode: e.currentTarget.value as "light" | "dark" })}
+                        onChange={(e) => onSaveSettings({ ...appSettings, dayThemeMode: e.currentTarget.value as ThemeMode })}
                       >
-                        <option value="light" style={{ background: "var(--color-panel-2)" }}>Light</option>
-                        <option value="dark" style={{ background: "var(--color-panel-2)" }}>Dark</option>
+                        {DAY_THEME_OPTIONS.map((theme) => (
+                          <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
+                            {theme.label}
+                          </option>
+                        ))}
                       </select>
                     </label>
                     <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
@@ -436,10 +564,13 @@ function SettingsModal({
                         className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
                         style={{ borderColor: "var(--color-border)" }}
                         value={appSettings.nightThemeMode || "dark"}
-                        onChange={(e) => onSaveSettings({ ...appSettings, nightThemeMode: e.currentTarget.value as "dark" | "oled" })}
+                        onChange={(e) => onSaveSettings({ ...appSettings, nightThemeMode: e.currentTarget.value as ThemeMode })}
                       >
-                        <option value="dark" style={{ background: "var(--color-panel-2)" }}>Dark</option>
-                        <option value="oled" style={{ background: "var(--color-panel-2)" }}>OLED Black</option>
+                        {NIGHT_THEME_OPTIONS.map((theme) => (
+                          <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
+                            {theme.label}
+                          </option>
+                        ))}
                       </select>
                     </label>
                     <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
@@ -672,6 +803,37 @@ function SettingsModal({
                 <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
                   Force a full re-scan of all library folders. Use this if new games were added to the folders outside of LIBMALY, or if some entries are missing.
                 </p>
+                <div className="rounded-lg px-3 py-2.5 space-y-2"
+                  style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Scanner Status</span>
+                    <span className="text-[11px]" style={{ color: syncState === "idle" ? "var(--color-text-dim)" : "var(--color-accent)" }}>
+                      {syncStatusText}
+                    </span>
+                  </div>
+                  {backgroundJobs.length > 0 && (
+                    <div className="space-y-2">
+                      {backgroundJobs.slice(0, 4).map((job) => {
+                        const tone = jobTone(job.status);
+                        return (
+                          <div key={job.id} className="rounded px-2.5 py-2"
+                            style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-medium flex-1" style={{ color: "var(--color-text)" }}>{job.label}</span>
+                              <span className="px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide"
+                                style={{ color: tone.fg, background: tone.bg }}>
+                                {jobStatusLabel(job.status)}
+                              </span>
+                            </div>
+                            {job.detail && (
+                              <p className="text-[11px] mt-1 break-all" style={{ color: "var(--color-text-muted)" }}>{job.detail}</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
                 <button onClick={() => { onRescanAll(); onClose(); }}
                   disabled={syncState !== "idle"}
                   className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
@@ -690,6 +852,34 @@ function SettingsModal({
                   </svg>
                   Move Game Folder (Migration Wizard)
                 </button>
+                <button onClick={onRunIntegrityCheck} disabled={isIntegrityCheckBusy}
+                  className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 11l3 3L22 4" />
+                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                  </svg>
+                  {integrityCheckStatus || "Run Library Integrity Check"}
+                </button>
+                <button onClick={onAutoHealPaths} disabled={isAutoHealPathsBusy}
+                  className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 12a9 9 0 1 1-3.2-6.9" />
+                    <path d="M21 3v6h-6" />
+                    <path d="M9 12l2 2 4-4" />
+                  </svg>
+                  {autoHealPathsStatus || "Auto-Heal Moved Paths"}
+                </button>
+                <button onClick={() => { onClose(); onOpenRestoreSnapshots(); }}
+                  className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 7v6h6" />
+                    <path d="M21 17a9 9 0 1 1-2.64-6.36L21 13" />
+                  </svg>
+                  Restore From Snapshot
+                </button>
               </div>
 
               <div className="space-y-3 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
@@ -697,7 +887,7 @@ function SettingsModal({
                 <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
                   Update metadata for all currently linked games (runs in the background).
                 </p>
-                <button onClick={onBatchMetadataRefresh} disabled={!!batchRefreshStatus}
+                <button onClick={onBatchMetadataRefresh} disabled={isBatchMetadataRefreshBusy}
                   className="w-full py-2.5 rounded text-sm font-semibold disabled:opacity-50"
                   style={{ background: "var(--color-accent-dark)", color: "var(--color-white)", border: "1px solid var(--color-accent-mid)" }}>
                   {batchRefreshStatus || "Refetch All Linked Games"}
@@ -729,6 +919,11 @@ function SettingsModal({
                   <path d="M12 2C6.48 2 2 6.48 2 12l5.84 2.41c.53-.32 1.14-.51 1.8-.51.07 0 .14 0 .21.01L12 10.5V10.42c0-2.52 2.04-4.58 4.56-4.58 2.52 0 4.56 2.04 4.56 4.58 0 2.52-2.04 4.56-4.56 4.56h-.1l-3.5 2.53c0 .06.01.12.01.18 0 1.89-1.53 3.42-3.42 3.42-1.67 0-3.07-1.2-3.36-2.79L2.17 14C3.14 18.55 7.15 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2z" />
                 </svg>
                 Import from Steam…
+              </button>
+              <button onClick={() => { onSteamLibraryImport(); onClose(); }}
+                className="w-full mt-2 py-2 rounded-lg text-sm font-medium"
+                style={{ background: "#16263c", color: "#9ed2ff", border: "1px solid #2f4f76" }}>
+                Import Installed Steam Games…
               </button>
 
               <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>

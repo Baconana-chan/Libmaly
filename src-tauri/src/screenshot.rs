@@ -12,7 +12,9 @@ use tauri::Emitter;
 
 pub struct ActiveGame {
     pub pid: u32,
+    pub root_pid: u32,
     pub exe: String,
+    pub related_pids: Vec<u32>,
 }
 
 pub struct ActiveGameState(pub Mutex<Option<ActiveGame>>);
@@ -40,6 +42,19 @@ static HOOK_STATE: std::sync::OnceLock<Mutex<Option<HookState>>> = std::sync::On
 #[cfg(windows)]
 fn hook_state() -> &'static Mutex<Option<HookState>> {
     HOOK_STATE.get_or_init(|| Mutex::new(None))
+}
+
+pub fn update_active_pid(pid: u32) {
+    #[cfg(windows)]
+    {
+        if let Ok(mut guard) = hook_state().lock() {
+            if let Some(ref mut state) = *guard {
+                state.pid = pid;
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

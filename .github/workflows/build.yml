@@ -1,5 +1,8 @@
 name: Build
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 # Runs on version tags (e.g. v0.2.0) and can also be triggered manually.
 on:
   push:
@@ -21,7 +24,7 @@ jobs:
     name: Pre-flight checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Verify WebView2 install mode is not "skip" or bare "downloadBootstrapper"
         run: |
@@ -76,7 +79,7 @@ jobs:
             bundles: app
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # ── Bun + JS deps ─────────────────────────────────────────────────────
       - uses: oven-sh/setup-bun@v2
@@ -178,7 +181,7 @@ jobs:
     needs: preflight
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:

@@ -464,6 +464,7 @@ fn normalize_path_key(path: &str) -> String {
     path.replace('/', "\\").to_lowercase()
 }
 
+#[cfg(windows)]
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct WindowsProcessEntryRaw {
@@ -3968,7 +3969,7 @@ fn create_snapshot(request: SnapshotRequest) -> Result<SnapshotResult, String> {
     Ok(SnapshotResult {
         id,
         path: path.to_string_lossy().to_string(),
-        created_at: created_at,
+        created_at,
         entry_count: payload["entries"].as_object().map(|x| x.len()).unwrap_or(0),
         label: request.label,
         reason: request.reason,

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.1 - 2026-03-29
+
+### Bug fixes
+- Fixed critical issue where PowerShell/cmd would open when launching any game after Steam library import.
+- Added proper validation for Steam app IDs to prevent launching games with invalid or empty app ID values.
+- Improved Steam launch condition check to ensure proper optional chaining and type validation before attempting to launch through Steam.
+- Reinforced error handling on the Rust backend to reject empty Steam app IDs.
+
 ## 1.5.0 - 2026-03-27
 
 Summary of the work completed across this implementation cycle.

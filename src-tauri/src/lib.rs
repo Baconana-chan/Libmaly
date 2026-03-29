@@ -3791,7 +3791,11 @@ fn import_steam_library() -> Vec<SteamLibraryEntry> {
 
 #[tauri::command]
 fn launch_steam_game(app_id: String) -> Result<(), String> {
-    let target = format!("steam://rungameid/{app_id}");
+    let app_id_trimmed = app_id.trim();
+    if app_id_trimmed.is_empty() {
+        return Err("Steam app ID cannot be empty".to_string());
+    }
+    let target = format!("steam://rungameid/{}", app_id_trimmed);
     #[cfg(windows)]
     {
         Command::new("cmd")

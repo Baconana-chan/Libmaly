@@ -5432,7 +5432,14 @@ export default function App() {
   const launchGame = async (path: string, overridePath?: string, overrideArgs?: string) => {
     const gameCustom = customizations[path];
 
-    if (!overridePath && !overrideArgs && gameCustom?.launchViaSteam && gameCustom.steamAppId) {
+    // Only launch via Steam if explicitly enabled AND steamAppId is valid (non-empty string)
+    const shouldLaunchViaSteam = !overridePath && !overrideArgs && 
+                                  gameCustom?.launchViaSteam && 
+                                  gameCustom?.steamAppId && 
+                                  typeof gameCustom.steamAppId === 'string' &&
+                                  gameCustom.steamAppId.trim().length > 0;
+
+    if (shouldLaunchViaSteam) {
       try {
         const baselineMinutes = await invoke<number | null>("get_steam_playtime_minutes", { appId: gameCustom.steamAppId });
         await invoke("launch_steam_game", { appId: gameCustom.steamAppId });

@@ -163,7 +163,7 @@ jobs:
 
       # ── Upload artifacts (also available without a release) ───────────────
       - name: Upload installers as workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: libmaly-${{ matrix.platform.name }}
           retention-days: 14
@@ -236,7 +236,7 @@ jobs:
           Compress-Archive -Path "portable/libmaly-portable-windows-x64/*" -DestinationPath $zipPath
 
       - name: Upload portable package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: libmaly-Portable-Windows-x64
           retention-days: 14

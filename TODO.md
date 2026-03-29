@@ -4,9 +4,6 @@
 
 ## 🎨 UI / UX
 
-- [x] **Mystery launch button** — "Surprise me" launches a random game from the library (excluding hidden/dropped)
-- [x] **Dynamic seasonal themes** — small seasonal visual presets (winter/summer/halloween) with manual switch
-- [x] **Session mood stickers** — quick mood tag after each session (`hype` / `chill` / `chaos`) shown in play history
 
 
 
@@ -20,7 +17,6 @@
 
 ## 🌐 Metadata
 
-- [x] **Scraper health monitor** — detect source-wide parser failures and surface per-source failure reasons in diagnostics
 
 
 
@@ -28,7 +24,6 @@
 
 ## 🖼️ Screenshots
 
-- [x] **In-game screenshot confirmation toast** — show a Steam-style overlay toast when a screenshot is captured, with optional thumbnail/tag feedback instead of silent save
 - [ ] **Screenshot overlay history** — quick recent-captures strip in the overlay to confirm/save/tag the last few screenshots without leaving the game
 
 
@@ -62,31 +57,21 @@
 
 ## 🧰 Background Jobs
 
-- [x] **Queue with retry/backoff** — unified metadata/update/sync queue with retry, exponential backoff, and concurrency limits
+
 
 ---
 
 ## 🛡️ Reliability & Recovery
 
 - [ ] **Unified storage with schema migrations** — move to a versioned state store with forward migrations and rollback on migration failure
-- [x] **Crash-safe writes** — atomic state writes via temp + rename and a small recent-ops journal
-- [x] **Auto-recovery mode** — safe startup mode after crash (no background refresh/scraping) with one-click recovery prompt
-- [x] **Library integrity check** — command to validate broken paths, duplicate IDs, and invalid executables
-- [x] **Auto-heal paths** — auto-fix moved/renamed game folders using file signatures + fuzzy matching
-- [x] **Process lifecycle hardening** — more reliable game start/exit detection and orphan process cleanup
-- [x] **State snapshots before risky ops** — auto snapshot before batch metadata refresh, imports, and migration wizard operations
-- [x] **Permissions diagnostics** — detect and explain permission failures for screenshots/saves/backups with actionable fixes
 
 ---
 
 ## ☁️ Sync & Backup
 
 - [ ] **Google Drive / Dropbox auto-backup** — optional periodic upload of library JSON to a cloud folder
-- [x] **Save-file backup** — detect common save directories and zip them on demand or on exit
 - [ ] **Save-file cloud sync** — upload save zips to a configured folder (Google Drive, local NAS, etc.)
 - [ ] **Multiple library profiles** — separate profiles for different PCs or users; switchable from the tray
-- [x] **Backup retention policy** — rotate backups by daily/weekly/monthly rules and auto-prune old archives
-- [x] **One-click restore wizard** — restore state from backup with overwrite preview before apply
 - [ ] **Cloud sync conflict resolver** — 3-way merge for local/remote/base snapshots to avoid silent data loss
 
 ---
@@ -116,7 +101,6 @@
 
 ## 📥 Import & Interop
 
-- [x] **Steam library import** — read installed Steam manifests, import detected games into LIBMALY, and attach Steam app IDs for launch integration
 - [/] **Steam launch bridge / playtime sync** — optionally launch imported Steam titles through Steam and pull updated playtime back into LIBMALY with best-effort session tracking
 
 ---
@@ -131,12 +115,8 @@
 - [ ] **Roadmap hygiene task** — keep README and TODO in sync for backup/sync feature status
 
 ### Internal Interfaces / Types (planned)
-- [x] **`run_integrity_check` command** — app-level command for integrity scan and JSON/UI report output
-- [x] **`create_snapshot` command** — app-level command to create manual or pre-op state snapshots
-- [x] **`restore_snapshot` command** — app-level command to restore from snapshot with dry-run preview support
-- [x] **`resolve_sync_conflicts` command** — app-level command to resolve local/remote/base state conflicts
-- [x] **Background job status model** — `queued` / `running` / `retrying` / `failed` / `permanent_failed`
-- [x] **Integrity/restore report schema** — structured report type for UI rendering and JSON export
+
+
 
 ### Reliability Test Scenarios (planned)
 - [ ] **Crash during write** — verify state remains recoverable and library is not fully lost
@@ -188,6 +168,9 @@
 - [x] **Themes** — Dark (current), Light, OLED-black; accent colour picker
 - [x] **Theme scheduler** — auto-switch Light ↔ Dark based on time of day or OS setting
 - [x] **Back / Forward navigation** — browser-style history for jumping between views
+- [x] **Mystery launch button** — "Surprise me" launches a random game from the library (excluding hidden/dropped)
+- [x] **Dynamic seasonal themes** — small seasonal visual presets (winter/summer/halloween) with manual switch
+- [x] **Session mood stickers** — quick mood tag after each session (`hype` / `chill` / `chaos`) shown in play history
 
 ### Stats & Tracking
 - [x] **Play history log** — timestamped session log per game shown as a timeline (max 50 entries)
@@ -214,6 +197,7 @@
 - [x] **Developer grouping** — sidebar section "By Developer"; click to filter all games from one circle/studio
 - [x] **VNDB support** — fetch metadata from vndb.org for visual novels (cover, tags, relations, release date)
 - [x] **MangaGamer / Johren / Fakku support** — additional store scrapers
+- [x] **Scraper health monitor** — detect source-wide parser failures and surface per-source failure reasons in diagnostics
 
 ### Notifications & Tray
 - [x] **Update checker** — notification when a linked F95/DLsite game has a new version posted
@@ -232,6 +216,7 @@
 - [x] **Non-Windows screenshot** — global hotkey via X11/Wayland on Linux; CGWindow on macOS
 - [x] **Export gallery** — zip all screenshots for a game and save / share
 - [x] **Screenshot annotation** — simple draw / text overlay before saving
+- [x] **In-game screenshot confirmation toast** — show a Steam-style overlay toast when a screenshot is captured, with optional thumbnail/tag feedback instead of silent save
 
 ### Wine / Proton
 - [x] **Global Wine/Proton config** — set Wine binary and prefix globally; used for all non-Windows games
@@ -251,6 +236,7 @@
 - [x] **Deep link protocol** — `libmaly://launch/<game-path>` URI scheme for external tools
 - [x] **CLI interface** — `libmaly launch <name>` from a terminal
 - [x] **Import from Playnite / GOG Galaxy** — read existing launchers' databases and merge into library
+- [x] **Steam library import** — read installed Steam manifests, import detected games into LIBMALY, and attach Steam app IDs for launch integration
 
 ### Technical
 - [x] **Log viewer** — in-app console showing recent Rust-side errors/warnings for debugging
@@ -264,3 +250,26 @@
 ### Sync & Backup
 - [x] **Cloud config sync** — export/import full library state (stats, metadata, notes, collections) as JSON
 - [x] **Migration wizard** — "Move game folder" that updates all internal paths without losing stats/metadata
+- [x] **Save-file backup** — detect common save directories and zip them on demand or on exit
+- [x] **Backup retention policy** — rotate backups by daily/weekly/monthly rules and auto-prune old archives
+- [x] **One-click restore wizard** — restore state from backup with overwrite preview before apply
+
+### Internal Interfaces / Types (planned)
+- [x] **`run_integrity_check` command** — app-level command for integrity scan and JSON/UI report output
+- [x] **`create_snapshot` command** — app-level command to create manual or pre-op state snapshots
+- [x] **`restore_snapshot` command** — app-level command to restore from snapshot with dry-run preview support
+- [x] **`resolve_sync_conflicts` command** — app-level command to resolve local/remote/base state conflicts
+- [x] **Background job status model** — `queued` / `running` / `retrying` / `failed` / `permanent_failed`
+- [x] **Integrity/restore report schema** — structured report type for UI rendering and JSON export
+
+### Reliability & Recovery
+- [x] **Crash-safe writes** — atomic state writes via temp + rename and a small recent-ops journal
+- [x] **Auto-recovery mode** — safe startup mode after crash (no background refresh/scraping) with one-click recovery prompt
+- [x] **Library integrity check** — command to validate broken paths, duplicate IDs, and invalid executables
+- [x] **Auto-heal paths** — auto-fix moved/renamed game folders using file signatures + fuzzy matching
+- [x] **Process lifecycle hardening** — more reliable game start/exit detection and orphan process cleanup
+- [x] **State snapshots before risky ops** — auto snapshot before batch metadata refresh, imports, and migration wizard operations
+- [x] **Permissions diagnostics** — detect and explain permission failures for screenshots/saves/backups with actionable fixes
+
+### Background Jobs
+- [x] **Queue with retry/backoff** — unified metadata/update/sync queue with retry, exponential backoff, and concurrency limits

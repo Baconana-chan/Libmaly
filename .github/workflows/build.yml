@@ -82,6 +82,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Clean Rust build cache
+        shell: bash
         run: |
           cargo clean --manifest-path src-tauri/Cargo.toml || true
           rm -rf src-tauri/target || true

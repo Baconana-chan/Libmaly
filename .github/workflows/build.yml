@@ -81,6 +81,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Clean Rust build cache
+        run: |
+          cargo clean --manifest-path src-tauri/Cargo.toml || true
+          rm -rf src-tauri/target || true
+
       # ── Bun + JS deps ─────────────────────────────────────────────────────
       - uses: oven-sh/setup-bun@v2
         with:
@@ -118,8 +123,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-
+          key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-v2-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/src/**/*.rs') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-v2-
 
       # ── WebView2Loader.dll presence check (Windows only) ──────────────────
       # Tauri 2 ships WebView2Loader.dll inside the NSIS installer automatically,

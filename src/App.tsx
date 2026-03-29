@@ -5439,15 +5439,16 @@ export default function App() {
                                   typeof gameCustom.steamAppId === 'string' &&
                                   gameCustom.steamAppId.trim().length > 0;
 
-    if (shouldLaunchViaSteam) {
+    if (shouldLaunchViaSteam && gameCustom?.steamAppId) {
       try {
-        const baselineMinutes = await invoke<number | null>("get_steam_playtime_minutes", { appId: gameCustom.steamAppId });
-        await invoke("launch_steam_game", { appId: gameCustom.steamAppId });
+        const appId = gameCustom.steamAppId; // Type guard for TypeScript
+        const baselineMinutes = await invoke<number | null>("get_steam_playtime_minutes", { appId });
+        await invoke("launch_steam_game", { appId });
         setRunningGamePath(path);
         sessionStartRef.current = Date.now();
         setSteamLaunchBridge({
           path,
-          appId: gameCustom.steamAppId,
+          appId,
           baselineMinutes: baselineMinutes ?? 0,
           lastSeenMinutes: baselineMinutes ?? 0,
           sawIncrease: false,

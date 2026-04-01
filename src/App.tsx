@@ -432,7 +432,10 @@ interface GameCustomization {
 }
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
-type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia" | "cotton-candy" | "ocean-deep";
+type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia" | "cotton-candy" | "ocean-deep"
+  | "citrus-sherbert" | "retro-raincloud" | "sunrise" | "lofi-vibes" | "desert-khaki"
+  | "chroma-glow" | "forest" | "midnight-blurple" | "mars" | "dusk" | "retro-storm" | "neon-nights" | "strawberry-lemonade" | "aurora" | "blurple-twilight"
+  | "custom";
 type RatingCategoryKey = "gameplay" | "story" | "soundtrack" | "visuals" | "characters" | "performance";
 const RATING_CATEGORIES: { key: RatingCategoryKey; label: string }[] = [
   { key: "gameplay", label: "Gameplay" },
@@ -592,6 +595,7 @@ interface AppSettings {
   bossKeyAction?: "hide" | "kill";
   bossKeyMuteSystem?: boolean;
   bossKeyFallbackUrl?: string;
+  customThemeColors?: Record<string, string>;
 }
 
 interface CloudSyncPayloadV1 {
@@ -648,6 +652,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   bossKeyAction: "hide",
   bossKeyMuteSystem: false,
   bossKeyFallbackUrl: "",
+  customThemeColors: {},
 };
 const SCREENSHOT_TOAST_TTL_MS = 3600;
 
@@ -3588,7 +3593,17 @@ export default function App() {
     root.style.setProperty("--color-accent-deep", shiftHexColor(accent, -0.62));
     root.style.setProperty("--color-accent-deeper", shiftHexColor(accent, -0.68));
     root.style.setProperty("--color-accent-muted", shiftHexColor(accent, -0.46));
-  }, [effectiveThemeMode, effectiveSeason, appSettings.accentColor]);
+
+    if (effectiveThemeMode === "custom" && appSettings.customThemeColors) {
+      Object.entries(appSettings.customThemeColors).forEach(([key, val]) => {
+        if (val) root.style.setProperty(`--color-${key}`, val);
+      });
+    } else {
+      // Clear custom properties when not in custom mode to avoid leakage
+      const keys = ["bg", "bg-elev", "bg-deep", "bg-code", "bg-overlay", "panel", "panel-2", "panel-3", "panel-alt", "panel-deep", "panel-low", "border", "border-soft", "border-card", "border-strong", "border-subtle", "text", "text-soft", "text-muted", "text-dim"];
+      keys.forEach(k => root.style.removeProperty(`--color-${k}`));
+    }
+  }, [effectiveThemeMode, effectiveSeason, appSettings.accentColor, appSettings.customThemeColors]);
 
   const [revealedNsfw, setRevealedNsfw] = useState<Record<string, boolean>>({});
   const revealNsfwPath = useCallback((path: string) => setRevealedNsfw(p => ({ ...p, [path]: true })), []);

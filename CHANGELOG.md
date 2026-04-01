@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.5.3 - 2026-04-01
+
+### Themes and customization
+- Significant expansion of the visual palette with **15 new theme presets**:
+    - **Light Themes**: Citrus Sherbert, Retro Raincloud, Sunrise, LoFi Vibes, Desert Khaki.
+    - **Dark Themes**: Chroma Glow, Forest, Midnight Blurple, Mars, Dusk, Retro Storm, Neon Nights, Strawberry Lemonade, Aurora, Blurple Twilight.
+- Added **Custom Theme Constructor**: Users can now create their own "Personal Theme" by fine-tuning over 20 CSS variables directly from the settings, including backgrounds, panel colors, text shades, and border intensities.
+- Added **Reset to Defaults** functionality for custom themes.
+
+### UI and UX improvements
+- Implemented **custom UI components** to replace native browser elements for a more premium look:
+    - **Checkboxes**: New animated checkmark with thematic scaling and accent-color integration.
+    - **Select Menus**: Redesigned dropdowns with a custom chevron icon and smoother hover/active states.
+    - **Number & Color inputs**: Cleaned up number inputs by hiding native spin buttons and restyled the color picker swatch with a modern, rounded design.
+- Added **Global Scrollbar Restyling**: System-wide scrollbars are now thinner, rounded, and non-intrusive, matching the active theme colors.
+
+### Reliability and performance
+- Improved **network stability** for metadata scrapers (DLsite, VNDB, F95):
+    - Added explicit **connection and request timeouts** to prevent requests from hanging indefinitely on flaky networks.
+    - Updated User-Agent strings for better compatibility with API providers.
+    - Verified and optimized the scraping health diagnostic reporting.
+
 ## 1.5.2 - 2026-03-29
 
 ### UI and themes

@@ -15,7 +15,10 @@ interface BackgroundJobSummary {
 }
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
-type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia" | "cotton-candy" | "ocean-deep";
+type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia" | "cotton-candy" | "ocean-deep"
+  | "citrus-sherbert" | "retro-raincloud" | "sunrise" | "lofi-vibes" | "desert-khaki"
+  | "chroma-glow" | "forest" | "midnight-blurple" | "mars" | "dusk" | "retro-storm" | "neon-nights" | "strawberry-lemonade" | "aurora" | "blurple-twilight"
+  | "custom";
 interface AppSettingsLike {
   updateCheckerEnabled: boolean;
   sessionToastEnabled: boolean;
@@ -44,12 +47,28 @@ interface AppSettingsLike {
   bossKeyAction?: "hide" | "kill";
   bossKeyMuteSystem?: boolean;
   bossKeyFallbackUrl?: string;
+  customThemeColors?: Record<string, string>;
 }
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: "dark", label: "Dark" },
   { value: "light", label: "Light" },
   { value: "oled", label: "OLED Black" },
+  { value: "citrus-sherbert", label: "Citrus Sherbert" },
+  { value: "retro-raincloud", label: "Retro Raincloud" },
+  { value: "sunrise", label: "Sunrise" },
+  { value: "lofi-vibes", label: "LoFi Vibes" },
+  { value: "desert-khaki", label: "Desert Khaki" },
+  { value: "chroma-glow", label: "Chroma Glow" },
+  { value: "forest", label: "Forest" },
+  { value: "midnight-blurple", label: "Midnight Blurple" },
+  { value: "mars", label: "Mars" },
+  { value: "dusk", label: "Dusk" },
+  { value: "retro-storm", label: "Retro Storm" },
+  { value: "neon-nights", label: "Neon Nights" },
+  { value: "strawberry-lemonade", label: "Strawberry Lemonade" },
+  { value: "aurora", label: "Aurora" },
+  { value: "blurple-twilight", label: "Blurple Twilight" },
   { value: "mint-apple", label: "Mint Apple" },
   { value: "hanami", label: "Hanami" },
   { value: "dawn", label: "Dawn" },
@@ -58,14 +77,15 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: "sepia", label: "Sepia" },
   { value: "cotton-candy", label: "Cotton Candy" },
   { value: "ocean-deep", label: "Ocean Deep" },
+  { value: "custom", label: "Custom Personal Theme" },
 ];
 
 const DAY_THEME_OPTIONS = THEME_OPTIONS.filter((theme) =>
-  ["light", "mint-apple", "hanami", "dawn", "cotton-candy"].includes(theme.value)
+  ["light", "mint-apple", "hanami", "dawn", "cotton-candy", "citrus-sherbert", "retro-raincloud", "sunrise", "lofi-vibes", "desert-khaki"].includes(theme.value)
 );
 
 const NIGHT_THEME_OPTIONS = THEME_OPTIONS.filter((theme) =>
-  ["dark", "oled", "sunset", "crimson-moon", "sepia", "ocean-deep"].includes(theme.value)
+  ["dark", "oled", "sunset", "crimson-moon", "sepia", "ocean-deep", "chroma-glow", "forest", "midnight-blurple", "mars", "dusk", "retro-storm", "neon-nights", "strawberry-lemonade", "aurora", "blurple-twilight"].includes(theme.value)
 );
 
 function normalizePathForMatch(path: string) {
@@ -625,16 +645,183 @@ function SettingsModal({
                     className="ml-2 w-8 h-6 border rounded cursor-pointer"
                     style={{ borderColor: "var(--color-border)", background: "transparent" }}
                     value={normalizeHexColor(appSettings.accentColor || defaultSettings.accentColor, defaultSettings.accentColor)}
-                    onChange={(e) => onSaveSettings({ ...appSettings, accentColor: e.currentTarget.value })}
+                    onChange={(e) => {
+                      const accent = e.currentTarget.value;
+                      const nextStep = { ...appSettings, accentColor: accent };
+                      if (appSettings.themeMode === "custom") {
+                        const nextColors = { ...(appSettings.customThemeColors || {}), accent };
+                        nextStep.customThemeColors = nextColors;
+                      }
+                      onSaveSettings(nextStep);
+                    }}
                   />
                   <input
                     type="text"
                     className="ml-1 w-24 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)] font-mono text-xs"
                     style={{ borderColor: "var(--color-border)" }}
                     value={normalizeHexColor(appSettings.accentColor || defaultSettings.accentColor, defaultSettings.accentColor)}
-                    onChange={(e) => onSaveSettings({ ...appSettings, accentColor: normalizeHexColor(e.currentTarget.value, defaultSettings.accentColor) })}
+                    onChange={(e) => {
+                      const accent = normalizeHexColor(e.currentTarget.value, defaultSettings.accentColor);
+                      const nextStep = { ...appSettings, accentColor: accent };
+                      if (appSettings.themeMode === "custom") {
+                        const nextColors = { ...(appSettings.customThemeColors || {}), accent };
+                        nextStep.customThemeColors = nextColors;
+                      }
+                      onSaveSettings(nextStep);
+                    }}
                   />
                 </label>
+
+                {appSettings.themeMode === "custom" && (
+                  <div className="mt-4 p-3 rounded-lg space-y-4" style={{ background: "var(--color-panel-alt)", border: "1px dashed var(--color-border-strong)" }}>
+                    <div>
+                      <h4 className="text-xs font-bold mb-1" style={{ color: "var(--color-white)" }}>Theme Constructor</h4>
+                      <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                        Fine-tune every aspect of your personal theme. Changes apply instantly.
+                      </p>
+                    </div>
+
+                    <div className="space-y-4">
+                      {/* --- Backgrounds --- */}
+                      <div>
+                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>Backgrounds</div>
+                        <div className="grid grid-cols-2 gap-3">
+                          {[
+                            { key: "bg", label: "Main Background" },
+                            { key: "bg-elev", label: "Elevated Surface" },
+                            { key: "bg-deep", label: "Deep Background" },
+                            { key: "bg-overlay", label: "Overlay Dimming" },
+                          ].map(cfg => (
+                            <div key={cfg.key} className="flex flex-col gap-1">
+                              <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
+                              <div className="flex items-center gap-1.5">
+                                <input type="color" className="w-6 h-6 border-none bg-transparent cursor-pointer"
+                                  value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#000000")}
+                                  onChange={e => onSaveSettings({
+                                    ...appSettings,
+                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
+                                  })} />
+                                <input type="text" className="flex-1 bg-transparent border rounded px-1.5 py-0.5 text-[10px] outline-none font-mono"
+                                  style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                                  value={appSettings.customThemeColors?.[cfg.key] || ""}
+                                  onInput={e => onSaveSettings({
+                                    ...appSettings,
+                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
+                                  })} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* --- Panels --- */}
+                      <div>
+                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>Panels & Cards</div>
+                        <div className="grid grid-cols-3 gap-3">
+                          {[
+                            { key: "panel", label: "Primary" },
+                            { key: "panel-2", label: "Secondary" },
+                            { key: "panel-3", label: "Tertiary" },
+                          ].map(cfg => (
+                            <div key={cfg.key} className="flex flex-col gap-1">
+                              <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
+                              <div className="flex items-center gap-1.5">
+                                <input type="color" className="w-5 h-5 border-none bg-transparent cursor-pointer"
+                                  value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#000000")}
+                                  onChange={e => onSaveSettings({
+                                    ...appSettings,
+                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
+                                  })} />
+                                <input type="text" className="flex-1 min-w-0 bg-transparent border rounded px-1 py-0.5 text-[9px] outline-none font-mono"
+                                  style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                                  value={appSettings.customThemeColors?.[cfg.key] || ""}
+                                  onInput={e => onSaveSettings({
+                                    ...appSettings,
+                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
+                                  })} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* --- Text --- */}
+                      <div>
+                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>Typography</div>
+                        <div className="grid grid-cols-2 gap-3">
+                          {[
+                            { key: "text", label: "Main Text" },
+                            { key: "text-soft", label: "Soft Text" },
+                            { key: "text-muted", label: "Muted/Description" },
+                            { key: "text-dim", label: "Dim/Placeholder" },
+                          ].map(cfg => (
+                            <div key={cfg.key} className="flex flex-col gap-1">
+                              <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
+                              <div className="flex items-center gap-1.5">
+                                <input type="color" className="w-6 h-6 border-none bg-transparent cursor-pointer"
+                                  value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#ffffff")}
+                                  onChange={e => onSaveSettings({
+                                    ...appSettings,
+                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
+                                  })} />
+                                <input type="text" className="flex-1 bg-transparent border rounded px-1.5 py-0.5 text-[10px] outline-none font-mono"
+                                  style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                                  value={appSettings.customThemeColors?.[cfg.key] || ""}
+                                  onInput={e => onSaveSettings({
+                                    ...appSettings,
+                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
+                                  })} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* --- Borders --- */}
+                      <div>
+                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>Borders</div>
+                        <div className="grid grid-cols-2 gap-3">
+                          {[
+                            { key: "border", label: "Default Border" },
+                            { key: "border-soft", label: "Soft Border" },
+                            { key: "border-strong", label: "Strong/Active" },
+                            { key: "border-subtle", label: "Subtle Separator" },
+                          ].map(cfg => (
+                            <div key={cfg.key} className="flex flex-col gap-1">
+                              <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
+                              <div className="flex items-center gap-1.5">
+                                <input type="color" className="w-6 h-6 border-none bg-transparent cursor-pointer"
+                                  value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#000000")}
+                                  onChange={e => onSaveSettings({
+                                    ...appSettings,
+                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
+                                  })} />
+                                <input type="text" className="flex-1 bg-transparent border rounded px-1.5 py-0.5 text-[10px] outline-none font-mono"
+                                  style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                                  value={appSettings.customThemeColors?.[cfg.key] || ""}
+                                  onInput={e => onSaveSettings({
+                                    ...appSettings,
+                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
+                                  })} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
+                      <button className="text-[10px] uppercase font-bold" style={{ color: "var(--color-accent)" }}
+                        onClick={() => {
+                           if (confirm("Reset custom theme colors to default dark palette?")) {
+                             onSaveSettings({ ...appSettings, customThemeColors: {} });
+                           }
+                        }}>
+                        Reset to Defaults
+                      </button>
+                    </div>
+                  </div>
+                )}
               </section>
 
               <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>

@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::data_paths::app_data_root;
 
 // ── Cookie store with disk persistence ────────────────────────────────────
@@ -1433,9 +1433,13 @@ pub async fn fetch_vndb_metadata(url: String) -> Result<GameMetadata, String> {
         "fields": "id,title,alttitle,description,released,image.url,screenshots.url,tags.rating,tags.name,developers.name,developers.original,relations.relation,relations.title,relations.id"
     });
 
-        let resp = reqwest::Client::new()
+        let resp = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| format!("VNDB Client failed: {}", e))?
             .post("https://api.vndb.org/kana/vn")
-            .header("User-Agent", "LIBMALY/1.3")
+            .header("User-Agent", "LIBMALY/1.5.3")
             .json(&body)
             .send()
             .await
@@ -1920,9 +1924,18 @@ async fn fetch_vndb_alias_queries(query: &str) -> Vec<String> {
         "fields": "title,alttitle",
         "results": 5
     });
-    let resp = match reqwest::Client::new()
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        _ => return Vec::new(),
+    };
+
+    let resp = match client
         .post("https://api.vndb.org/kana/vn")
-        .header("User-Agent", "LIBMALY/1.3")
+        .header("User-Agent", "LIBMALY/1.5.3")
         .json(&body)
         .send()
         .await
@@ -2255,9 +2268,15 @@ pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>
             "fields": "id,title,image.url",
             "results": 6
         });
-        if let Ok(resp) = reqwest::Client::new()
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        if let Ok(resp) = client
             .post("https://api.vndb.org/kana/vn")
-            .header("User-Agent", "LIBMALY/1.3")
+            .header("User-Agent", "LIBMALY/1.5.3")
             .json(&body)
             .send()
             .await

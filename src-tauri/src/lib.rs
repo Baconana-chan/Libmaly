@@ -16,6 +16,8 @@ use walkdir::WalkDir;
 use rusqlite::Connection;
 #[cfg(windows)]
 use rusqlite::types::ValueRef;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 mod metadata;
 use metadata::{
@@ -487,7 +489,11 @@ struct ProcessEntry {
 fn list_process_entries() -> Vec<ProcessEntry> {
     #[cfg(windows)]
     {
-        let output = Command::new("powershell")
+        let mut cmd = Command::new("powershell");
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+        let output = cmd
             .args([
                 "-NoProfile",
                 "-Command",
@@ -653,7 +659,11 @@ fn terminate_process_tree(root_pid: u32, related_pids: &[u32]) -> Result<(), Str
     {
         let mut last_error: Option<String> = None;
         for pid in pids.iter().rev() {
-            let status = Command::new("taskkill")
+            let mut cmd = Command::new("taskkill");
+            #[cfg(windows)]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+            let status = cmd
                 .args(["/PID", &pid.to_string(), "/T", "/F"])
                 .status();
             match status {
@@ -3129,6 +3139,9 @@ async fn apply_update(app: AppHandle, download_url: String) -> Result<(), String
         {
             // Just launch the installer and exit LIBMALY so it can overwrite files.
             let mut cmd = std::process::Command::new("cmd");
+            #[cfg(windows)]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
             cmd.args(["/C", "start", "\"\"", &archive_path.to_string_lossy()]);
             cmd.spawn()
                 .map_err(|e| format!("Failed to start installer: {}", e))?;

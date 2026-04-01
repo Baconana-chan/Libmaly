@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.2 - 2026-03-29
+
+### UI and themes
+- Added two new theme presets: **Cotton Candy** (light pastel theme with pink and purple tones) and **Ocean Deep** (dark theme with deep blue and cyan tones).
+
 ## 1.5.1 - 2026-03-29
 
 ### Bug fixes

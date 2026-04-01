@@ -432,7 +432,7 @@ interface GameCustomization {
 }
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
-type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia";
+type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia" | "cotton-candy" | "ocean-deep";
 type RatingCategoryKey = "gameplay" | "story" | "soundtrack" | "visuals" | "characters" | "performance";
 const RATING_CATEGORIES: { key: RatingCategoryKey; label: string }[] = [
   { key: "gameplay", label: "Gameplay" },

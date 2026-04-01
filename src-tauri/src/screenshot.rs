@@ -7,6 +7,8 @@ use base64::Engine;
 use crate::data_paths::app_data_root;
 #[cfg(windows)]
 use tauri::Emitter;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 // ── Shared state: currently-running game ──────────────────────────────────
 

@@ -15,7 +15,7 @@ interface BackgroundJobSummary {
 }
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
-type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia";
+type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia" | "cotton-candy" | "ocean-deep";
 interface AppSettingsLike {
   updateCheckerEnabled: boolean;
   sessionToastEnabled: boolean;
@@ -56,14 +56,16 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: "sunset", label: "Sunset" },
   { value: "crimson-moon", label: "Crimson Moon" },
   { value: "sepia", label: "Sepia" },
+  { value: "cotton-candy", label: "Cotton Candy" },
+  { value: "ocean-deep", label: "Ocean Deep" },
 ];
 
 const DAY_THEME_OPTIONS = THEME_OPTIONS.filter((theme) =>
-  ["light", "mint-apple", "hanami", "dawn"].includes(theme.value)
+  ["light", "mint-apple", "hanami", "dawn", "cotton-candy"].includes(theme.value)
 );
 
 const NIGHT_THEME_OPTIONS = THEME_OPTIONS.filter((theme) =>
-  ["dark", "oled", "sunset", "crimson-moon", "sepia"].includes(theme.value)
+  ["dark", "oled", "sunset", "crimson-moon", "sepia", "ocean-deep"].includes(theme.value)
 );
 
 function normalizePathForMatch(path: string) {

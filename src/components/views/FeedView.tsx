@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { useTranslation } from "react-i18next";
 
 interface FeedSource {
   url: string;
@@ -67,6 +68,7 @@ export function FeedView({
   defaultFeeds: FeedSource[];
   onToggleWishlist: (item: ToggleWishlistPayload) => void;
 }) {
+  const { t } = useTranslation();
   const [items, setItems] = useState<RssItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [previewItem, setPreviewItem] = useState<RssItem | null>(null);
@@ -137,7 +139,7 @@ export function FeedView({
     const source = detectMetadataSource(item.link);
     if (!source) {
       setPreviewLoading(false);
-      setPreviewError("In-app preview supports F95zone, DLsite, VNDB, MangaGamer, Johren and FAKKU links.");
+      setPreviewError(t('feed_view.preview_support_error'));
       return;
     }
 
@@ -154,7 +156,7 @@ export function FeedView({
       setPreviewMeta(meta);
     } catch (e: any) {
       if (previewReqIdRef.current !== reqId) return;
-      setPreviewError(e?.toString?.() || "Failed to load metadata.");
+      setPreviewError(e?.toString?.() || t('feed_view.load_error'));
     } finally {
       if (previewReqIdRef.current === reqId) setPreviewLoading(false);
     }
@@ -169,7 +171,7 @@ export function FeedView({
     <div className="flex-1 overflow-y-auto px-10 py-8" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
       <div className="max-w-3xl mx-auto space-y-6">
         <h1 className="text-3xl font-bold mb-8" style={{ color: "var(--color-white)", textShadow: "0 2px 8px rgba(0,0,0,.9)" }}>
-          News &amp; Updates
+          {t('feed_view.title')}
         </h1>
         {loading ? (
           <div className="flex justify-center p-12">
@@ -177,7 +179,7 @@ export function FeedView({
           </div>
         ) : items.length === 0 ? (
           <p className="text-center py-12" style={{ color: "var(--color-text-muted)" }}>
-            No updates found in your configured feeds.
+            {t('feed_view.empty')}
           </p>
         ) : (
           items.map((item) => (
@@ -202,9 +204,9 @@ export function FeedView({
                   onClick={() => openInBrowser(item.link)}
                   className="flex-shrink-0 px-2 h-8 rounded text-xs transition-colors"
                   style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
-                  title="Open original page in browser"
+                  title={t('feed_view.open_browser_hint')}
                 >
-                  Open
+                  {t('feed_view.open')}
                 </button>
                 <button
                   onClick={() => {
@@ -222,7 +224,7 @@ export function FeedView({
                     background: wishlist.some((w) => w.id === (item.link || item.id)) ? "#1a2c1a" : "var(--color-panel-3)",
                     color: wishlist.some((w) => w.id === (item.link || item.id)) ? "var(--color-success)" : "var(--color-text-muted)",
                   }}
-                  title={wishlist.some((w) => w.id === (item.link || item.id)) ? "Remove from wishlist" : "Add to wishlist"}
+                  title={wishlist.some((w) => w.id === (item.link || item.id)) ? t('feed_view.remove_wishlist') : t('feed_view.add_wishlist')}
                 >
                   {wishlist.some((w) => w.id === (item.link || item.id)) ? "★" : "+"}
                 </button>
@@ -247,7 +249,7 @@ export function FeedView({
             <div className="flex items-start justify-between gap-3 mb-3">
               <div>
                 <p className="text-[11px] uppercase font-bold tracking-wider mb-1" style={{ color: "var(--color-text-muted)" }}>
-                  News Preview
+                  {t('feed_view.preview_title')}
                 </p>
                 <h3 className="text-xl font-bold" style={{ color: "var(--color-text)" }}>
                   {previewMeta?.title || previewItem.title}
@@ -259,14 +261,14 @@ export function FeedView({
                   className="px-3 py-1.5 rounded text-xs"
                   style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}
                 >
-                  Open in Browser
+                  {t('feed_view.open_in_browser')}
                 </button>
                 <button
                   onClick={() => setPreviewItem(null)}
                   className="px-3 py-1.5 rounded text-xs"
                   style={{ background: "var(--color-border)", color: "var(--color-text)" }}
                 >
-                  Close
+                  {t('common.close')}
                 </button>
               </div>
             </div>
@@ -290,7 +292,7 @@ export function FeedView({
                           setPreviewLightboxImage(active);
                         }}
                         className="block w-full"
-                        title="Open full size"
+                        title={t('feed_view.open_full_size')}
                       >
                         <img
                           src={previewMeta.screenshots?.[previewShot] || previewMeta.cover_url}
@@ -320,7 +322,7 @@ export function FeedView({
                 {(previewMeta.overview_html || previewMeta.overview) && (
                   <section>
                     <h4 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>
-                      Overview
+                      {t('game.overview')}
                     </h4>
                     {previewMeta.overview_html ? (
                       <div
@@ -341,16 +343,16 @@ export function FeedView({
                 )}
 
                 <section className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
-                  <div><span style={{ color: "var(--color-text-muted)" }}>Source:</span> <span style={{ color: "var(--color-text)" }}>{previewMeta.source.toUpperCase()}</span></div>
-                  {previewMeta.developer && <div><span style={{ color: "var(--color-text-muted)" }}>Developer:</span> <span style={{ color: "var(--color-text)" }}>{previewMeta.developer}</span></div>}
-                  {previewMeta.version && <div><span style={{ color: "var(--color-text-muted)" }}>Version:</span> <span style={{ color: "var(--color-text)" }}>{previewMeta.version}</span></div>}
-                  {previewMeta.release_date && <div><span style={{ color: "var(--color-text-muted)" }}>Released:</span> <span style={{ color: "var(--color-text)" }}>{previewMeta.release_date}</span></div>}
+                  <div><span style={{ color: "var(--color-text-muted)" }}>{t('game.meta.released')}:</span> <span style={{ color: "var(--color-text)" }}>{previewMeta.source.toUpperCase()}</span></div>
+                  {previewMeta.developer && <div><span style={{ color: "var(--color-text-muted)" }}>{t('game.meta.developer')}:</span> <span style={{ color: "var(--color-text)" }}>{previewMeta.developer}</span></div>}
+                  {previewMeta.version && <div><span style={{ color: "var(--color-text-muted)" }}>{t('game.meta.version')}:</span> <span style={{ color: "var(--color-text)" }}>{previewMeta.version}</span></div>}
+                  {previewMeta.release_date && <div><span style={{ color: "var(--color-text-muted)" }}>{t('game.meta.released')}:</span> <span style={{ color: "var(--color-text)" }}>{previewMeta.release_date}</span></div>}
                 </section>
 
                 {(previewMeta.tags?.length || 0) > 0 && (
                   <section>
                     <h4 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>
-                      Tags
+                      {t('game.tags')}
                     </h4>
                     <div className="flex flex-wrap gap-1.5">
                       {previewMeta.tags.map((tag) => (
@@ -364,7 +366,7 @@ export function FeedView({
               </div>
             ) : (
               <div className="rounded p-4 text-sm" style={{ background: "var(--color-bg-elev)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}>
-                No metadata found.
+                {t('feed_view.no_meta')}
               </div>
             )}
           </div>
@@ -377,10 +379,10 @@ export function FeedView({
             <img src={previewLightboxImage} alt="preview full" style={{ maxWidth: "92vw", maxHeight: "84vh", objectFit: "contain", display: "block" }} className="rounded shadow-2xl" />
             <button
               onClick={() => setPreviewLightboxImage(null)}
-              className="mt-4 text-xs px-4 py-1.5 rounded font-semibold"
+              className="mt-4 text-xs px-4 py-1.5 rounded font-semibold transition-colors"
               style={{ background: "var(--color-border)", color: "var(--color-white)" }}
             >
-              CLOSE
+              {t('common.close').toUpperCase()}
             </button>
           </div>
         </div>
@@ -388,4 +390,3 @@ export function FeedView({
     </div>
   );
 }
-

@@ -107,7 +107,7 @@
 
 ## 🛠️ Technical
 
-- [ ] **i18n / l10n** — internationalisation framework; provide RU, JA, ZH translations
+- [x] **i18n / l10n** — internationalisation framework; provide RU, JA, ZH translations
 - [ ] **Plugin system** — allow JS/WASM plugins to add metadata sources or UI panels
 - [ ] **REST API mode** — optional local HTTP server so external scripts can query/control the library
 - [ ] **Custom notification layer migration** — replace most system notifications with themed in-app / in-overlay notifications while keeping OS notifications only as optional fallback

@@ -1,3 +1,5 @@
+import { useTranslation } from "react-i18next";
+
 export interface RustLogEntry {
   ts: number;
   level: string;
@@ -108,6 +110,7 @@ export function LogViewerModal({
   onCopyJson: () => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const normLevel = (l: string): "error" | "warn" | "info" => {
     const x = l.toLowerCase();
     if (x.startsWith("err")) return "error";
@@ -124,17 +127,17 @@ export function LogViewerModal({
     <div className="fixed inset-0 z-[9999] flex items-center justify-center" style={{ background: "rgba(0,0,0,0.82)" }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="rounded-xl shadow-2xl w-[760px] max-h-[80vh] flex flex-col" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
         <div className="flex items-center px-5 py-3 border-b" style={{ borderColor: "var(--color-border-card)" }}>
-          <h2 className="font-bold text-sm" style={{ color: "var(--color-white)" }}>Rust Log Viewer</h2>
+          <h2 className="font-bold text-sm" style={{ color: "var(--color-white)" }}>{t('logs.title')}</h2>
           <div className="flex-1" />
-          {(["all", "error", "warn", "info"] as LogLevelFilter[]).map((lv) => <button key={lv} className="ml-1 text-[10px] uppercase px-2 py-1 rounded" style={{ background: levelFilter === lv ? "var(--color-accent-dark)" : "var(--color-panel-3)", color: levelFilter === lv ? "var(--color-white)" : "var(--color-text-muted)" }} onClick={() => onSetLevelFilter(lv)}>{lv}</button>)}
-          <button className="text-xs px-2 py-1 rounded" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }} onClick={onRefresh}>Refresh</button>
-          <button className="ml-2 text-xs px-2 py-1 rounded" style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)" }} onClick={onCopyJson}>Copy JSON</button>
-          <button className="ml-2 text-xs px-2 py-1 rounded" style={{ background: "#20323d", color: "var(--color-accent-soft)" }} onClick={onExport}>Export</button>
-          <button className="ml-2 text-xs px-2 py-1 rounded" style={{ background: "#3a2020", color: "var(--color-danger-soft)" }} onClick={onClear}>Clear</button>
+          {(["all", "error", "warn", "info"] as LogLevelFilter[]).map((lv) => <button key={lv} className="ml-1 text-[10px] uppercase px-2 py-1 rounded" style={{ background: levelFilter === lv ? "var(--color-accent-dark)" : "var(--color-panel-3)", color: levelFilter === lv ? "var(--color-white)" : "var(--color-text-muted)" }} onClick={() => onSetLevelFilter(lv)}>{t(`logs.filter_${lv}`)}</button>)}
+          <button className="text-xs px-2 py-1 rounded" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }} onClick={onRefresh}>{t('logs.refresh')}</button>
+          <button className="ml-2 text-xs px-2 py-1 rounded" style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)" }} onClick={onCopyJson}>{t('logs.copy_json')}</button>
+          <button className="ml-2 text-xs px-2 py-1 rounded" style={{ background: "#20323d", color: "var(--color-accent-soft)" }} onClick={onExport}>{t('logs.export')}</button>
+          <button className="ml-2 text-xs px-2 py-1 rounded" style={{ background: "#3a2020", color: "var(--color-danger-soft)" }} onClick={onClear}>{t('logs.clear')}</button>
           <button className="ml-2 text-sm" style={{ color: "var(--color-text-dim)" }} onClick={onClose}>✕</button>
         </div>
         <div className="px-5 py-2 text-[11px]" style={{ color: "var(--color-text-muted)" }}>
-          Found a bug? Please report it here:{" "}
+          {t('logs.bug_report')}{" "}
           <a href="https://github.com/Baconana-chan/Libmaly/issues" target="_blank" rel="noreferrer" style={{ color: "var(--color-accent)" }}>
             github.com/Baconana-chan/Libmaly/issues
           </a>

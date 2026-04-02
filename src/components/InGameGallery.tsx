@@ -1,5 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useMemo, useState } from "preact/hooks";
+import { useTranslation } from "react-i18next";
 
 interface ScreenshotItem {
   path: string;
@@ -24,6 +25,7 @@ export function InGameGallery({
 }) {
   const [lightbox, setLightbox] = useState<ScreenshotItem | null>(null);
   const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
+  const { t } = useTranslation();
 
   const filteredShots = activeTagFilter
     ? shots.filter((s) => s.tags?.includes(activeTagFilter))
@@ -40,7 +42,7 @@ export function InGameGallery({
       <div className="flex flex-col gap-2 mb-2">
         <div className="flex items-center gap-2">
           <h2 className="text-xs uppercase tracking-widest flex-1" style={{ color: "var(--color-text-muted)" }}>
-            In-Game Screenshots{" "}
+            {t('game.gallery.title')}{" "}
             {shots.length > 0 && <span style={{ color: "var(--color-text-dim)" }}>({shots.length})</span>}
           </h2>
           <button
@@ -55,7 +57,7 @@ export function InGameGallery({
               e.currentTarget.style.background = "var(--color-panel-3)";
               e.currentTarget.style.color = "var(--color-text-muted)";
             }}
-            title="Capture game window now (F12 hotkey works while game is running)"
+            title={t('game.gallery.capture_hint')}
           >
             <svg
               width="11"
@@ -70,7 +72,7 @@ export function InGameGallery({
               <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
               <circle cx="12" cy="13" r="4" />
             </svg>
-            Capture
+            {t('game.gallery.capture')}
           </button>
           <button
             onClick={onAnnotate}
@@ -84,9 +86,9 @@ export function InGameGallery({
               e.currentTarget.style.background = "var(--color-panel-3)";
               e.currentTarget.style.color = "var(--color-text-muted)";
             }}
-            title="Capture and annotate before saving (F10 hotkey while game is running)"
+            title={t('game.gallery.annotate_hint')}
           >
-            Annotate
+            {t('game.gallery.annotate')}
           </button>
           <button
             onClick={onOpenFolder}
@@ -113,7 +115,7 @@ export function InGameGallery({
             >
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
             </svg>
-            Folder
+            {t('game.gallery.folder')}
           </button>
           <button
             onClick={onExportZip}
@@ -132,7 +134,7 @@ export function InGameGallery({
                 e.currentTarget.style.color = "var(--color-text-muted)";
               }
             }}
-            title="Export all screenshots to a zip archive"
+            title={t('game.gallery.export_zip_hint')}
           >
             <svg
               width="11"
@@ -148,7 +150,7 @@ export function InGameGallery({
               <polyline points="7 10 12 15 17 10" />
               <line x1="12" y1="15" x2="12" y2="3" />
             </svg>
-            Export ZIP
+            {t('game.gallery.export_zip')}
           </button>
         </div>
 
@@ -163,7 +165,7 @@ export function InGameGallery({
                 border: "1px solid var(--color-panel-3)",
               }}
             >
-              ALL
+              {t('common.search').toUpperCase()}
             </button>
             {allShotTags.map((tag) => (
               <button
@@ -186,31 +188,7 @@ export function InGameGallery({
       {shots.length === 0 ? (
         <div className="rounded px-3 py-4 text-center" style={{ background: "var(--color-bg-elev)", border: "1px dashed var(--color-panel-3)" }}>
           <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
-            Press{" "}
-            <kbd
-              style={{
-                background: "var(--color-panel-3)",
-                color: "var(--color-text-muted)",
-                padding: "1px 5px",
-                borderRadius: "3px",
-                fontSize: "10px",
-              }}
-            >
-              F12
-            </kbd>{" "}
-            for quick capture or{" "}
-            <kbd
-              style={{
-                background: "var(--color-panel-3)",
-                color: "var(--color-text-muted)",
-                padding: "1px 5px",
-                borderRadius: "3px",
-                fontSize: "10px",
-              }}
-            >
-              F10
-            </kbd>{" "}
-            for annotate mode.
+            {t('game.gallery.hint')}
           </p>
         </div>
       ) : (

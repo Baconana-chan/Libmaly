@@ -1439,7 +1439,7 @@ pub async fn fetch_vndb_metadata(url: String) -> Result<GameMetadata, String> {
             .build()
             .map_err(|e| format!("VNDB Client failed: {}", e))?
             .post("https://api.vndb.org/kana/vn")
-            .header("User-Agent", "LIBMALY/1.5.3")
+            .header("User-Agent", "LIBMALY/1.5.4")
             .json(&body)
             .send()
             .await
@@ -1935,7 +1935,7 @@ async fn fetch_vndb_alias_queries(query: &str) -> Vec<String> {
 
     let resp = match client
         .post("https://api.vndb.org/kana/vn")
-        .header("User-Agent", "LIBMALY/1.5.3")
+        .header("User-Agent", "LIBMALY/1.5.4")
         .json(&body)
         .send()
         .await
@@ -2276,7 +2276,7 @@ pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>
 
         if let Ok(resp) = client
             .post("https://api.vndb.org/kana/vn")
-            .header("User-Agent", "LIBMALY/1.5.3")
+            .header("User-Agent", "LIBMALY/1.5.4")
             .json(&body)
             .send()
             .await

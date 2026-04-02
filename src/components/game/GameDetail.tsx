@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useTranslation } from "react-i18next";
 import { InGameGallery } from "../InGameGallery";
 import { NsfwOverlay } from "../common/NsfwOverlay";
 
@@ -57,13 +58,13 @@ interface GameCustomization {
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
 type RatingCategoryKey = "gameplay" | "story" | "soundtrack" | "visuals" | "characters" | "performance";
-const RATING_CATEGORIES: { key: RatingCategoryKey; label: string }[] = [
-  { key: "gameplay", label: "Gameplay" },
-  { key: "story", label: "Story" },
-  { key: "soundtrack", label: "Soundtrack" },
-  { key: "visuals", label: "Visuals" },
-  { key: "characters", label: "Characters" },
-  { key: "performance", label: "Performance" },
+const RATING_CATEGORIES: { key: RatingCategoryKey; labelKey: string }[] = [
+  { key: "gameplay", labelKey: "game.rating_categories.gameplay" },
+  { key: "story", labelKey: "game.rating_categories.story" },
+  { key: "soundtrack", labelKey: "game.rating_categories.soundtrack" },
+  { key: "visuals", labelKey: "game.rating_categories.visuals" },
+  { key: "characters", labelKey: "game.rating_categories.characters" },
+  { key: "performance", labelKey: "game.rating_categories.performance" },
 ];
 
 interface GameMetadata {
@@ -103,11 +104,11 @@ interface AppSettings {
   ratingScale: RatingScale;
 }
 
-function formatTime(s: number) {
+function formatTime(s: number, t: any) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
-  if (h > 0) return `${h} hrs ${m} mins`;
-  if (m > 0) return `${m} mins`;
-  return "< 1 min";
+  if (h > 0) return `${t('time.hours', { count: h })} ${t('time.minutes', { count: m })}`;
+  if (m > 0) return t('time.minutes', { count: m });
+  return t('time.less_than_minute');
 }
 
 function clampScore100(v: number) {
@@ -154,14 +155,14 @@ function scaleValueToScore100(value: number, scale: RatingScale): number {
   return 100;
 }
 
-function timeAgo(ts: number) {
-  if (!ts) return "Never";
+function timeAgo(ts: number, t: any) {
+  if (!ts) return t('time.never');
   const d = Math.floor((Date.now() - ts) / 86400000);
-  if (d === 0) return "Today";
-  if (d === 1) return "Yesterday";
-  if (d < 30) return `${d} days ago`;
+  if (d === 0) return t('time.today');
+  if (d === 1) return t('time.yesterday');
+  if (d < 30) return t('time.days_ago', { count: d });
   const mo = Math.floor(d / 30);
-  return mo < 12 ? `${mo} mo ago` : `${Math.floor(mo / 12)} yr ago`;
+  return mo < 12 ? t('time.months_ago', { count: mo }) : t('time.years_ago', { count: Math.floor(mo / 12) });
 }
 
 function heroGradient(name: string) {
@@ -242,6 +243,7 @@ function SettingsMenu({
   onCustomize: () => void;
   onManageCollections: () => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -270,7 +272,7 @@ function SettingsMenu({
             e.currentTarget.style.color = "var(--color-text-muted)";
           }
         }}
-        title="Game settings"
+        title={t('game.settings')}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="12" cy="12" r="3" />
@@ -279,12 +281,12 @@ function SettingsMenu({
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 z-30 rounded-lg py-1 shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)", minWidth: "180px" }}>
-          <MenuEntry icon="⭐" label={isFav ? "Remove from Favorites" : "Add to Favorites"} color={isFav ? "var(--color-warning)" : undefined} onClick={() => { setOpen(false); onToggleFav(); }} />
-          <MenuEntry icon={isHidden ? "👁" : "🙈"} label={isHidden ? "Unhide Game" : "Hide Game"} onClick={() => { setOpen(false); onToggleHide(); }} />
-          <MenuEntry icon="🎨" label="Customise…" onClick={() => { setOpen(false); onCustomize(); }} />
-          <MenuEntry icon="📁" label="Collections…" onClick={() => { setOpen(false); onManageCollections(); }} />
+          <MenuEntry icon="⭐" label={isFav ? t('game.menu.fav_remove') : t('game.menu.fav_add')} color={isFav ? "var(--color-warning)" : undefined} onClick={() => { setOpen(false); onToggleFav(); }} />
+          <MenuEntry icon={isHidden ? "👁" : "🙈"} label={isHidden ? t('game.menu.unhide') : t('game.menu.hide')} onClick={() => { setOpen(false); onToggleHide(); }} />
+          <MenuEntry icon="🎨" label={t('game.menu.customize')} onClick={() => { setOpen(false); onCustomize(); }} />
+          <MenuEntry icon="📁" label={t('game.menu.collections')} onClick={() => { setOpen(false); onManageCollections(); }} />
           <div style={{ borderTop: "1px solid var(--color-panel-3)", margin: "3px 0" }} />
-          <MenuEntry icon="🗑" label="Uninstall" color="var(--color-danger)" onClick={() => { setOpen(false); onDelete(); }} />
+          <MenuEntry icon="🗑" label={t('game.menu.uninstall')} color="var(--color-danger)" onClick={() => { setOpen(false); onDelete(); }} />
         </div>
       )}
     </div>
@@ -316,6 +318,7 @@ const MILESTONES = [
 ];
 
 function PlayChart({ sessions, gamePath, days = 7 }: { sessions: SessionEntry[]; gamePath: string | null; days?: number }) {
+  const { t } = useTranslation();
   const data = sessionsPerDay(sessions, gamePath, days);
   const maxSecs = Math.max(...data.map((d) => d.secs), 1);
   const H = 80;
@@ -332,7 +335,7 @@ function PlayChart({ sessions, gamePath, days = 7 }: { sessions: SessionEntry[];
           return (
             <g key={i}>
               <rect x={`${xPct}%`} y={H - barH} width={`${barWPct}%`} height={barH} rx="2" fill={d.secs > 0 ? "var(--color-accent-dark)" : "var(--color-panel-low)"} style={{ transition: "height 0.3s" }}>
-                {d.secs > 0 && <title>{formatTime(d.secs)}</title>}
+                {d.secs > 0 && <title>{formatTime(d.secs, t)}</title>}
               </rect>
               <text x={`${i * wPct + wPct / 2}%`} y={H + 14} textAnchor="middle" fontSize="9" fill="var(--color-text-dim)">
                 {d.label}
@@ -346,13 +349,14 @@ function PlayChart({ sessions, gamePath, days = 7 }: { sessions: SessionEntry[];
 }
 
 function Milestones({ totalSecs }: { totalSecs: number }) {
+  const { t } = useTranslation();
   const totalH = totalSecs / 3600;
   const achieved = MILESTONES.filter((m) => totalH >= m.hours);
   const next = MILESTONES.find((m) => totalH < m.hours);
   if (achieved.length === 0 && !next) return null;
   return (
     <div>
-      <p className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Milestones</p>
+      <p className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.milestones')}</p>
       <div className="flex flex-wrap gap-1.5 mb-1">
         {achieved.map((m) => (
           <span key={m.label} className="px-2 py-0.5 rounded-full text-[10px] font-bold" style={{ background: m.color + "22", color: m.color, border: `1px solid ${m.color}55` }} title={`${m.hours}h played`}>
@@ -363,7 +367,7 @@ function Milestones({ totalSecs }: { totalSecs: number }) {
       {next && (
         <div className="mt-1">
           <div className="flex justify-between text-[9px] mb-0.5" style={{ color: "var(--color-text-dim)" }}>
-            <span>Next: {next.label}</span>
+            <span>{t('game.next_milestone', { label: next.label })}</span>
             <span>{Math.round((totalH / next.hours) * 100)}%</span>
           </div>
           <div className="h-1 rounded-full overflow-hidden" style={{ background: "var(--color-panel-low)" }}>
@@ -376,6 +380,7 @@ function Milestones({ totalSecs }: { totalSecs: number }) {
 }
 
 function SessionTimeline({ sessions, gamePath, onEditNote }: { sessions: SessionEntry[]; gamePath: string; onEditNote: (entry: SessionEntry) => void }) {
+  const { t } = useTranslation();
   const entries = useMemo(() => sessions.filter((s) => s.path === gamePath).sort((a, b) => b.startedAt - a.startedAt).slice(0, 50), [sessions, gamePath]);
   const moodStyles: Record<string, { label: string; color: string; bg: string }> = {
     hype: { label: "hype", color: "var(--color-warning)", bg: "var(--color-warning-bg)" },
@@ -383,7 +388,7 @@ function SessionTimeline({ sessions, gamePath, onEditNote }: { sessions: Session
     chaos: { label: "chaos", color: "var(--color-danger)", bg: "var(--color-danger-bg)" },
   };
   if (entries.length === 0) {
-    return <div className="rounded px-3 py-4 text-center text-xs" style={{ background: "var(--color-bg-overlay)", color: "var(--color-text-dim)" }}>No sessions recorded yet — play the game to see history here.</div>;
+    return <div className="rounded px-3 py-4 text-center text-xs" style={{ background: "var(--color-bg-overlay)", color: "var(--color-text-dim)" }}>{t('game.no_history')}</div>;
   }
   return (
     <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
@@ -398,7 +403,7 @@ function SessionTimeline({ sessions, gamePath, onEditNote }: { sessions: Session
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[10px]" style={{ color: "var(--color-accent)" }}>{dateStr} {timeStr}</span>
-                <span className="text-[10px] font-semibold" style={{ color: "var(--color-text)" }}>{formatTime(s.duration)}</span>
+                <span className="text-[10px] font-semibold" style={{ color: "var(--color-text)" }}>{formatTime(s.duration, t)}</span>
                 {mood && (
                   <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide"
                     style={{ color: mood.color, background: mood.bg, border: `1px solid ${mood.color}55` }}>
@@ -419,6 +424,7 @@ function SessionTimeline({ sessions, gamePath, onEditNote }: { sessions: Session
 }
 
 function VersionTimeline({ history, onAddHistory }: { history: HistoryEntry[]; onAddHistory: (v: string, n: string) => void }) {
+  const { t } = useTranslation();
   const [isAdding, setIsAdding] = useState(false);
   const [draftV, setDraftV] = useState("");
   const [draftN, setDraftN] = useState("");
@@ -432,8 +438,8 @@ function VersionTimeline({ history, onAddHistory }: { history: HistoryEntry[]; o
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center mb-2">
-        <h2 className="text-xs uppercase tracking-widest text-[var(--color-text-muted)]">Version History</h2>
-        <button onClick={() => setIsAdding(!isAdding)} className="text-xs text-[var(--color-accent)] hover:underline">{isAdding ? "Cancel" : " Log update"}</button>
+        <h2 className="text-xs uppercase tracking-widest text-[var(--color-text-muted)]">{t('game.version_history')}</h2>
+        <button onClick={() => setIsAdding(!isAdding)} className="text-xs text-[var(--color-accent)] hover:underline">{isAdding ? t('common.cancel') : t('game.log_update')}</button>
       </div>
       {isAdding && (
         <div className="p-3 rounded mb-4" style={{ background: "var(--color-panel-3)", border: "1px solid var(--color-border-strong)" }}>
@@ -445,7 +451,7 @@ function VersionTimeline({ history, onAddHistory }: { history: HistoryEntry[]; o
         </div>
       )}
       {history.length === 0 ? (
-        <p className="text-xs text-[var(--color-text-dim)] italic">No version history logged yet.</p>
+        <p className="text-xs text-[var(--color-text-dim)] italic">{t('game.no_version_history')}</p>
       ) : (
         <div className="relative border-l border-[var(--color-border)] ml-2 pl-4 pb-1">
           {history.map((h) => (
@@ -453,7 +459,7 @@ function VersionTimeline({ history, onAddHistory }: { history: HistoryEntry[]; o
               <div className="absolute w-2 h-2 rounded-full bg-[var(--color-accent)] -left-[21px] top-1 transition-transform group-hover:scale-125" />
               <div className="flex items-baseline gap-2 mb-0.5">
                 <span className="font-mono text-sm font-bold text-[var(--color-danger)]">{h.version}</span>
-                <span className="text-[10px] text-[var(--color-text-dim)]" title={new Date(h.date).toLocaleString()}>{timeAgo(h.date)}</span>
+                <span className="text-[10px] text-[var(--color-text-dim)]" title={new Date(h.date).toLocaleString()}>{timeAgo(h.date, t)}</span>
               </div>
               <p className="text-xs text-[var(--color-text-soft)] leading-relaxed">{h.note}</p>
             </div>
@@ -541,6 +547,7 @@ export function GameDetail({
   history: HistoryEntry[];
   onAddHistory: (version: string, note: string) => void;
 }) {
+  const { t } = useTranslation();
   const [activeShot, setActiveShot] = useState(0);
   const [metaLightboxShot, setMetaLightboxShot] = useState<string | null>(null);
   const [reviewDraft, setReviewDraft] = useState(customization.personalReview ?? "");
@@ -596,7 +603,7 @@ export function GameDetail({
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /><line x1="1" y1="1" x2="23" y2="23" />
                     </svg>
-                    Hidden
+                    {t('game.hidden')}
                   </span>
                 )}
               </div>
@@ -605,7 +612,7 @@ export function GameDetail({
             </div>
             {meta?.rating && (
               <div className="text-right mb-1">
-                <p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>Rating</p>
+                <p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>{t('game.rating')}</p>
                 <p className="font-bold" style={{ color: "var(--color-warning)" }}>★ {meta.rating}</p>
               </div>
             )}
@@ -624,15 +631,15 @@ export function GameDetail({
           onMouseLeave={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "var(--color-stop-bg)" : "var(--color-play-bg)"; }}
         >
           {game.uninstalled ? (
-            "Folder missing"
+            t('game.folder_missing')
           ) : isRunning ? (
             <>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" /></svg>Stop
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" /></svg>{t('game.stop')}
             </>
           ) : (
             <>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-              Play{runnerLabel && <span className="ml-1 text-[10px] font-normal normal-case opacity-80">via {runnerLabel}</span>}
+              {t('game.play')}{runnerLabel && <span className="ml-1 text-[10px] font-normal normal-case opacity-80">{t('game.via', { runner: runnerLabel })}</span>}
             </>
           )}
         </button>
@@ -653,32 +660,32 @@ export function GameDetail({
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
           </svg>
-          {meta ? "Re-link" : "Link Page"}
+          {meta ? t('game.relink_page') : t('game.link_page')}
         </button>
         <button onClick={onUpdate} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }} title="Install a new version safely (preserves saves)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" /><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
           </svg>
-          Update
+          {t('game.update.label')}
         </button>
         <button onClick={onBackupSaves} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }} title="Detect and back up save files to zip">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
           </svg>
-          Backup Saves
+          {t('game.backup_saves')}
         </button>
         <button onClick={onOpenNotes} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: hasNotes ? "#1e2d1a" : "var(--color-panel-3)", color: hasNotes ? "var(--color-success)" : "var(--color-text-muted)", border: `1px solid ${hasNotes ? "var(--color-success-border)" : "var(--color-border-strong)"}` }} title="Game notes (Markdown supported)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
           </svg>
-          Notes{hasNotes && <span className="w-1.5 h-1.5 rounded-full bg-current ml-0.5" />}
+          {t('game.notes')}{hasNotes && <span className="w-1.5 h-1.5 rounded-full bg-current ml-0.5" />}
         </button>
         {meta && (
           <a href={meta.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "var(--color-panel-2)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
             </svg>
-            Open {sourceLabel(meta.source)}
+            {t('common.open')} {sourceLabel(meta.source)}
           </a>
         )}
         {!f95LoggedIn && (
@@ -690,7 +697,7 @@ export function GameDetail({
           </button>
         )}
         <div className="flex-1" />
-        {meta && <button onClick={onClearMeta} className="px-3 py-2 rounded text-xs" style={{ background: "transparent", color: "var(--color-text-dim)" }} title="Remove linked metadata">✕ Unlink</button>}
+        {meta && <button onClick={onClearMeta} className="px-3 py-2 rounded text-xs" style={{ background: "transparent", color: "var(--color-text-dim)" }}>✕ {t('game.unlink')}</button>}
         <SettingsMenu isHidden={isHidden} isFav={isFav} onDelete={onDelete} onToggleHide={onToggleHide} onToggleFav={onToggleFav} onCustomize={onOpenCustomize} onManageCollections={onManageCollections} />
       </div>
 
@@ -699,7 +706,7 @@ export function GameDetail({
           <div className="flex-1 min-w-0 space-y-5">
             {(meta?.overview_html || meta?.overview) && (
               <section>
-                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Overview</h2>
+                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.overview')}</h2>
                 {meta.overview_html ? (
                   <div className="text-sm leading-relaxed dlsite-overview" style={{ color: "var(--color-text-soft)" }} dangerouslySetInnerHTML={{ __html: meta.overview_html }} />
                 ) : (
@@ -711,7 +718,7 @@ export function GameDetail({
             )}
             {shots.length > 0 && (
               <section>
-                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Screenshots</h2>
+                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.screenshots')}</h2>
                 <div className="rounded overflow-hidden mb-2" style={{ background: "var(--color-bg-deep)" }}>
                   <button
                     onClick={() => setMetaLightboxShot(shots[activeShot])}
@@ -732,12 +739,12 @@ export function GameDetail({
             )}
             {meta?.tags && meta.tags.length > 0 && (
               <section>
-                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Tags</h2>
+                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.tags')}</h2>
                 <div className="flex flex-wrap gap-1.5">{meta.tags.map((t) => <TagBadge key={t} text={t} />)}</div>
               </section>
             )}
             <section>
-              <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center justify-between" style={{ color: "var(--color-text-muted)" }}><span>Custom Tags</span></h2>
+              <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center justify-between" style={{ color: "var(--color-text-muted)" }}><span>{t('game.custom_tags')}</span></h2>
               <div className="flex flex-wrap gap-1.5 items-center">
                 {customization.customTags?.map((t) => (
                   <span key={t} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded cursor-pointer group" style={{ background: "var(--color-border)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }} onClick={() => { const tags = customization.customTags?.filter((x) => x !== t) || []; onSaveCustomization({ customTags: tags }); }}>
@@ -746,7 +753,7 @@ export function GameDetail({
                 ))}
                 <input
                   type="text"
-                  placeholder=" add tag"
+                  placeholder={t('library.search')}
                   className="bg-transparent border border-dashed border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)] transition-colors text-xs px-2 py-0.5 rounded outline-none w-24 focus:w-32 focus:border-solid focus:border-[var(--color-accent)] focus:text-[var(--color-white)]"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
@@ -764,14 +771,14 @@ export function GameDetail({
             </section>
             {!meta && (
               <div className="rounded-lg px-6 py-8 text-center" style={{ background: "var(--color-bg-elev)", border: "2px dashed var(--color-panel-3)" }}>
-                <p className="text-sm mb-1" style={{ color: "var(--color-text-muted)" }}>No metadata linked yet.</p>
-                <p className="text-xs mb-4" style={{ color: "var(--color-text-dim)" }}>Link an F95zone, DLsite, VNDB, MangaGamer, Johren or FAKKU page to get cover art, description, tags and more.</p>
-                <button onClick={onLinkPage} className="px-5 py-2 rounded text-sm font-semibold" style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>Link a Page</button>
+                <p className="text-sm mb-1" style={{ color: "var(--color-text-muted)" }}>{t('game.no_meta_linked')}</p>
+                <p className="text-xs mb-4" style={{ color: "var(--color-text-dim)" }}>{t('game.no_meta_hint')}</p>
+                <button onClick={onLinkPage} className="px-5 py-2 rounded text-sm font-semibold" style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>{t('game.link_page')}</button>
               </div>
             )}
             {meta?.relations && meta.relations.length > 0 && (
               <section>
-                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Relations</h2>
+                <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.relations')}</h2>
                 <div className="space-y-1">
                   {meta.relations.map((r, i) => (
                     <p key={`${r}-${i}`} className="text-xs" style={{ color: "var(--color-text-soft)" }}>{r}</p>
@@ -781,7 +788,7 @@ export function GameDetail({
             )}
             <InGameGallery shots={screenshots} onTake={onTakeScreenshot} onAnnotate={onAnnotateScreenshot} onOpenFolder={onOpenScreenshotsFolder} onExportZip={onExportGalleryZip} onUpdateTags={onUpdateScreenshotTags} />
             <section>
-              <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>Play History</h2>
+              <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.history')}</h2>
               <SessionTimeline sessions={sessions} gamePath={game.path} onEditNote={onEditSessionNote} />
             </section>
             <section>
@@ -790,23 +797,28 @@ export function GameDetail({
           </div>
           <div className="flex-shrink-0 w-60 space-y-4">
             <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
-              <h2 className="text-xs uppercase tracking-widest" style={{ color: "var(--color-text-muted)" }}>Your Stats</h2>
-              <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Total playtime</p><p className="text-base font-semibold" style={{ color: "var(--color-text)" }}>{stat.totalTime > 0 ? formatTime(stat.totalTime) : "—"}</p></div>
-              <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Last played</p><p className="text-sm" style={{ color: "var(--color-text)" }}>{timeAgo(stat.lastPlayed)}</p></div>
-              {stat.lastSession > 0 && <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Last session</p><p className="text-sm" style={{ color: "var(--color-text)" }}>{formatTime(stat.lastSession)}</p></div>}
-              {(stat.launchCount ?? 0) > 0 && <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Times played</p><p className="text-sm font-semibold" style={{ color: "var(--color-accent)" }}>{stat.launchCount} {stat.launchCount === 1 ? "session" : "sessions"}</p></div>}
-              {sessions.some((s) => s.path === game.path) && <div><p className="text-xs mb-2" style={{ color: "var(--color-text-muted)" }}>This week</p><PlayChart sessions={sessions} gamePath={game.path} /></div>}
+              <h2 className="text-xs uppercase tracking-widest" style={{ color: "var(--color-text-muted)" }}>{t('game.your_stats')}</h2>
+              <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>{t('game.total_playtime')}</p><p className="text-base font-semibold" style={{ color: "var(--color-text)" }}>{stat.totalTime > 0 ? formatTime(stat.totalTime, t) : "—"}</p></div>
+              <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>{t('game.last_played')}</p><p className="text-sm" style={{ color: "var(--color-text)" }}>{timeAgo(stat.lastPlayed, t)}</p></div>
+              {stat.lastSession > 0 && <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>{t('game.last_session')}</p><p className="text-sm" style={{ color: "var(--color-text)" }}>{formatTime(stat.lastSession, t)}</p></div>}
+              {(stat.launchCount ?? 0) > 0 && <div><p className="text-xs" style={{ color: "var(--color-text-muted)" }}>{t('game.times_played_label')}</p><p className="text-sm font-semibold" style={{ color: "var(--color-accent)" }}>{t('game.times_played', { count: stat.launchCount })}</p></div>}
+              {sessions.some((s) => s.path === game.path) && <div><p className="text-xs mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.this_week')}</p><PlayChart sessions={sessions} gamePath={game.path} /></div>}
             </div>
             <div className="rounded-lg p-4 space-y-4" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
               <div>
-                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>Completion Status</label>
+                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>{t('library.filters.completion_status')}</label>
                 <select value={customization.status || ""} onChange={(e) => onSaveCustomization({ status: ((e.target as HTMLSelectElement).value || undefined) as any })} className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)] cursor-pointer" style={{ backgroundImage: "none" }}>
-                  <option value="">- Not Set -</option><option value="Playing">▶ Playing</option><option value="Completed">✓ Completed</option><option value="On Hold">⏸ On Hold</option><option value="Dropped">⏹ Dropped</option><option value="Plan to Play">📅 Plan to Play</option>
+                  <option value="">{t('library.status_options.not_set')}</option>
+                  <option value="Playing">{t('library.status_options.playing')}</option>
+                  <option value="Completed">{t('library.status_options.completed')}</option>
+                  <option value="On Hold">{t('library.status_options.on_hold')}</option>
+                  <option value="Dropped">{t('library.status_options.dropped')}</option>
+                  <option value="Plan to Play">{t('library.status_options.plan_to_play')}</option>
                 </select>
               </div>
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs uppercase tracking-widest" style={{ color: "var(--color-text-muted)" }}>Overall Rating</label>
+                  <label className="block text-xs uppercase tracking-widest" style={{ color: "var(--color-text-muted)" }}>{t('game.overall_rating')}</label>
                   <span className="text-xs font-semibold" style={{ color: "var(--color-warning)" }}>
                     {typeof overall100 === "number" ? formatScoreForScale(overall100, ratingScale) : "—"}
                   </span>
@@ -819,8 +831,8 @@ export function GameDetail({
                   className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)] cursor-pointer"
                   style={{ backgroundImage: "none" }}
                 >
-                  <option value="categories">Auto (from categories)</option>
-                  <option value="manual">Manual overall</option>
+                  <option value="categories">{t('game.rating_mode_auto')}</option>
+                  <option value="manual">{t('game.rating_mode_manual')}</option>
                 </select>
                 {ratingMode === "manual" && (
                   <div className="flex items-center gap-2 mt-2">
@@ -843,11 +855,11 @@ export function GameDetail({
                 )}
               </div>
               <div>
-                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>Category Ratings</label>
+                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>{t('game.category_ratings')}</label>
                 <div className="space-y-1.5">
                   {RATING_CATEGORIES.map((cat) => (
                     <div key={cat.key} className="flex items-center gap-2">
-                      <span className="text-[11px] w-20" style={{ color: "var(--color-text-muted)" }}>{cat.label}</span>
+                      <span className="text-[11px] w-20" style={{ color: "var(--color-text-muted)" }}>{t(cat.labelKey)}</span>
                       <input
                         type="number"
                         min={ratingCfg.min}
@@ -862,7 +874,7 @@ export function GameDetail({
                           onSaveCustomization({ categoryRatings: next });
                         }}
                         className="flex-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1 text-xs outline-none text-[var(--color-text)]"
-                        placeholder="Unrated"
+                        placeholder={t('game.unrated')}
                       />
                     </div>
                   ))}
@@ -872,11 +884,11 @@ export function GameDetail({
                 )}
               </div>
               <div>
-                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }} title="Show a toast warning when you exceed this time in a single launch">Time Budget (mins)</label>
-                <input type="number" min="0" placeholder="No limit" value={customization.timeLimitMins || ""} onChange={(e) => { const el = e.target as HTMLInputElement; onSaveCustomization({ timeLimitMins: el.value ? parseInt(el.value) : undefined }); }} className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)]" />
+                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }} title={t('game.time_budget_hint')}>{t('game.time_budget')}</label>
+                <input type="number" min="0" placeholder={t('game.no_limit')} value={customization.timeLimitMins || ""} onChange={(e) => { const el = e.target as HTMLInputElement; onSaveCustomization({ timeLimitMins: el.value ? parseInt(el.value) : undefined }); }} className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)]" />
               </div>
               <div>
-                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>Short Review</label>
+                <label className="block text-xs uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>{t('game.short_review')}</label>
                 <textarea
                   value={reviewDraft}
                   onInput={(e) => setReviewDraft((e.target as HTMLTextAreaElement).value)}
@@ -884,35 +896,35 @@ export function GameDetail({
                   rows={4}
                   maxLength={600}
                   className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1.5 text-xs outline-none text-[var(--color-text)] resize-y"
-                  placeholder="Your personal notes/review (stored locally)"
+                  placeholder={t('game.review_placeholder')}
                 />
               </div>
             </div>
             {stat.totalTime > 0 && <div className="rounded-lg p-4" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}><Milestones totalSecs={stat.totalTime} /></div>}
             {meta && (
               <div className="rounded-lg p-4 space-y-2" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
-                <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "var(--color-text-muted)" }}>Game Info</h2>
-                <MetaRow label="Developer" value={meta.developer} /><MetaRow label="Version" value={meta.version} /><MetaRow label="Engine" value={meta.engine} /><MetaRow label="OS" value={meta.os} /><MetaRow label="Language" value={meta.language} /><MetaRow label="Censored" value={meta.censored} /><MetaRow label="Released" value={meta.release_date} /><MetaRow label="Updated" value={meta.last_updated} /><MetaRow label="Price" value={meta.price} />
-                <MetaRow label="Circle" value={meta.circle} /><MetaRow label="Series" value={meta.series} /><MetaRow label="Author" value={meta.author} /><MetaRow label="Illustration" value={meta.illustration} /><MetaRow label="Voice Actor" value={meta.voice_actor} /><MetaRow label="Music" value={meta.music} /><MetaRow label="Age Rating" value={meta.age_rating} /><MetaRow label="Format" value={meta.product_format} /><MetaRow label="File Format" value={meta.file_format} /><MetaRow label="File Size" value={meta.file_size} />
+                <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "var(--color-text-muted)" }}>{t('game.info')}</h2>
+                <MetaRow label={t('game.meta.developer')} value={meta.developer} /><MetaRow label={t('game.meta.version')} value={meta.version} /><MetaRow label={t('game.meta.engine')} value={meta.engine} /><MetaRow label={t('game.meta.os')} value={meta.os} /><MetaRow label={t('game.meta.language')} value={meta.language} /><MetaRow label={t('game.meta.censored')} value={meta.censored} /><MetaRow label={t('game.meta.released')} value={meta.release_date} /><MetaRow label={t('game.meta.updated')} value={meta.last_updated} /><MetaRow label={t('game.meta.price')} value={meta.price} />
+                <MetaRow label={t('game.meta.circle')} value={meta.circle} /><MetaRow label={t('game.meta.series')} value={meta.series} /><MetaRow label={t('game.meta.author')} value={meta.author} /><MetaRow label={t('game.meta.illustration')} value={meta.illustration} /><MetaRow label={t('game.meta.voice_actor')} value={meta.voice_actor} /><MetaRow label={t('game.meta.music')} value={meta.music} /><MetaRow label={t('game.meta.age_rating')} value={meta.age_rating} /><MetaRow label={t('game.meta.format')} value={meta.product_format} /><MetaRow label={t('game.meta.file_format')} value={meta.file_format} /><MetaRow label={t('game.meta.file_size')} value={meta.file_size} />
               </div>
             )}
             <div className="rounded-lg p-4 space-y-2" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
-              <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "var(--color-text-muted)" }}>Files</h2>
+              <h2 className="text-xs uppercase tracking-widest mb-3" style={{ color: "var(--color-text-muted)" }}>{t('game.files.title')}</h2>
               {customization.exeOverride ? (
                 <>
                   <div>
                     <div className="flex items-center gap-1.5 mb-0.5">
-                      <p className="text-xs" style={{ color: "var(--color-warning)" }}>Launch override</p>
-                      <span className="text-[9px] px-1.5 py-px rounded font-semibold" style={{ background: "#3a2800", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>active</span>
+                      <p className="text-xs" style={{ color: "var(--color-warning)" }}>{t('game.files.launch_override')}</p>
+                      <span className="text-[9px] px-1.5 py-px rounded font-semibold" style={{ background: "#3a2800", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>{t('game.files.active')}</span>
                     </div>
                     <p className="text-xs font-mono break-all" style={{ color: "var(--color-warning)" }}>{customization.exeOverride}</p>
                   </div>
-                  <div><p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>Scanned exe</p><p className="text-xs font-mono break-all" style={{ color: "var(--color-text-dim)" }}>{game.path}</p></div>
+                  <div><p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>{t('game.files.scanned_exe')}</p><p className="text-xs font-mono break-all" style={{ color: "var(--color-text-dim)" }}>{game.path}</p></div>
                 </>
               ) : (
-                <div><p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>Executable</p><p className="text-xs font-mono break-all" style={{ color: "var(--color-accent)" }}>{game.path}</p></div>
+                <div><p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>{t('game.files.executable')}</p><p className="text-xs font-mono break-all" style={{ color: "var(--color-accent)" }}>{game.path}</p></div>
               )}
-              <div><p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>Folder</p><p className="text-xs font-mono break-all" style={{ color: "var(--color-text)" }}>{game.path.replace(/[\\/][^\\/]$/, "")}</p></div>
+              <div><p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>{t('game.files.folder')}</p><p className="text-xs font-mono break-all" style={{ color: "var(--color-text)" }}>{game.path.replace(/[\\/][^\\/]$/, "")}</p></div>
             </div>
           </div>
         </div>
@@ -938,7 +950,7 @@ export function GameDetail({
               onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-border-strong)")}
               onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-border)")}
             >
-              CLOSE
+              {t('common.close').toUpperCase()}
             </button>
           </div>
         </div>

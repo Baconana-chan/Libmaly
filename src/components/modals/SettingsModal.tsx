@@ -1,4 +1,5 @@
 import { useMemo, useState } from "preact/hooks";
+import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
 
 interface Game { name: string; path: string; }
@@ -48,36 +49,37 @@ interface AppSettingsLike {
   bossKeyMuteSystem?: boolean;
   bossKeyFallbackUrl?: string;
   customThemeColors?: Record<string, string>;
+  language?: string;
 }
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
-  { value: "dark", label: "Dark" },
-  { value: "light", label: "Light" },
-  { value: "oled", label: "OLED Black" },
-  { value: "citrus-sherbert", label: "Citrus Sherbert" },
-  { value: "retro-raincloud", label: "Retro Raincloud" },
-  { value: "sunrise", label: "Sunrise" },
-  { value: "lofi-vibes", label: "LoFi Vibes" },
-  { value: "desert-khaki", label: "Desert Khaki" },
-  { value: "chroma-glow", label: "Chroma Glow" },
-  { value: "forest", label: "Forest" },
-  { value: "midnight-blurple", label: "Midnight Blurple" },
-  { value: "mars", label: "Mars" },
-  { value: "dusk", label: "Dusk" },
-  { value: "retro-storm", label: "Retro Storm" },
-  { value: "neon-nights", label: "Neon Nights" },
-  { value: "strawberry-lemonade", label: "Strawberry Lemonade" },
-  { value: "aurora", label: "Aurora" },
-  { value: "blurple-twilight", label: "Blurple Twilight" },
-  { value: "mint-apple", label: "Mint Apple" },
-  { value: "hanami", label: "Hanami" },
-  { value: "dawn", label: "Dawn" },
-  { value: "sunset", label: "Sunset" },
-  { value: "crimson-moon", label: "Crimson Moon" },
-  { value: "sepia", label: "Sepia" },
-  { value: "cotton-candy", label: "Cotton Candy" },
-  { value: "ocean-deep", label: "Ocean Deep" },
-  { value: "custom", label: "Custom Personal Theme" },
+  { value: "dark", label: "themes.dark" },
+  { value: "light", label: "themes.light" },
+  { value: "oled", label: "themes.oled" },
+  { value: "citrus-sherbert", label: "themes.citrus" },
+  { value: "retro-raincloud", label: "themes.retro_raincloud" },
+  { value: "sunrise", label: "themes.sunrise" },
+  { value: "lofi-vibes", label: "themes.lofi" },
+  { value: "desert-khaki", label: "themes.desert" },
+  { value: "chroma-glow", label: "themes.chroma" },
+  { value: "forest", label: "themes.forest" },
+  { value: "midnight-blurple", label: "themes.midnight" },
+  { value: "mars", label: "themes.mars" },
+  { value: "dusk", label: "themes.dusk" },
+  { value: "retro-storm", label: "themes.retro_storm" },
+  { value: "neon-nights", label: "themes.neon" },
+  { value: "strawberry-lemonade", label: "themes.strawberry" },
+  { value: "aurora", label: "themes.aurora" },
+  { value: "blurple-twilight", label: "themes.twilight" },
+  { value: "mint-apple", label: "themes.mint" },
+  { value: "hanami", label: "themes.hanami" },
+  { value: "dawn", label: "themes.dawn" },
+  { value: "sunset", label: "themes.sunset" },
+  { value: "crimson-moon", label: "themes.crimson" },
+  { value: "sepia", label: "themes.sepia" },
+  { value: "cotton-candy", label: "themes.candy" },
+  { value: "ocean-deep", label: "themes.ocean" },
+  { value: "custom", label: "themes.custom" },
 ];
 
 const DAY_THEME_OPTIONS = THEME_OPTIONS.filter((theme) =>
@@ -124,6 +126,7 @@ function MigrationWizardModal({
   onApply: (oldRoot: string, newRoot: string) => Promise<number>;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [oldRoot, setOldRoot] = useState("");
   const [newRoot, setNewRoot] = useState("");
   const [working, setWorking] = useState(false);
@@ -144,21 +147,21 @@ function MigrationWizardModal({
   const apply = async () => {
     setError("");
     if (!oldRoot.trim() || !newRoot.trim()) {
-      setError("Choose both old and new folders.");
+      setError(t('common.migration.error_select_both'));
       return;
     }
     if (normalizePathForMatch(oldRoot) === normalizePathForMatch(newRoot)) {
-      setError("Old and new folder are the same.");
+      setError(t('common.migration.error_same_folder'));
       return;
     }
     if (matchedCount === 0) {
-      setError("No games found under the selected old folder.");
+      setError(t('common.migration.error_no_matches'));
       return;
     }
     setWorking(true);
     try {
       const moved = await onApply(oldRoot, newRoot);
-      alert(`Migration finished. Updated ${moved} game path(s).`);
+      alert(t('common.migration.success', { count: moved }));
       onClose();
     } catch (e) {
       setError(String(e));
@@ -176,16 +179,16 @@ function MigrationWizardModal({
       <div className="rounded-xl shadow-2xl w-[640px] max-w-[92vw] max-h-[85vh] flex flex-col"
         style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
         <div className="flex items-center gap-3 px-5 py-3 border-b" style={{ borderColor: "var(--color-border-card)" }}>
-          <h2 className="font-bold text-sm" style={{ color: "var(--color-white)" }}>Migration Wizard: Move Game Folder</h2>
+          <h2 className="font-bold text-sm" style={{ color: "var(--color-white)" }}>{t('common.migration.title')}</h2>
           <div className="flex-1" />
           <button onClick={onClose} className="text-sm" style={{ color: "var(--color-text-dim)" }}>✕</button>
         </div>
         <div className="px-5 py-4 space-y-3 text-xs" style={{ color: "var(--color-text-muted)" }}>
           <p>
-            Use this after moving game files on disk. LIBMALY will rewrite internal paths and keep stats, metadata, notes, collections, history, and ratings.
+            {t('common.migration.description')}
           </p>
           <div className="space-y-2">
-            <label className="block text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Old folder (before move)</label>
+            <label className="block text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('common.migration.old_folder')}</label>
             <div className="flex gap-2">
               <input
                 value={oldRoot}
@@ -195,11 +198,11 @@ function MigrationWizardModal({
                 style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
               />
               <button onClick={() => pickFolder("old")} className="px-3 py-2 rounded text-xs font-semibold"
-                style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>Browse</button>
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>{t('common.migration.browse')}</button>
             </div>
           </div>
           <div className="space-y-2">
-            <label className="block text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>New folder (after move)</label>
+            <label className="block text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('common.migration.new_folder')}</label>
             <div className="flex gap-2">
               <input
                 value={newRoot}
@@ -209,23 +212,23 @@ function MigrationWizardModal({
                 style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
               />
               <button onClick={() => pickFolder("new")} className="px-3 py-2 rounded text-xs font-semibold"
-                style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>Browse</button>
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>{t('common.migration.browse')}</button>
             </div>
           </div>
           <div className="rounded p-2.5" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
             <p style={{ color: "var(--color-text-muted)" }}>
-              Matched games: <span style={{ color: "var(--color-accent)" }}>{matchedCount}</span>
+              {t('common.migration.matched_games', { count: matchedCount })}
             </p>
           </div>
           {error && <p style={{ color: "var(--color-danger)" }}>{error}</p>}
         </div>
         <div className="flex justify-end gap-2 px-5 py-3 border-t" style={{ borderColor: "var(--color-border-card)" }}>
           <button onClick={onClose} className="px-3 py-1.5 rounded text-xs" style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
-            Cancel
+            {t('common.migration.cancel')}
           </button>
           <button onClick={apply} disabled={working} className="px-4 py-1.5 rounded text-xs font-semibold disabled:opacity-50"
             style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>
-            {working ? "Migrating..." : "Apply Migration"}
+            {working ? t('common.migration.migrating') : t('common.migration.apply')}
           </button>
         </div>
       </div>
@@ -239,7 +242,7 @@ function SettingsModal({
   appUpdate, appSettings,
   defaultSettings,
   onF95Login, onF95Logout, onDLsiteLogin, onDLsiteLogout, onFakkuLogin, onFakkuLogout, onRemoveFolder,
-  onRescanAll, onWineSettings, onSteamImport, onSteamLibraryImport, onLutrisImport, onPlayniteImport, onGogImport, onAppUpdate, onSaveSettings, onOpenMigrationWizard, onClose,
+  onRescanAll, onWineSettings, onSteamImport, onSteamLibraryImport, onLutrisImport, onPlayniteImport, onGogImport, onAppUpdate, onOpenWhatsNew, onSaveSettings, onOpenMigrationWizard, onClose,
   onRunIntegrityCheck, onOpenRestoreSnapshots, onExportCSV, onExportHTML, onExportCloudState, onImportCloudState, onBatchMetadataRefresh, batchRefreshStatus, integrityCheckStatus,
   backgroundJobs, syncStatusText, isIntegrityCheckBusy, isBatchMetadataRefreshBusy, onAutoHealPaths, autoHealPathsStatus, isAutoHealPathsBusy,
   onApplyBackupRetentionPolicy, backupRetentionStatus, isBackupRetentionBusy
@@ -253,7 +256,7 @@ function SettingsModal({
   onFakkuLogin: () => void; onFakkuLogout: () => void;
   onRemoveFolder: (p: string) => void;
   onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void; onSteamLibraryImport: () => void; onLutrisImport: () => void; onPlayniteImport: () => void; onGogImport: () => void;
-  onAppUpdate: () => void; onSaveSettings: (s: AppSettingsLike) => void; onOpenMigrationWizard: () => void; onClose: () => void;
+  onAppUpdate: () => void; onOpenWhatsNew: () => void; onSaveSettings: (s: AppSettingsLike) => void; onOpenMigrationWizard: () => void; onClose: () => void;
   onRunIntegrityCheck: () => void;
   onOpenRestoreSnapshots: () => void;
   onExportCSV: () => void; onExportHTML: () => void; onExportCloudState: () => void; onImportCloudState: () => void;
@@ -271,13 +274,14 @@ function SettingsModal({
   backupRetentionStatus: string | null;
   isBackupRetentionBusy: boolean;
 }) {
+  const { t } = useTranslation();
   const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "wine">("general");
   const tabs: { id: typeof tab; label: string }[] = [
-    { id: "general", label: "General" },
-    { id: "scanner", label: "Scanner" },
-    { id: "import", label: "Import" },
-    { id: "rss", label: "RSS Feeds" },
-    ...(platform !== "windows" ? [{ id: "wine" as const, label: "Wine / Proton" }] : []),
+    { id: "general", label: t('settings.tabs.general') },
+    { id: "scanner", label: t('settings.tabs.scanner') },
+    { id: "import", label: t('settings.tabs.import') },
+    { id: "rss", label: t('settings.tabs.rss') },
+    ...(platform !== "windows" ? [{ id: "wine" as const, label: t('settings.tabs.wine') }] : []),
   ];
   const jobTone = (status: BackgroundJobStatus) => {
     switch (status) {
@@ -297,15 +301,15 @@ function SettingsModal({
   const jobStatusLabel = (status: BackgroundJobStatus) => {
     switch (status) {
       case "queued":
-        return "Queued";
+        return t('common.jobs.queued');
       case "running":
-        return "Running";
+        return t('common.jobs.running');
       case "retrying":
-        return "Retrying";
+        return t('common.jobs.retrying');
       case "failed":
-        return "Failed";
+        return t('common.jobs.failed');
       case "permanent_failed":
-        return "Stopped";
+        return t('common.jobs.stopped');
       default:
         return status;
     }
@@ -323,7 +327,7 @@ function SettingsModal({
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
-          <h2 className="font-bold text-base flex-1" style={{ color: "var(--color-white)" }}>Settings</h2>
+          <h2 className="font-bold text-base flex-1" style={{ color: "var(--color-white)" }}>{t('common.settings')}</h2>
           <button onClick={onClose} style={{ color: "var(--color-text-dim)", fontSize: 18, lineHeight: 1 }}>✕</button>
         </div>
 
@@ -349,18 +353,37 @@ function SettingsModal({
           {tab === "general" && (
             <>
               <section className="space-y-2">
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.language')}</h3>
+                <select
+                  value={appSettings.language || "en"}
+                  onChange={(e) => onSaveSettings({ ...appSettings, language: e.currentTarget.value })}
+                  className="w-full px-3 py-2 rounded-lg text-sm bg-transparent border outline-none"
+                  style={{ background: "var(--color-panel)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                >
+                  <option value="en" style={{ background: "var(--color-panel-2)" }}>English (US)</option>
+                  <option value="ru" style={{ background: "var(--color-panel-2)" }}>Русский (Russian)</option>
+                  <option value="ja" style={{ background: "var(--color-panel-2)" }}>日本語 (Japanese)</option>
+                  <option value="zh" style={{ background: "var(--color-panel-2)" }}>中文 (Chinese)</option>
+                  <option value="ko" style={{ background: "var(--color-panel-2)" }}>한국어 (Korean)</option>
+                  <option value="zh-TW" style={{ background: "var(--color-panel-2)" }}>繁體中文 (Taiwanese)</option>
+                  <option value="pl" style={{ background: "var(--color-panel-2)" }}>Polski (Polish)</option>
+                  <option value="uk" style={{ background: "var(--color-panel-2)" }}>Українська (Ukrainian)</option>
+                </select>
+              </section>
+
+              <section className="space-y-2">
                 <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>F95zone</h3>
                 {f95LoggedIn ? (
                   <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
                     style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
                     <div className="flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full" style={{ background: "var(--color-warning)" }} />
-                      <span className="text-sm" style={{ color: "var(--color-warning)" }}>Logged in</span>
+                      <span className="text-sm" style={{ color: "var(--color-warning)" }}>{t('settings.accounts.logged_in')}</span>
                     </div>
                     <button onClick={onF95Logout}
                       className="text-xs px-3 py-1 rounded"
                       style={{ background: "var(--color-warning-bg)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>
-                      Sign out
+                      {t('settings.accounts.sign_out')}
                     </button>
                   </div>
                 ) : (
@@ -370,7 +393,7 @@ function SettingsModal({
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /><polyline points="10 17 15 12 10 7" /><line x1="15" y1="12" x2="3" y2="12" />
                     </svg>
-                    Sign in to F95zone
+                    {t('settings.accounts.sign_in', { name: "F95zone" })}
                   </button>
                 )}
               </section>
@@ -383,12 +406,12 @@ function SettingsModal({
                     style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
                     <div className="flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full" style={{ background: "var(--color-danger-strong)" }} />
-                      <span className="text-sm" style={{ color: "var(--color-danger-strong)" }}>Logged in</span>
+                      <span className="text-sm" style={{ color: "var(--color-danger-strong)" }}>{t('settings.accounts.logged_in')}</span>
                     </div>
                     <button onClick={onDLsiteLogout}
                       className="text-xs px-3 py-1 rounded"
                       style={{ background: "var(--color-danger-bg)", color: "var(--color-danger-strong)", border: "1px solid #6a2020" }}>
-                      Sign out
+                      {t('settings.accounts.sign_out')}
                     </button>
                   </div>
                 ) : (
@@ -397,8 +420,8 @@ function SettingsModal({
                     style={{ background: "var(--color-panel)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
                     <div className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0"
                       style={{ background: "var(--color-danger-strong)", color: "var(--color-white)" }}>DL</div>
-                    Sign in to DLsite
-                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>age-gate bypass</span>
+                    {t('settings.accounts.sign_in', { name: "DLsite" })}
+                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>{t('settings.accounts.age_gate')}</span>
                   </button>
                 )}
               </section>
@@ -410,12 +433,12 @@ function SettingsModal({
                     style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
                     <div className="flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full" style={{ background: "#da4c96" }} />
-                      <span className="text-sm" style={{ color: "#da4c96" }}>Logged in</span>
+                      <span className="text-sm" style={{ color: "#da4c96" }}>{t('settings.accounts.logged_in')}</span>
                     </div>
                     <button onClick={onFakkuLogout}
                       className="text-xs px-3 py-1 rounded"
                       style={{ background: "#3b1f2f", color: "#da4c96", border: "1px solid #6a2d4b" }}>
-                      Sign out
+                      {t('settings.accounts.sign_out')}
                     </button>
                   </div>
                 ) : (
@@ -424,66 +447,66 @@ function SettingsModal({
                     style={{ background: "var(--color-panel)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
                     <div className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0"
                       style={{ background: "#da4c96", color: "var(--color-white)" }}>FK</div>
-                    Sign in to FAKKU
-                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>age-check bypass</span>
+                    {t('settings.accounts.sign_in', { name: "FAKKU" })}
+                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>{t('settings.accounts.age_check_bypass')}</span>
                   </button>
                 )}
               </section>
 
               <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>System & Notifications</h3>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.title')}</h3>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.startupWithWindows}
                     onChange={(e) => onSaveSettings({ ...appSettings, startupWithWindows: e.currentTarget.checked })} />
-                  Start minimized in tray with Windows
+                  {t('settings.system.startup')}
                 </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.updateCheckerEnabled}
                     onChange={(e) => onSaveSettings({ ...appSettings, updateCheckerEnabled: e.currentTarget.checked })} />
-                  Check for game updates (F95/DLsite)
+                  {t('settings.system.updates')}
                 </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.sessionToastEnabled}
                     onChange={(e) => onSaveSettings({ ...appSettings, sessionToastEnabled: e.currentTarget.checked })} />
-                  Show system notification on session end
+                  {t('settings.system.notifications')}
                 </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.trayTooltipEnabled}
                     onChange={(e) => onSaveSettings({ ...appSettings, trayTooltipEnabled: e.currentTarget.checked })} />
-                  Live session duration in tray tooltip
+                  {t('settings.system.tray_tooltip')}
                 </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="When disabled, Surprise me only opens a random game page without launching it">
                   <input type="checkbox" checked={appSettings.surpriseLaunchesImmediately}
                     onChange={(e) => onSaveSettings({ ...appSettings, surpriseLaunchesImmediately: e.currentTarget.checked })} />
-                  Surprise me launches immediately
+                  {t('settings.system.surprise_launch')}
                 </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                   <input type="checkbox" checked={appSettings.blurNsfwContent}
                     onChange={(e) => onSaveSettings({ ...appSettings, blurNsfwContent: e.currentTarget.checked })} />
-                  Blur adult/NSFW covers (Click to reveal)
+                  {t('settings.system.blur_nsfw')}
                 </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  Rating scale
+                  {t('settings.system.rating_scale')}
                   <select
                     value={appSettings.ratingScale}
                     onChange={(e) => onSaveSettings({ ...appSettings, ratingScale: (e.currentTarget.value as RatingScale) })}
                     className="ml-2 px-2 py-1 rounded text-xs outline-none"
                     style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
                   >
-                    <option value="10">10 Point (5/10)</option>
-                    <option value="10_decimal">10 Point Decimal (5.5/10)</option>
-                    <option value="100">100 Point (55/100)</option>
-                    <option value="5_star">5 Star (3/5)</option>
-                    <option value="3_smiley">3 Point Smiley</option>
+                    <option value="10">{t('settings.system.rating_scale_options.10')}</option>
+                    <option value="10_decimal">{t('settings.system.rating_scale_options.10_decimal')}</option>
+                    <option value="100">{t('settings.system.rating_scale_options.100')}</option>
+                    <option value="5_star">{t('settings.system.rating_scale_options.5_star')}</option>
+                    <option value="3_smiley">{t('settings.system.rating_scale_options.3_smiley')}</option>
                   </select>
                 </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="Automatically take a screenshot while a game is running">
-                  Auto-screenshot interval (mins)
+                  {t('settings.system.auto_screenshot')}
                   <input type="number" min="0" className="w-12 px-1 py-1 bg-transparent border rounded outline-none text-center ml-2"
                     style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
                     value={appSettings.autoScreenshotInterval || 0}
                     onChange={e => onSaveSettings({ ...appSettings, autoScreenshotInterval: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
-                  <span className="text-[10px] ml-2" style={{ color: "var(--color-text-dim)" }}>(0 to disable)</span>
+                  <span className="text-[10px] ml-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.disable_hint')}</span>
                 </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="Create a ZIP backup of detected save files when a game session ends">
                   <input
@@ -491,32 +514,32 @@ function SettingsModal({
                     checked={appSettings.saveBackupOnExit}
                     onChange={(e) => onSaveSettings({ ...appSettings, saveBackupOnExit: e.currentTarget.checked })}
                   />
-                  Backup save files automatically on game exit
+                  {t('settings.system.backup_on_exit')}
                 </label>
                 <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
                   <div>
-                    <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Backup Retention</div>
+                    <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.backup_retention')}</div>
                     <p className="mt-1 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      Keep the newest backup per day, week, and month across snapshots and automatic save backups.
+                      {t('settings.system.backup_retention_hint')}
                     </p>
                   </div>
                   <div className="grid grid-cols-3 gap-2">
                     <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      Daily
+                      {t('settings.system.daily')}
                       <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
                         style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
                         value={appSettings.backupRetentionDailyKeep || 0}
                         onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionDailyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
                     </label>
                     <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      Weekly
+                      {t('settings.system.weekly')}
                       <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
                         style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
                         value={appSettings.backupRetentionWeeklyKeep || 0}
                         onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionWeeklyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
                     </label>
                     <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      Monthly
+                      {t('settings.system.monthly')}
                       <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
                         style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
                         value={appSettings.backupRetentionMonthlyKeep || 0}
@@ -526,29 +549,29 @@ function SettingsModal({
                   <button onClick={onApplyBackupRetentionPolicy} disabled={isBackupRetentionBusy}
                     className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
                     style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
-                    {backupRetentionStatus || "Apply Backup Retention Now"}
+                    {backupRetentionStatus || t('settings.system.apply_backup')}
                   </button>
                 </div>
               </section>
 
               <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Appearance</h3>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.appearance.title')}</h3>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  Theme schedule
+                  {t('settings.appearance.schedule')}
                   <select
                     className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
                     style={{ borderColor: "var(--color-border)" }}
                     value={appSettings.themeScheduleMode || "manual"}
                     onChange={(e) => onSaveSettings({ ...appSettings, themeScheduleMode: e.currentTarget.value as "manual" | "os" | "time" })}
                   >
-                    <option value="manual" style={{ background: "var(--color-panel-2)" }}>Manual</option>
-                    <option value="os" style={{ background: "var(--color-panel-2)" }}>Follow OS</option>
-                    <option value="time" style={{ background: "var(--color-panel-2)" }}>By Time</option>
+                    <option value="manual" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.manual')}</option>
+                    <option value="os" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.os')}</option>
+                    <option value="time" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.time')}</option>
                   </select>
                 </label>
                 {(appSettings.themeScheduleMode || "manual") === "manual" && (
                   <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                    Theme
+                    {t('settings.appearance.theme')}
                     <select
                       className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
                       style={{ borderColor: "var(--color-border)" }}
@@ -557,7 +580,7 @@ function SettingsModal({
                     >
                       {THEME_OPTIONS.map((theme) => (
                         <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
-                          {theme.label}
+                          {t(theme.label)}
                         </option>
                       ))}
                     </select>
@@ -566,7 +589,7 @@ function SettingsModal({
                 {(appSettings.themeScheduleMode || "manual") === "time" && (
                   <>
                     <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      Day theme
+                      {t('settings.appearance.day_theme')}
                       <select
                         className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
                         style={{ borderColor: "var(--color-border)" }}
@@ -575,13 +598,13 @@ function SettingsModal({
                       >
                         {DAY_THEME_OPTIONS.map((theme) => (
                           <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
-                            {theme.label}
+                            {t(theme.label)}
                           </option>
                         ))}
                       </select>
                     </label>
                     <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      Night theme
+                      {t('settings.appearance.night_theme')}
                       <select
                         className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
                         style={{ borderColor: "var(--color-border)" }}
@@ -590,13 +613,13 @@ function SettingsModal({
                       >
                         {NIGHT_THEME_OPTIONS.map((theme) => (
                           <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
-                            {theme.label}
+                            {t(theme.label)}
                           </option>
                         ))}
                       </select>
                     </label>
                     <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      Light starts at
+                      {t('settings.appearance.light_starts')}
                       <input
                         type="number"
                         min="0"
@@ -609,7 +632,7 @@ function SettingsModal({
                       <span className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>00-23</span>
                     </label>
                     <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      Dark starts at
+                      {t('settings.appearance.night_theme')}
                       <input
                         type="number"
                         min="0"
@@ -624,14 +647,14 @@ function SettingsModal({
                   </>
                 )}
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  Seasonal theme
+                  {t('settings.appearance.seasonal')}
                   <select
                     className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
                     style={{ borderColor: "var(--color-border)" }}
                     value={appSettings.seasonalTheme || "auto"}
                     onChange={(e) => onSaveSettings({ ...appSettings, seasonalTheme: e.currentTarget.value as "auto" | "winter" | "summer" | "halloween" | "none" })}
                   >
-                    <option value="auto" style={{ background: "var(--color-panel-2)" }}>Auto</option>
+                    <option value="auto" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.os')}</option>
                     <option value="winter" style={{ background: "var(--color-panel-2)" }}>Winter</option>
                     <option value="summer" style={{ background: "var(--color-panel-2)" }}>Summer</option>
                     <option value="halloween" style={{ background: "var(--color-panel-2)" }}>Halloween</option>
@@ -639,7 +662,7 @@ function SettingsModal({
                   </select>
                 </label>
                 <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  Accent color
+                  {t('settings.appearance.accent')}
                   <input
                     type="color"
                     className="ml-2 w-8 h-6 border rounded cursor-pointer"
@@ -675,22 +698,22 @@ function SettingsModal({
                 {appSettings.themeMode === "custom" && (
                   <div className="mt-4 p-3 rounded-lg space-y-4" style={{ background: "var(--color-panel-alt)", border: "1px dashed var(--color-border-strong)" }}>
                     <div>
-                      <h4 className="text-xs font-bold mb-1" style={{ color: "var(--color-white)" }}>Theme Constructor</h4>
+                      <h4 className="text-xs font-bold mb-1" style={{ color: "var(--color-white)" }}>{t('settings.custom_theme.title')}</h4>
                       <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
-                        Fine-tune every aspect of your personal theme. Changes apply instantly.
+                        {t('settings.custom_theme.hint')}
                       </p>
                     </div>
 
                     <div className="space-y-4">
                       {/* --- Backgrounds --- */}
                       <div>
-                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>Backgrounds</div>
+                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.backgrounds')}</div>
                         <div className="grid grid-cols-2 gap-3">
                           {[
-                            { key: "bg", label: "Main Background" },
-                            { key: "bg-elev", label: "Elevated Surface" },
-                            { key: "bg-deep", label: "Deep Background" },
-                            { key: "bg-overlay", label: "Overlay Dimming" },
+                            { key: "bg", label: t('settings.custom_theme.labels.bg') },
+                            { key: "bg-elev", label: t('settings.custom_theme.labels.bg-elev') },
+                            { key: "bg-deep", label: t('settings.custom_theme.labels.bg-deep') },
+                            { key: "bg-overlay", label: t('settings.custom_theme.labels.bg-overlay') },
                           ].map(cfg => (
                             <div key={cfg.key} className="flex flex-col gap-1">
                               <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
@@ -716,12 +739,12 @@ function SettingsModal({
 
                       {/* --- Panels --- */}
                       <div>
-                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>Panels & Cards</div>
+                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.panels')}</div>
                         <div className="grid grid-cols-3 gap-3">
                           {[
-                            { key: "panel", label: "Primary" },
-                            { key: "panel-2", label: "Secondary" },
-                            { key: "panel-3", label: "Tertiary" },
+                            { key: "panel", label: t('settings.custom_theme.labels.panel') },
+                            { key: "panel-2", label: t('settings.custom_theme.labels.panel-2') },
+                            { key: "panel-3", label: t('settings.custom_theme.labels.panel-3') },
                           ].map(cfg => (
                             <div key={cfg.key} className="flex flex-col gap-1">
                               <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
@@ -747,13 +770,13 @@ function SettingsModal({
 
                       {/* --- Text --- */}
                       <div>
-                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>Typography</div>
+                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.typography')}</div>
                         <div className="grid grid-cols-2 gap-3">
                           {[
-                            { key: "text", label: "Main Text" },
-                            { key: "text-soft", label: "Soft Text" },
-                            { key: "text-muted", label: "Muted/Description" },
-                            { key: "text-dim", label: "Dim/Placeholder" },
+                            { key: "text", label: t('settings.custom_theme.labels.text') },
+                            { key: "text-soft", label: t('settings.custom_theme.labels.text-soft') },
+                            { key: "text-muted", label: t('settings.custom_theme.labels.text-muted') },
+                            { key: "text-dim", label: t('settings.custom_theme.labels.text-dim') },
                           ].map(cfg => (
                             <div key={cfg.key} className="flex flex-col gap-1">
                               <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
@@ -779,13 +802,13 @@ function SettingsModal({
 
                       {/* --- Borders --- */}
                       <div>
-                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>Borders</div>
+                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.borders')}</div>
                         <div className="grid grid-cols-2 gap-3">
                           {[
-                            { key: "border", label: "Default Border" },
-                            { key: "border-soft", label: "Soft Border" },
-                            { key: "border-strong", label: "Strong/Active" },
-                            { key: "border-subtle", label: "Subtle Separator" },
+                            { key: "border", label: t('settings.custom_theme.labels.border') },
+                            { key: "border-soft", label: t('settings.custom_theme.labels.border-soft') },
+                            { key: "border-strong", label: t('settings.custom_theme.labels.border-strong') },
+                            { key: "border-subtle", label: t('settings.custom_theme.labels.border-subtle') },
                           ].map(cfg => (
                             <div key={cfg.key} className="flex flex-col gap-1">
                               <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
@@ -813,11 +836,11 @@ function SettingsModal({
                     <div className="pt-2 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
                       <button className="text-[10px] uppercase font-bold" style={{ color: "var(--color-accent)" }}
                         onClick={() => {
-                           if (confirm("Reset custom theme colors to default dark palette?")) {
+                           if (confirm(t('settings.custom_theme.reset_confirm'))) {
                              onSaveSettings({ ...appSettings, customThemeColors: {} });
                            }
                         }}>
-                        Reset to Defaults
+                        {t('settings.custom_theme.reset')}
                       </button>
                     </div>
                   </div>
@@ -825,16 +848,16 @@ function SettingsModal({
               </section>
 
               <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Panic Button (Boss Key)</h3>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="Press a global hotkey to instantly hide the game and open something else.">
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.panic.title')}</h3>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title={t('settings.panic.hint')}>
                   <input type="checkbox" checked={appSettings.bossKeyEnabled}
                     onChange={(e) => onSaveSettings({ ...appSettings, bossKeyEnabled: e.currentTarget.checked })} />
-                  Enable Panic Button
+                  {t('settings.panic.enable')}
                 </label>
                 {appSettings.bossKeyEnabled && (
                   <div className="pl-6 space-y-3 mt-2">
                     <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      Hotkey:
+                      {t('settings.panic.hotkey')}:
                       <select value={appSettings.bossKeyCode || 0x7A}
                         onChange={(e) => onSaveSettings({ ...appSettings, bossKeyCode: parseInt(e.currentTarget.value) })}
                         className="bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]" style={{ borderColor: "var(--color-border)" }}>
@@ -844,21 +867,21 @@ function SettingsModal({
                       </select>
                     </label>
                     <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      Action:
+                      {t('settings.panic.action')}:
                       <select value={appSettings.bossKeyAction || "hide"}
                         onChange={(e) => onSaveSettings({ ...appSettings, bossKeyAction: e.currentTarget.value as "hide" | "kill" })}
                         className="bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]" style={{ borderColor: "var(--color-border)" }}>
-                        <option value="hide" style={{ background: "var(--color-panel-2)" }}>Hide Window (Smooth, but audio keeps playing)</option>
-                        <option value="kill" style={{ background: "var(--color-panel-2)" }}>Force Close Game (Stops audio instantly)</option>
+                        <option value="hide" style={{ background: "var(--color-panel-2)" }}>{t('settings.panic.action_hide')}</option>
+                        <option value="kill" style={{ background: "var(--color-panel-2)" }}>{t('settings.panic.action_kill')}</option>
                       </select>
                     </label>
                     <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
                       <input type="checkbox" checked={appSettings.bossKeyMuteSystem}
                         onChange={(e) => onSaveSettings({ ...appSettings, bossKeyMuteSystem: e.currentTarget.checked })} />
-                      Also mute system volume (Shows Windows volume overlay)
+                      {t('settings.panic.mute')}
                     </label>
                     <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      Fallback App / URL:
+                      {t('settings.panic.fallback')}:
                       <input type="text" placeholder="e.g. notepad.exe or https://google.com" className="bg-transparent border rounded px-2 py-1 outline-none flex-1 text-[var(--color-text)]"
                         style={{ borderColor: "var(--color-border)" }} value={appSettings.bossKeyFallbackUrl || ""}
                         onChange={(e) => onSaveSettings({ ...appSettings, bossKeyFallbackUrl: e.currentTarget.value })} />
@@ -868,29 +891,29 @@ function SettingsModal({
               </section>
 
               <section className="space-y-4 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Export Library</h3>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.export.title')}</h3>
                 <div className="flex gap-2">
-                  <button onClick={onExportCSV} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>CSV Spreadsheet</button>
-                  <button onClick={onExportHTML} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>HTML Webpage</button>
+                  <button onClick={onExportCSV} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>{t('settings.export.csv')}</button>
+                  <button onClick={onExportHTML} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>{t('settings.export.html')}</button>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={onExportCloudState} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>
-                    Export Cloud JSON
+                    {t('settings.export.cloud_export')}
                   </button>
                   <button onClick={onImportCloudState} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>
-                    Import Cloud JSON
+                    {t('settings.export.cloud_import')}
                   </button>
                 </div>
                 <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
-                  Includes library folders, games, stats, metadata, notes, collections, wishlist and related local state.
+                  {t('settings.export.hint')}
                 </p>
               </section>
 
               <section className="space-y-2 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Library Folders</h3>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.folders.title')}</h3>
                 <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
                   {libraryFolders.length === 0 ? (
-                    <p className="px-3 py-3 text-xs" style={{ color: "var(--color-text-dim)" }}>No folders added yet.</p>
+                    <p className="px-3 py-3 text-xs" style={{ color: "var(--color-text-dim)" }}>{t('settings.folders.none')}</p>
                   ) : (
                     libraryFolders.map((f) => {
                       const label = f.path.replace(/\\/g, "/").split("/").pop() ?? f.path;
@@ -915,23 +938,35 @@ function SettingsModal({
 
               {appUpdate && (
                 <section className="space-y-2">
-                  <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Updates</h3>
+                  <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('common.nav.logs')}</h3>
                   <button onClick={() => { onClose(); onAppUpdate(); }}
                     className="w-full py-2 rounded-lg text-sm px-3 flex items-center gap-2 font-semibold"
                     style={{ background: "var(--color-success-bg)", color: "var(--color-success)", border: "1px solid var(--color-success-border)" }}>
-                    ↑ v{appUpdate.version} available — click to install
+                    ↑ {t('settings.system.update_available', { version: appUpdate.version })}
                   </button>
                 </section>
               )}
+              <section className="space-y-2">
+                <button onClick={onOpenWhatsNew}
+                  className="w-full py-2 rounded-lg text-sm px-3 flex items-center gap-2 font-semibold"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                    <path d="M2 17l10 5 10-5" />
+                    <path d="M2 12l10 5 10-5" />
+                  </svg>
+                  {t('whats_new.button')}
+                </button>
+              </section>
             </>
           )}
 
           {tab === "rss" && (
             <section className="space-y-4">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>RSS Feeds</h3>
-              <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Track game updates and discovering new releases.</p>
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.rss.title')}</h3>
+              <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>{t('settings.rss.hint')}</p>
               <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>
-                VNDB feeds are provided via <span style={{ color: "var(--color-text-muted)" }}>vndb-rss</span> proxy endpoints.
+                {t('settings.rss.proxy_hint')}
               </p>
 
               <div className="space-y-2">
@@ -948,16 +983,16 @@ function SettingsModal({
                             onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
                           }}
                         />
-                        Enabled
+                        {t('common.enabled')}
                       </label>
-                      <input type="text" value={feed.name} placeholder="Feed Name"
+                      <input type="text" value={feed.name} placeholder={t('settings.rss.name')}
                         className="w-full bg-transparent text-sm font-semibold outline-none" style={{ color: "var(--color-text)" }}
                         onChange={(e) => {
                           const nextFeeds = [...(appSettings.rssFeeds || defaultSettings.rssFeeds)];
                           nextFeeds[idx] = { ...feed, name: (e.target as HTMLInputElement).value };
                           onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
                         }} />
-                      <input type="text" value={feed.url} placeholder="Feed URL"
+                      <input type="text" value={feed.url} placeholder={t('settings.rss.url')}
                         className="w-full bg-transparent text-xs w-full outline-none" style={{ color: "var(--color-text-muted)" }}
                         onChange={(e) => {
                           const nextFeeds = [...(appSettings.rssFeeds || defaultSettings.rssFeeds)];
@@ -979,7 +1014,7 @@ function SettingsModal({
                 }}
                   className="w-full py-2 flex items-center justify-center gap-2 rounded text-sm text-[var(--color-text)] hover:text-white"
                   style={{ border: "1px dashed var(--color-border)" }}>
-                  + Add RSS Feed
+                  {t('settings.rss.add')}
                 </button>
               </div>
             </section>
@@ -988,16 +1023,16 @@ function SettingsModal({
           {tab === "scanner" && (
             <section className="space-y-6">
               <div className="space-y-3">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Library Scanner</h3>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.scanner.title')}</h3>
                 <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                  Force a full re-scan of all library folders. Use this if new games were added to the folders outside of LIBMALY, or if some entries are missing.
+                  {t('settings.scanner.force_rescan_hint')}
                 </p>
                 <div className="rounded-lg px-3 py-2.5 space-y-2"
                   style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Scanner Status</span>
+                    <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.scanner.status')}</span>
                     <span className="text-[11px]" style={{ color: syncState === "idle" ? "var(--color-text-dim)" : "var(--color-accent)" }}>
-                      {syncStatusText}
+                      {syncStatusText === "Idle" ? t('settings.scanner.idle') : syncStatusText}
                     </span>
                   </div>
                   {backgroundJobs.length > 0 && (
@@ -1031,7 +1066,7 @@ function SettingsModal({
                     <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
                     <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
                   </svg>
-                  Force Rescan All Folders
+                  {t('settings.scanner.force_rescan')}
                 </button>
                 <button onClick={() => { onClose(); onOpenMigrationWizard(); }}
                   className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
@@ -1039,7 +1074,7 @@ function SettingsModal({
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M3 7h18" /><path d="M3 17h18" /><path d="M7 3l-4 4 4 4" /><path d="M17 13l4 4-4 4" />
                   </svg>
-                  Move Game Folder (Migration Wizard)
+                  {t('common.migration.title')}
                 </button>
                 <button onClick={onRunIntegrityCheck} disabled={isIntegrityCheckBusy}
                   className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
@@ -1048,7 +1083,7 @@ function SettingsModal({
                     <path d="M9 11l3 3L22 4" />
                     <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
                   </svg>
-                  {integrityCheckStatus || "Run Library Integrity Check"}
+                  {integrityCheckStatus || t('settings.scanner.integrity_check')}
                 </button>
                 <button onClick={onAutoHealPaths} disabled={isAutoHealPathsBusy}
                   className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
@@ -1058,7 +1093,7 @@ function SettingsModal({
                     <path d="M21 3v6h-6" />
                     <path d="M9 12l2 2 4-4" />
                   </svg>
-                  {autoHealPathsStatus || "Auto-Heal Moved Paths"}
+                  {autoHealPathsStatus || t('settings.scanner.auto_heal')}
                 </button>
                 <button onClick={() => { onClose(); onOpenRestoreSnapshots(); }}
                   className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
@@ -1067,27 +1102,27 @@ function SettingsModal({
                     <path d="M3 7v6h6" />
                     <path d="M21 17a9 9 0 1 1-2.64-6.36L21 13" />
                   </svg>
-                  Restore From Snapshot
+                  {t('settings.scanner.restore_snapshot')}
                 </button>
               </div>
 
               <div className="space-y-3 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Metadata Refetch</h3>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.scanner.refetch_all')}</h3>
                 <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                  Update metadata for all currently linked games (runs in the background).
+                  {t('settings.scanner.refetch_all_hint')}
                 </p>
                 <button onClick={onBatchMetadataRefresh} disabled={isBatchMetadataRefreshBusy}
                   className="w-full py-2.5 rounded text-sm font-semibold disabled:opacity-50"
                   style={{ background: "var(--color-accent-dark)", color: "var(--color-white)", border: "1px solid var(--color-accent-mid)" }}>
-                  {batchRefreshStatus || "Refetch All Linked Games"}
+                  {batchRefreshStatus || t('settings.scanner.refetch_all')}
                 </button>
                 <label className="flex items-center gap-2 text-sm mt-3" style={{ color: "var(--color-text-muted)" }}>
-                  Auto-refetch metadata older than
+                  {t('settings.scanner.metadata_older')}
                   <input type="number" min="0" className="w-12 px-1 py-1 bg-transparent border rounded outline-none text-center"
                     style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
                     value={appSettings.metadataAutoRefetchDays || 0}
                     onChange={e => onSaveSettings({ ...appSettings, metadataAutoRefetchDays: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
-                  days (0 to disable)
+                  {t('settings.scanner.days_disable')}
                 </label>
               </div>
             </section>
@@ -1095,9 +1130,9 @@ function SettingsModal({
 
           {tab === "import" && (
             <section className="space-y-3">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Steam Playtime Import</h3>
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.import.steam_playtime')}</h3>
               <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                Read playtime data from Steam's <code style={{ color: "var(--color-code-accent)" }}>localconfig.vdf</code> and pre-fill hours for games that match titles in your library. Only overrides your tracked time if Steam's value is higher.
+                {t('settings.import.steam_playtime_hint')}
               </p>
               <button onClick={() => { onSteamImport(); onClose(); }}
                 className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
@@ -1107,32 +1142,32 @@ function SettingsModal({
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 2C6.48 2 2 6.48 2 12l5.84 2.41c.53-.32 1.14-.51 1.8-.51.07 0 .14 0 .21.01L12 10.5V10.42c0-2.52 2.04-4.58 4.56-4.58 2.52 0 4.56 2.04 4.56 4.58 0 2.52-2.04 4.56-4.56 4.56h-.1l-3.5 2.53c0 .06.01.12.01.18 0 1.89-1.53 3.42-3.42 3.42-1.67 0-3.07-1.2-3.36-2.79L2.17 14C3.14 18.55 7.15 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2z" />
                 </svg>
-                Import from Steam…
+                {t('settings.import.steam_playtime')}
               </button>
               <button onClick={() => { onSteamLibraryImport(); onClose(); }}
                 className="w-full mt-2 py-2 rounded-lg text-sm font-medium"
                 style={{ background: "#16263c", color: "#9ed2ff", border: "1px solid #2f4f76" }}>
-                Import Installed Steam Games…
+                {t('settings.import.steam_library')}
               </button>
 
               <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>Lutris Import</h3>
+                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.import.lutris')}</h3>
                 <p className="text-xs leading-relaxed mb-2" style={{ color: "var(--color-text-muted)" }}>
-                  Import Lutris game entries and apply their Wine prefix/runner as per-game override.
+                  {t('settings.import.lutris_hint')}
                 </p>
                 <button
                   onClick={() => { onLutrisImport(); onClose(); }}
                   className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
                   style={{ background: "#2a1f3a", color: "#b08ee8", border: "1px solid #5a3a8a" }}
                 >
-                  Import from Lutris…
+                  {t('settings.import.lutris')}
                 </button>
               </div>
 
               <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>Playnite / GOG Galaxy</h3>
+                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.import.playnite_gog')}</h3>
                 <p className="text-xs leading-relaxed mb-2" style={{ color: "var(--color-text-muted)" }}>
-                  Read installed games from existing launcher databases and merge them into your library.
+                  {t('settings.import.playnite_gog_hint')}
                 </p>
                 <div className="flex gap-2">
                   <button
@@ -1140,14 +1175,14 @@ function SettingsModal({
                     className="flex-1 py-2 rounded-lg text-sm font-medium"
                     style={{ background: "#2a2440", color: "#bca8ff", border: "1px solid #4b3f79" }}
                   >
-                    Import Playnite…
+                    {t('settings.import.playnite')}
                   </button>
                   <button
                     onClick={() => { onGogImport(); onClose(); }}
                     className="flex-1 py-2 rounded-lg text-sm font-medium"
                     style={{ background: "#1e293f", color: "#89c4ff", border: "1px solid #3a567d" }}
                   >
-                    Import GOG Galaxy…
+                    {t('settings.import.gog')}
                   </button>
                 </div>
               </div>
@@ -1156,7 +1191,7 @@ function SettingsModal({
 
           {tab === "wine" && platform !== "windows" && (
             <section className="space-y-3">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Wine / Proton</h3>
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.wine.title')}</h3>
               <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
                 Configure the Wine or Proton runtime used to launch Windows games on Linux or macOS.
               </p>

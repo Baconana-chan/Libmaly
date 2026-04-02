@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "preact/hooks";
+import { useTranslation } from "react-i18next";
+import i18n from "./i18n";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
@@ -16,6 +18,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { NsfwOverlay } from "./components/common/NsfwOverlay";
 import { GameDetail } from "./components/game/GameDetail";
 import { AppUpdateModal } from "./components/modals/AppUpdateModal";
+import { WhatsNewModal } from "./components/modals/WhatsNewModal";
 import { CrashReportModal, IntegrityCheckModal, LogViewerModal, RecoveryModeModal, SnapshotRestoreModal } from "./components/modals/DiagnosticsModals";
 import { MigrationWizardModal, SettingsModal } from "./components/modals/SettingsModal";
 import { ScreenshotAnnotateModal } from "./components/modals/ScreenshotAnnotateModal";
@@ -596,6 +599,7 @@ interface AppSettings {
   bossKeyMuteSystem?: boolean;
   bossKeyFallbackUrl?: string;
   customThemeColors?: Record<string, string>;
+  language?: string;
 }
 
 interface CloudSyncPayloadV1 {
@@ -653,6 +657,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   bossKeyMuteSystem: false,
   bossKeyFallbackUrl: "",
   customThemeColors: {},
+  language: "en",
 };
 const SCREENSHOT_TOAST_TTL_MS = 3600;
 
@@ -1131,6 +1136,7 @@ function MetadataDiffModal({ oldMeta, newMeta, onConfirm, onClose }: {
   onConfirm: (logNote: string | null) => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const versionChanged = oldMeta.version !== newMeta.version;
   const oldV = oldMeta.version || "Unknown";
   const newV = newMeta.version || "Unknown";
@@ -1142,33 +1148,33 @@ function MetadataDiffModal({ oldMeta, newMeta, onConfirm, onClose }: {
       style={{ background: "rgba(0,0,0,0.8)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="rounded-lg p-6 w-[480px] shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-        <h2 className="text-lg font-bold mb-4" style={{ color: "var(--color-white)" }}>Metadata Update</h2>
+        <h2 className="text-lg font-bold mb-4" style={{ color: "var(--color-white)" }}>{t('game.update.title')}</h2>
 
         <div className="space-y-3 mb-6">
           {versionChanged ? (
             <div className="p-3 rounded" style={{ background: "var(--color-panel-3)" }}>
               <p className="text-sm" style={{ color: "var(--color-text)" }}>
-                Version changed: <span className="font-mono text-[var(--color-danger)] line-through">{oldV}</span> → <span className="font-mono text-[var(--color-success)] font-bold">{newV}</span>
+                {t('game.update.version_changed', { old: oldV, new: newV })}
               </p>
             </div>
           ) : (
             <div className="p-3 rounded" style={{ background: "var(--color-panel-2)" }}>
               <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
-                No version change detected (remains <span className="font-mono">{newV}</span>). The metadata fields will be refreshed.
+                {t('game.update.no_version_change', { version: newV })}
               </p>
             </div>
           )}
 
           <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text)" }}>
             <input type="checkbox" checked={wantsToLog} onChange={(e) => setWantsToLog(e.currentTarget.checked)} />
-            Log this update in the game's version history
+            {t('game.update.log_history')}
           </label>
 
           {wantsToLog && (
             <textarea
               className="w-full h-20 p-2 rounded text-sm outline-none resize-none"
               style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
-              placeholder={`Notes for version ${newV} update (e.g. "Downloaded from F95", "Added new route")...`}
+              placeholder={t('game.update.placeholder', { version: newV })}
               value={note}
               onInput={(e) => setNote((e.target as HTMLTextAreaElement).value)}
             />
@@ -1178,11 +1184,11 @@ function MetadataDiffModal({ oldMeta, newMeta, onConfirm, onClose }: {
         <div className="flex gap-3 justify-end">
           <button onClick={onClose}
             className="px-4 py-2 rounded text-sm hover:opacity-80 transition-opacity"
-            style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>{t('common.migration.cancel')}</button>
           <button onClick={() => onConfirm(wantsToLog ? note : null)}
             className="px-5 py-2 rounded text-sm font-semibold hover:opacity-80 transition-opacity"
             style={{ background: "var(--color-accent)", color: "var(--color-black-strong)" }}>
-            Apply Update
+            {t('game.update.apply')}
           </button>
         </div>
       </div>
@@ -1198,6 +1204,7 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
   f95LoggedIn: boolean;
   onOpenF95Login: () => void;
 }) {
+  const { t } = useTranslation();
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1241,10 +1248,9 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
       style={{ background: "rgba(0,0,0,0.8)" }}
       onClick={(e) => { if (e.target === e.currentTarget && !loading) onClose(); }}>
       <div className="rounded-lg p-6 w-[480px] shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-        <h2 className="text-lg font-bold mb-1" style={{ color: "var(--color-white)" }}>Link a Game Page</h2>
+        <h2 className="text-lg font-bold mb-1" style={{ color: "var(--color-white)" }}>{t('game.link.title')}</h2>
         <p className="text-xs mb-4" style={{ color: "var(--color-text-muted)" }}>
-          Paste an F95zone, DLsite, VNDB, MangaGamer, Johren or FAKKU URL to fetch cover art,
-          description and tags for <b style={{ color: "var(--color-text)" }}>{gameName}</b>.
+          {t('game.link.hint', { name: gameName })}
         </p>
         <div className="flex gap-2 mb-4">
           {(["f95", "dlsite", "vndb", "mangagamer", "johren", "fakku"] as const).map((s) => (
@@ -1270,7 +1276,7 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
           ))}
         </div>
         <input type="text"
-          placeholder="https://f95zone.to/...  /  https://www.dlsite.com/...  /  https://vndb.org/v...  /  https://www.mangagamer.com/...  /  https://www.johren.net/...  /  https://www.fakku.net/..."
+          placeholder={t('game.link.url_placeholder')}
           value={url}
           onInput={(e) => { setUrl((e.target as HTMLInputElement).value); setError(""); }}
           onKeyDown={(e) => e.key === "Enter" && doFetch()}
@@ -1282,24 +1288,24 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
             </svg>
-            <span className="text-xs flex-1" style={{ color: "var(--color-warning)" }}>Some F95zone content requires login.</span>
-            <button onClick={onOpenF95Login} className="text-xs underline" style={{ color: "var(--color-warning)" }}>Sign in</button>
+            <span className="text-xs flex-1" style={{ color: "var(--color-warning)" }}>{t('game.link.f95_login_hint')}</span>
+            <button onClick={onOpenF95Login} className="text-xs underline" style={{ color: "var(--color-warning)" }}>{t('settings.accounts.sign_in', { name: "" }).trim()}</button>
           </div>
         )}
         {!url && (
           <div className="mb-4">
             <div className="flex items-center gap-2 mb-2">
-              <p className="text-[10px] uppercase text-[var(--color-text-muted)] font-bold tracking-widest flex-1">Auto-Link Suggestions</p>
+              <p className="text-[10px] uppercase text-[var(--color-text-muted)] font-bold tracking-widest flex-1">{t('game.link.suggestions')}</p>
               <input type="text" value={query} onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
                 className="bg-[var(--color-panel-2)] border border-[var(--color-border)] text-[11px] px-2 py-0.5 rounded outline-none text-[var(--color-text)]"
-                placeholder="Search query..."
+                placeholder={t('common.search')}
                 onKeyDown={(e) => e.key === "Enter" && fetchSuggestions()} />
               <button onClick={fetchSuggestions} disabled={isLoadingSuggestions} className="bg-[var(--color-border)] hover:bg-[var(--color-border-strong)] text-[11px] px-2 py-0.5 rounded text-[var(--color-text)] disabled:opacity-50">
-                {isLoadingSuggestions ? "Searching…" : "Search"}
+                {isLoadingSuggestions ? t('game.link.searching') : t('common.search')}
               </button>
             </div>
             {isLoadingSuggestions ? (
-              <p className="text-xs text-[var(--color-text-muted)]">Searching for matches...</p>
+              <p className="text-xs text-[var(--color-text-muted)]">{t('game.link.searching')}</p>
             ) : suggestions && suggestions.length > 0 ? (
               <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
                 {suggestions.map((s) => (
@@ -1323,7 +1329,7 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
                 ))}
               </div>
             ) : suggestions && suggestions.length === 0 ? (
-              <p className="text-xs text-[var(--color-text-muted)]">No suggestions found.</p>
+              <p className="text-xs text-[var(--color-text-muted)]">{t('game.link.no_suggestions')}</p>
             ) : null}
           </div>
         )}
@@ -1331,13 +1337,13 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
         <div className="flex gap-3 justify-end mt-2">
           <button onClick={onClose} disabled={loading}
             className="px-4 py-2 rounded text-sm"
-            style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>{t('common.migration.cancel')}</button>
           <button onClick={() => doFetch()} disabled={loading || !url.trim()}
             className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
             style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>
             {loading
-              ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Fetching…</>
-              : "Fetch Metadata"}
+              ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />{t('game.link.fetching')}</>
+              : t('game.link.fetch')}
           </button>
         </div>
       </div>
@@ -3133,6 +3139,7 @@ function InteropImportModal({
 
 // ─── Migration Wizard ────────────────────────────────────────────────────────
 export default function App() {
+  const { t } = useTranslation();
   // ── Migrate legacy single-path storage to new multi-folder array ────────────
   const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>(() => {
     const stored = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
@@ -3175,6 +3182,7 @@ export default function App() {
   const [showFakkuLogin, setShowFakkuLogin] = useState(false);
   const [fakkuLoggedIn, setFakkuLoggedIn] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [showWhatsNewModal, setShowWhatsNewModal] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "compact" | "grid">(() => loadCache("libmaly_view_mode", "list"));
   const [isAppReady, setIsAppReady] = useState(false);
 
@@ -3605,6 +3613,13 @@ export default function App() {
     }
   }, [effectiveThemeMode, effectiveSeason, appSettings.accentColor, appSettings.customThemeColors]);
 
+  // Sync i18n language with settings
+  useEffect(() => {
+    if (appSettings.language && i18n.language !== appSettings.language) {
+      i18n.changeLanguage(appSettings.language).catch(() => { });
+    }
+  }, [appSettings.language]);
+
   const [revealedNsfw, setRevealedNsfw] = useState<Record<string, boolean>>({});
   const revealNsfwPath = useCallback((path: string) => setRevealedNsfw(p => ({ ...p, [path]: true })), []);
 
@@ -3783,7 +3798,7 @@ export default function App() {
     setScreenshotToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
 
-  const queueScreenshotToast = useCallback((gamePath: string, screenshot: Screenshot, label = "Screenshot saved") => {
+  const queueScreenshotToast = useCallback((gamePath: string, screenshot: Screenshot, label = t('screenshot.saved')) => {
     const id = `${screenshot.path}:${Date.now()}`;
     setScreenshotToasts((prev) => [
       { id, gamePath, screenshot, label },
@@ -3862,7 +3877,14 @@ export default function App() {
     invoke<boolean>("dlsite_is_logged_in").then(setDlsiteLoggedIn).catch(() => { });
     invoke<boolean>("fakku_is_logged_in").then(setFakkuLoggedIn).catch(() => { });
     invoke<string>("get_platform").then(setPlatform).catch(() => { });
-    getVersion().then(setAppVersion).catch(() => { });
+    getVersion().then((v) => {
+      setAppVersion(v);
+      const lastSeen = appStorageGetItem("libmaly_last_seen_version");
+      if (lastSeen !== v) {
+        setShowWhatsNewModal(true);
+        appStorageSetItem("libmaly_last_seen_version", v);
+      }
+    }).catch(() => { });
     const storedRecent = loadCache<RecentGame[]>(SK_RECENT, []);
     if (storedRecent.length > 0) {
       invoke("set_recent_games", { games: storedRecent }).catch(() => { });
@@ -4755,12 +4777,12 @@ export default function App() {
     () => Object.values(backgroundJobs).sort((a, b) => b.updatedAt - a.updatedAt),
     [backgroundJobs],
   );
-  const integrityCheckStatus = backgroundJobButtonLabel(integrityCheckJob, "Run Library Integrity Check");
-  const batchRefreshStatus = backgroundJobButtonLabel(batchMetadataRefreshJob, "Refetch All Linked Games");
+  const integrityCheckStatus = backgroundJobButtonLabel(integrityCheckJob, t("settings.scanner.integrity_check"));
+  const batchRefreshStatus = backgroundJobButtonLabel(batchMetadataRefreshJob, t("settings.scanner.refetch_all"));
   const autoHealPathsJob = backgroundJobs[JOB_AUTO_HEAL_PATHS] ?? null;
-  const autoHealPathsStatus = backgroundJobButtonLabel(autoHealPathsJob, "Auto-Heal Moved Paths");
+  const autoHealPathsStatus = backgroundJobButtonLabel(autoHealPathsJob, t("settings.scanner.auto_heal"));
   const backupRetentionJob = backgroundJobs[JOB_BACKUP_RETENTION] ?? null;
-  const backupRetentionStatus = backgroundJobButtonLabel(backupRetentionJob, "Apply Backup Retention Now");
+  const backupRetentionStatus = backgroundJobButtonLabel(backupRetentionJob, t("settings.system.apply_backup"));
   const isIntegrityCheckBusy = integrityCheckJob ? isBackgroundJobBusy(integrityCheckJob.status) : false;
   const isBatchMetadataRefreshBusy = batchMetadataRefreshJob ? isBackgroundJobBusy(batchMetadataRefreshJob.status) : false;
   const isAutoHealPathsBusy = autoHealPathsJob ? isBackgroundJobBusy(autoHealPathsJob.status) : false;
@@ -5717,7 +5739,7 @@ export default function App() {
     const { gamePath, shot } = pendingAnnotatedShot;
     try {
       await invoke("overwrite_screenshot_png", { path: shot.path, dataUrl });
-      recordScreenshotCapture(gamePath, shot, { label: "Annotated screenshot saved" });
+      recordScreenshotCapture(gamePath, shot, { label: t('screenshot.annotated_saved') });
     } catch (e) {
       await showPermissionDiagnostic("save the annotated screenshot", shot.path, e, "Annotated screenshot save failed");
       await invoke("delete_screenshot_file", { path: shot.path }).catch(() => { });
@@ -6334,7 +6356,7 @@ export default function App() {
       <div className="flex flex-col items-center justify-center w-screen h-screen select-none" style={{ background: "var(--color-bg-deep)" }}>
         <h1 className="text-4xl font-black italic tracking-widest mb-6" style={{ background: "linear-gradient(90deg, var(--color-accent), var(--color-warning))", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>LIBMALY</h1>
         <div className="w-8 h-8 rounded-full border-4 border-[var(--color-border)] border-t-[var(--color-accent)] animate-spin" />
-        <p className="mt-4 text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--color-text-muted)" }}>Building your library...</p>
+        <p className="mt-4 text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--color-text-muted)" }}>{t('loading.building_library')}</p>
       </div>
     );
   }
@@ -6431,7 +6453,7 @@ export default function App() {
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
             </svg>
-            Open
+            {t('game.menu.open')}
           </button>
           {/* Rescan folder */}
           <button className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
@@ -6443,7 +6465,7 @@ export default function App() {
               <path d="M21.5 2v6h-6" /><path d="M2.5 22v-6h6" />
               <path d="M22 11.5A10 10 0 0 0 3.2 7.2M2 12.5a10 10 0 0 0 18.8 4.2" />
             </svg>
-            Rescan folder
+            {t('game.menu.rescan')}
           </button>
           <div style={{ borderTop: "1px solid var(--color-border-card)", margin: "4px 0" }} />
           {/* Fav toggle */}
@@ -6463,7 +6485,7 @@ export default function App() {
               stroke="var(--color-warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
             </svg>
-            {favGames[ctxMenu.game.path] ? "Remove from favourites" : "Add to favourites"}
+            {favGames[ctxMenu.game.path] ? t('game.menu.fav_remove') : t('game.menu.fav_add')}
           </button>
           {/* Hide toggle */}
           <button className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
@@ -6482,7 +6504,7 @@ export default function App() {
                 ? <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>
                 : <><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" /><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></>}
             </svg>
-            {hiddenGames[ctxMenu.game.path] ? "Show game" : "Hide game"}
+            {hiddenGames[ctxMenu.game.path] ? t('game.menu.unhide') : t('game.menu.hide')}
           </button>
         </div>
       )}
@@ -6570,7 +6592,7 @@ export default function App() {
               <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
             </svg>
             <span className="font-bold tracking-wide text-sm truncate"
-              style={{ color: selected === null && activeMainTab === "library" ? "var(--color-accent)" : "var(--color-text)" }}>LIBMALY</span>
+              style={{ color: selected === null && activeMainTab === "library" ? "var(--color-accent)" : "var(--color-text)" }}>{t('common.app_name')}</span>
           </button>
           <button
             onClick={() => { setActiveMainTab("feed"); setSelected(null); }}
@@ -6585,7 +6607,7 @@ export default function App() {
               <path d="M4 11a9 9 0 0 1 9 9" /><path d="M4 4a16 16 0 0 1 16 16" /><circle cx="5" cy="19" r="1" />
             </svg>
             <span className="font-bold tracking-wide text-sm truncate"
-              style={{ color: activeMainTab === "feed" && selected === null ? "var(--color-accent)" : "var(--color-text)" }}>News & Updates</span>
+              style={{ color: activeMainTab === "feed" && selected === null ? "var(--color-accent)" : "var(--color-text)" }}>{t('library.sidebar.news')}</span>
           </button>
           <button
             onClick={() => { setActiveMainTab("stats"); setSelected(null); }}
@@ -6600,14 +6622,14 @@ export default function App() {
               <path d="M12 20V10" /><path d="M18 20V4" /><path d="M6 20v-4" />
             </svg>
             <span className="font-bold tracking-wide text-sm truncate"
-              style={{ color: activeMainTab === "stats" && selected === null ? "var(--color-accent)" : "var(--color-text)" }}>All-Time Stats</span>
+              style={{ color: activeMainTab === "stats" && selected === null ? "var(--color-accent)" : "var(--color-text)" }}>{t('library.sidebar.stats')}</span>
           </button>
           <div className="px-3 py-2 border-b" style={{ borderColor: "var(--color-bg-deep)" }}>
             <div className="relative mb-2">
               <svg className="absolute left-2 top-1/2 -translate-y-1/2" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
               </svg>
-              <input type="text" placeholder="Search games…" value={search}
+              <input type="text" placeholder={t('library.sidebar.search_placeholder')} value={search}
                 onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
                 className="w-full pl-7 pr-3 py-1.5 rounded text-xs outline-none"
                 style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-card)" }} />
@@ -6625,7 +6647,7 @@ export default function App() {
               >
                 <path d="M9 18l6-6-6-6" />
               </svg>
-              <span style={{ paddingTop: "1px" }}>Filters</span>
+              <span style={{ paddingTop: "1px" }}>{t('library.sidebar.filters')}</span>
             </div>
             {showFilters && (
               <div className="mb-2 space-y-1.5">
@@ -6648,7 +6670,7 @@ export default function App() {
                         background: filterMode === mode ? "var(--color-accent-dark)" : "var(--color-panel-alt)",
                         color: filterMode === mode ? "var(--color-white)" : "var(--color-text-muted)",
                         border: `1px solid ${filterMode === mode ? "var(--color-accent-mid)" : "var(--color-border-subtle)"}`,
-                      }}>{label}</button>
+                      }}>{t(`library.filters.${mode}` as any, { defaultValue: label, count: mode === 'hidden' ? Object.keys(hiddenGames).length : undefined })}</button>
                   ))}
                 </div>
                 <div className="flex flex-wrap gap-1 mb-1.5">
@@ -6665,7 +6687,7 @@ export default function App() {
                         background: filterMode === mode ? "var(--color-accent-dark)" : "var(--color-panel-alt)",
                         color: filterMode === mode ? "var(--color-white)" : "var(--color-text-muted)",
                         border: `1px solid ${filterMode === mode ? "var(--color-accent-mid)" : "var(--color-border-subtle)"}`,
-                      }}>{label}</button>
+                      }}>{t(`library.filters.${mode.replace(/\s/g, '_').toLowerCase()}` as any, { defaultValue: label })}</button>
                   ))}
                 </div>
                 {allCustomTags.length > 0 && (
@@ -6693,20 +6715,15 @@ export default function App() {
             )}
             {/* Sort */}
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] flex-shrink-0" style={{ color: "var(--color-text-dim)" }}>Sort:</span>
-              {([
-                ["lastPlayed", "Recent"],
-                ["playtime", "Time"],
-                ["name", "Name"],
-                ["custom", "Custom"],
-              ] as [SortMode, string][]).map(([mode, label]) => (
+              <span className="text-[10px] flex-shrink-0" style={{ color: "var(--color-text-dim)" }}>{t('library.sidebar.sort')}:</span>
+              {(["lastPlayed", "playtime", "name", "custom"] as SortMode[]).map((mode) => (
                 <button key={mode} onClick={() => setSortMode(mode)}
                   className="px-2 py-0.5 rounded text-[10px]"
                   style={{
                     background: sortMode === mode ? "var(--color-panel-3)" : "transparent",
                     color: sortMode === mode ? "var(--color-text)" : "var(--color-text-dim)",
                     border: `1px solid ${sortMode === mode ? "var(--color-border-strong)" : "transparent"}`,
-                  }}>{label}</button>
+                  }}>{t(`library.sidebar.sort_options.${mode}` as any)}</button>
               ))}
               {sortMode === "custom" && (
                 <span className="text-[9px]" style={{ color: "var(--color-text-dim)" }} title="Drag rows to reorder">⠿ drag</span>
@@ -6797,14 +6814,14 @@ export default function App() {
                           onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-danger)"; e.currentTarget.style.background = "var(--color-danger-bg)"; }}
                           onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-dim)"; e.currentTarget.style.background = "transparent"; }}
                           onClick={(e) => { e.stopPropagation(); handleDeleteCollection(col.id); }}
-                          title="Delete collection">×</button>
+                          title={t('library.sidebar.delete_collection')}>×</button>
                       </div>
                     ))}
                   </div>
                 )}
                 {creatingCollection && (
                   <div className="px-3 pb-2 pt-1 space-y-1.5">
-                    <input autoFocus placeholder="Collection name…" value={newCollectionName}
+                    <input autoFocus placeholder={t('library.sidebar.collection_placeholder')} value={newCollectionName}
                       onInput={(e) => setNewCollectionName((e.target as HTMLInputElement).value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && newCollectionName.trim()) {
@@ -6851,17 +6868,17 @@ export default function App() {
                 <circle cx="8.5" cy="7" r="4" />
                 <path d="M20 8v6" /><path d="M23 11h-6" />
               </svg>
-              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ paddingTop: "1px" }}>By Developer</span>
+              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ paddingTop: "1px" }}>{t('library.sidebar.by_developer')}</span>
               {filterMode.startsWith("dev:") && (
                 <button onClick={(e) => { e.stopPropagation(); setFilterMode("all"); }}
                   className="text-[9px] px-1.5 py-0.5 rounded mr-1"
                   style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
-                  title="Clear filter">✕ clear</button>
+                  title={t('library.sidebar.clear_filter')}>✕ {t('library.sidebar.clear')}</button>
               )}
             </div>
             {showDevelopers && (
               developerBuckets.length === 0 ? (
-                <p className="px-3 pb-2 text-[10px]" style={{ color: "var(--color-text-dim)" }}>No developers yet</p>
+                <p className="px-3 pb-2 text-[10px]" style={{ color: "var(--color-text-dim)" }}>{t('library.sidebar.no_developers')}</p>
               ) : (
                 <div className="overflow-y-auto pb-1" style={{ maxHeight: "156px", scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
                   {developerBuckets.map((dev) => {
@@ -6893,12 +6910,12 @@ export default function App() {
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z" />
               </svg>
-              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ paddingTop: "1px" }}>Wishlist ({wishlist.length})</span>
+              <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ paddingTop: "1px" }}>{t('library.sidebar.wishlist')} ({wishlist.length})</span>
             </div>
             {showWishlist && (
               <>
                 {wishlist.length === 0 && (
-                  <p className="px-3 pb-2 text-[10px]" style={{ color: "var(--color-text-dim)" }}>No wishlisted games</p>
+                  <p className="px-3 pb-2 text-[10px]" style={{ color: "var(--color-text-dim)" }}>{t('library.sidebar.no_wishlist')}</p>
                 )}
                 {wishlist.length > 0 && (
                   <div className="overflow-y-auto" style={{ maxHeight: "152px", scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
@@ -6933,11 +6950,11 @@ export default function App() {
             {syncState === "full-scan" ? (
               <div className="flex flex-col items-center justify-center h-32 gap-2">
                 <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2" style={{ borderColor: "var(--color-accent)" }} />
-                <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>Scanning…</span>
+                <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>{t('library.status.scanning')}</span>
               </div>
             ) : sidebarItems.length === 0 ? (
               <p className="px-4 py-6 text-xs text-center" style={{ color: "var(--color-text-muted)" }}>
-                {games.length === 0 ? "Add a library folder to get started" : "No games match"}
+                {games.length === 0 ? t('library.main.add_hint') : t('library.main.no_games_match')}
               </p>
             ) : (
               <div style={{ position: "relative", height: `${vTotalH}px` }}>
@@ -7035,7 +7052,7 @@ export default function App() {
                       }}>
                       {availableGameUpdates[game.path] && (
                         <span className="absolute top-[4px] right-[4px] w-1.5 h-1.5 rounded-full z-10 animate-pulse bg-green-500"
-                          style={{ boxShadow: "0 0 5px #10b981" }} title="New update available!" />
+                          style={{ boxShadow: "0 0 5px #10b981" }} title={t('library.sidebar.new_update_badge')} />
                       )}
                       {viewMode === "compact" ? (
                         <div className="w-5 h-5 rounded flex-shrink-0 overflow-hidden relative" style={{ background: heroGradient(game.name) }}>
@@ -7068,7 +7085,7 @@ export default function App() {
                           <p className="text-xs font-medium truncate flex-1">{name}</p>
                           {isHiddenItem && (
                             <span className="text-[9px] px-1 rounded flex-shrink-0"
-                              style={{ background: "var(--color-panel-3)", color: "var(--color-text-dim)" }}>hidden</span>
+                              style={{ background: "var(--color-panel-3)", color: "var(--color-text-dim)" }}>{t('game.hidden')}</span>
                           )}
                         </div>
                         {viewMode !== "compact" && (
@@ -7076,10 +7093,10 @@ export default function App() {
                             <p className="text-[10px] truncate" style={{ color: "var(--color-text-dim)" }}>
                               {stats[game.path]?.totalTime > 0
                                 ? `${formatTime(stats[game.path].totalTime)}${(stats[game.path].launchCount ?? 0) > 0
-                                  ? ` · ${stats[game.path].launchCount}×`
+                                  ? ` · ${t('game.times_played', { count: stats[game.path].launchCount })}`
                                   : ""
                                 }`
-                                : "Never played"}
+                                : t('library.status.never_played')}
                             </p>
                             {collections.some((c) => c.gamePaths.includes(game.path)) && (
                               <div className="flex gap-0.5 mt-0.5">
@@ -7101,7 +7118,7 @@ export default function App() {
             {syncState === "syncing" && (
               <div className="flex items-center gap-2 px-1 py-1">
                 <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "var(--color-accent)" }} />
-                <span className="text-xs" style={{ color: "var(--color-accent)" }}>Checking changes…</span>
+                <span className="text-xs" style={{ color: "var(--color-accent)" }}>{t('library.status.checking_changes')}</span>
               </div>
             )}
 
@@ -7112,12 +7129,12 @@ export default function App() {
               style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}
               onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-2)")}
               onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
-              title="Surprise me"
+              title={t('library.sidebar.surprise')}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 2l2.5 6.5L21 9l-5 4 1.5 6.5L12 16l-5.5 3.5L8 13 3 9l6.5-.5L12 2z" />
               </svg>
-              Surprise me
+              {t('library.sidebar.surprise')}
             </button>
 
             {/* ── Add dropdown ── */}
@@ -7132,7 +7149,7 @@ export default function App() {
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
                 </svg>
-                Add…
+                {t('library.sidebar.add')}
                 {/* chevron */}
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
                   style={{ marginLeft: "auto", transform: showAddMenu ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
@@ -7151,8 +7168,8 @@ export default function App() {
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                     </svg>
-                    Add Library Folder
-                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>scan dir</span>
+                    {t('library.sidebar.add_folder')}
+                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>{t('library.sidebar.scan_dir_hint')}</span>
                   </button>
                   <button
                     onClick={handleAddGameManually}
@@ -7163,8 +7180,8 @@ export default function App() {
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
                     </svg>
-                    Add Game Manually
-                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>.exe / .sh</span>
+                    {t('library.sidebar.add_game')}
+                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>{t('library.sidebar.exe_sh_hint')}</span>
                   </button>
                 </div>
               )}
@@ -7177,23 +7194,23 @@ export default function App() {
                 style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px solid var(--color-panel-3)" }}
                 onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-text-muted)"; e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-dim)"; e.currentTarget.style.borderColor = "var(--color-panel-3)"; }}
-                title="Settings">
+                title={t('library.sidebar.settings')}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="3" />
                   <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
                 </svg>
-                Settings
+                {t('library.sidebar.settings')}
               </button>
               <button onClick={() => setShowLogViewer(true)}
                 className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
                 style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px solid var(--color-panel-3)" }}
                 onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-text-muted)"; e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-dim)"; e.currentTarget.style.borderColor = "var(--color-panel-3)"; }}
-                title="Rust logs">
+                title={t('library.sidebar.logs')}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M4 6h16" /><path d="M4 12h16" /><path d="M4 18h16" />
                 </svg>
-                Logs
+                {t('library.sidebar.logs')}
               </button>
               {appUpdate && (
                 <button onClick={() => setShowAppUpdateModal(true)}
@@ -7201,7 +7218,7 @@ export default function App() {
                   style={{ background: "var(--color-success-bg)", color: "var(--color-success)", border: "1px solid var(--color-success-border)" }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "#1e4a1e")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-success-bg)")}
-                  title={`v${appUpdate.version} is available — click to install`}>
+                  title={t('library.sidebar.update_available_tooltip', { version: appUpdate.version })}>
                   ↑ v{appUpdate.version}
                 </button>
               )}
@@ -7246,7 +7263,7 @@ export default function App() {
                 )
               })}
             </div>
-            {filtered.length === 0 && <div className="text-center py-12 text-[var(--color-text-muted)]">No games match the current filters</div>}
+            {filtered.length === 0 && <div className="text-center py-12 text-[var(--color-text-muted)]">{t('library.main.no_games_match')}</div>}
           </div>
         ) : !selected ? (
           games.length === 0 ? (
@@ -7254,7 +7271,7 @@ export default function App() {
               <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.2 }}>
                 <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
               </svg>
-              <p className="text-base" style={{ opacity: 0.4 }}>Add a library folder or game to get started</p>
+              <p className="text-base" style={{ opacity: 0.4 }}>{t('library.main.add_hint')}</p>
               <div className="flex gap-3">
                 <button onClick={handleAddFolder}
                   className="px-5 py-2.5 rounded font-semibold text-sm flex items-center gap-2"
@@ -7262,7 +7279,7 @@ export default function App() {
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                   </svg>
-                  Add Library Folder
+                  {t('library.sidebar.add_folder')}
                 </button>
                 <button onClick={handleAddGameManually}
                   className="px-5 py-2.5 rounded font-semibold text-sm flex items-center gap-2"
@@ -7270,7 +7287,7 @@ export default function App() {
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
                   </svg>
-                  Add Game Manually
+                  {t('library.sidebar.add_game')}
                 </button>
               </div>
             </div>
@@ -7403,6 +7420,7 @@ export default function App() {
             onPlayniteImport={() => setShowPlayniteImport(true)}
             onGogImport={() => setShowGogImport(true)}
             onAppUpdate={() => setShowAppUpdateModal(true)}
+            onOpenWhatsNew={() => setShowWhatsNewModal(true)}
             appSettings={appSettings}
             defaultSettings={DEFAULT_SETTINGS}
             onSaveSettings={(s) => { setAppSettings(s); saveCache(SK_SETTINGS, s); }}
@@ -7533,6 +7551,11 @@ export default function App() {
         )
       }
       {
+        showWhatsNewModal && (
+          <WhatsNewModal onClose={() => setShowWhatsNewModal(false)} />
+        )
+      }
+      {
         showLogViewer && (
           <LogViewerModal
             logs={rustLogs}
@@ -7634,25 +7657,25 @@ export default function App() {
             style={{ background: "rgba(0,0,0,0.75)" }}
             onClick={(e) => { if (e.target === e.currentTarget && !isDeleting) setDeleteTarget(null); }}>
             <div className="rounded-lg p-6 w-96 shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-strong)" }}>
-              <h2 className="text-lg font-bold mb-2" style={{ color: "var(--color-white)" }}>Uninstall Game</h2>
-              <p className="text-sm mb-1" style={{ color: "var(--color-text)" }}>This will permanently delete:</p>
+              <h2 className="text-lg font-bold mb-2" style={{ color: "var(--color-white)" }}>{t('library.uninstall.title')}</h2>
+              <p className="text-sm mb-1" style={{ color: "var(--color-text)" }}>{t('library.uninstall.confirm')}</p>
               <p className="text-xs font-mono mb-4 break-all" style={{ color: "var(--color-danger)" }}>
                 {deleteTarget.path.replace(/[\\/][^\\/]+$/, "")}
               </p>
-              <p className="text-xs mb-3" style={{ color: "var(--color-text-muted)" }}>This action cannot be undone unless you reinstall the game later.</p>
+              <p className="text-xs mb-3" style={{ color: "var(--color-text-muted)" }}>{t('library.uninstall.warning')}</p>
               <label className="flex items-center gap-2 text-xs mb-5 cursor-pointer select-none" style={{ color: "var(--color-text)" }}>
                 <input type="checkbox" checked={keepDataOnDelete} onChange={(e) => setKeepDataOnDelete(e.currentTarget.checked)} />
-                Keep playtime and metadata (mark as uninstalled)
+                {t('library.uninstall.keep_data')}
               </label>
               <div className="flex gap-3 justify-end">
                 <button onClick={() => setDeleteTarget(null)} disabled={isDeleting}
                   className="px-4 py-2 rounded text-sm disabled:opacity-50"
-                  style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}>Cancel</button>
+                  style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}>{t('common.cancel')}</button>
                 <button onClick={confirmDelete} disabled={isDeleting}
                   className="px-4 py-2 rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
                   style={{ background: "#c0392b", color: "var(--color-white)" }}>
                   {isDeleting && <span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
-                  Delete Files
+                  {t('library.uninstall.delete_files')}
                 </button>
               </div>
             </div>

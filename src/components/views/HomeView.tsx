@@ -1,4 +1,5 @@
 import { useMemo } from "preact/hooks";
+import { useTranslation } from "react-i18next";
 
 interface GameLike {
   name: string;
@@ -26,22 +27,22 @@ interface GameCustomizationLike {
   coverUrl?: string;
 }
 
-function formatTime(s: number) {
+function formatTime(s: number, t: any) {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  if (h > 0) return `${h} hrs ${m} mins`;
-  if (m > 0) return `${m} mins`;
-  return "< 1 min";
+  if (h > 0) return `${t('time.hours', { count: h })} ${t('time.minutes', { count: m })}`;
+  if (m > 0) return t('time.minutes', { count: m });
+  return t('time.less_than_minute');
 }
 
-function timeAgo(ts: number) {
-  if (!ts) return "Never";
+function timeAgo(ts: number, t: any) {
+  if (!ts) return t('time.never');
   const d = Math.floor((Date.now() - ts) / 86400000);
-  if (d === 0) return "Today";
-  if (d === 1) return "Yesterday";
-  if (d < 30) return `${d} days ago`;
+  if (d === 0) return t('time.today');
+  if (d === 1) return t('time.yesterday');
+  if (d < 30) return t('time.days_ago', { count: d });
   const mo = Math.floor(d / 30);
-  return mo < 12 ? `${mo} mo ago` : `${Math.floor(mo / 12)} yr ago`;
+  return mo < 12 ? t('time.months_ago', { count: mo }) : t('time.years_ago', { count: Math.floor(mo / 12) });
 }
 
 function heroGradient(name: string) {
@@ -51,7 +52,7 @@ function heroGradient(name: string) {
   return `linear-gradient(135deg,hsl(${hue},40%,15%) 0%,hsl(${(hue + 50) % 360},55%,25%) 100%)`;
 }
 
-function PlayChart({ sessions, gamePath, days = 7 }: { sessions: SessionEntryLike[]; gamePath: string | null; days?: number }) {
+function PlayChart({ sessions, gamePath, days = 7, t }: { sessions: SessionEntryLike[]; gamePath: string | null; days?: number; t: any }) {
   const labels = Array.from({ length: days }).map((_, i) => {
     const d = new Date(Date.now() - (days - 1 - i) * 86400000);
     return d.toLocaleDateString(undefined, { weekday: "short" });
@@ -72,7 +73,7 @@ function PlayChart({ sessions, gamePath, days = 7 }: { sessions: SessionEntryLik
         const h = Math.max(4, Math.round((v / max) * 100));
         return (
           <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1">
-            <div className="w-full rounded-t" style={{ height: `${h}%`, background: "linear-gradient(180deg,var(--color-accent),var(--color-accent-dark))" }} title={`${labels[i]}: ${formatTime(v)}`} />
+            <div className="w-full rounded-t" style={{ height: `${h}%`, background: "linear-gradient(180deg,var(--color-accent),var(--color-accent-dark))" }} title={`${labels[i]}: ${formatTime(v, t)}`} />
             <span className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>{labels[i]}</span>
           </div>
         );
@@ -108,6 +109,7 @@ export function HomeView({
   onPlay: (path: string) => void;
   onStop: () => void;
 }) {
+  const { t } = useTranslation();
   const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000;
 
   const recent = useMemo(
@@ -142,42 +144,42 @@ export function HomeView({
       <div className="flex items-center gap-6 mb-8 pb-5 border-b" style={{ borderColor: "var(--color-border-card)" }}>
         <div>
           <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{games.length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>Games in library</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>{t('game.home.stats.games_count')}</p>
         </div>
         <div style={{ width: "1px", height: "36px", background: "var(--color-panel-3)" }} />
         <div>
           <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{Object.keys(stats).filter((k) => stats[k].totalTime > 0).length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>Played</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>{t('game.home.stats.played')}</p>
         </div>
         <div style={{ width: "1px", height: "36px", background: "var(--color-panel-3)" }} />
         <div>
-          <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{formatTime(totalPlaytimeSecs)}</p>
-          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>Total playtime</p>
+          <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{formatTime(totalPlaytimeSecs, t)}</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>{t('game.home.stats.total_playtime')}</p>
         </div>
         <div style={{ width: "1px", height: "36px", background: "var(--color-panel-3)" }} />
         <div>
           <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{Object.keys(favGames).length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>Favourites</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>{t('game.home.stats.favorites')}</p>
         </div>
         <div style={{ width: "1px", height: "36px", background: "var(--color-panel-3)" }} />
         <div>
           <p className="text-3xl font-bold" style={{ color: "var(--color-text)" }}>{Object.keys(notes).filter((k) => notes[k].trim()).length}</p>
-          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>With notes</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>{t('game.home.stats.with_notes')}</p>
         </div>
       </div>
 
       <section>
         <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "var(--color-text-muted)" }}>
-          Recent Games
+          {t('game.home.recent.title')}
           <span className="ml-2 font-normal normal-case" style={{ color: "var(--color-text-dim)" }}>
-            — played in the last 60 days
+            {t('game.home.recent.subtitle')}
           </span>
         </h2>
 
         {recent.length === 0 ? (
           <div className="rounded-lg px-6 py-12 text-center" style={{ background: "var(--color-bg-elev)", border: "2px dashed var(--color-panel-3)" }}>
-            <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>No games played recently.</p>
-            <p className="text-xs mt-1" style={{ color: "var(--color-text-dim)" }}>Launch a game to see it here.</p>
+            <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>{t('game.home.recent.empty')}</p>
+            <p className="text-xs mt-1" style={{ color: "var(--color-text-dim)" }}>{t('game.home.recent.empty_hint')}</p>
           </div>
         ) : (
           <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" }}>
@@ -201,7 +203,7 @@ export function HomeView({
                   <div className="flex items-center gap-2 px-3 py-2">
                     <div className="flex-1 min-w-0">
                       <p className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
-                        {timeAgo(st.lastPlayed)} · {st.totalTime > 0 ? formatTime(st.totalTime) : "—"}
+                        {timeAgo(st.lastPlayed, t)} · {st.totalTime > 0 ? formatTime(st.totalTime, t) : "—"}
                       </p>
                     </div>
                     <button
@@ -217,7 +219,7 @@ export function HomeView({
                         e.currentTarget.style.color = "var(--color-text-muted)";
                       }}
                     >
-                      View
+                      {t('game.home.recent.view')}
                     </button>
                     <button
                       onClick={() => (runningGamePath === game.path ? onStop() : onPlay(game.path))}
@@ -229,12 +231,12 @@ export function HomeView({
                       {runningGamePath === game.path ? (
                         <>
                           <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" /></svg>
-                          Stop
+                          {t('game.stop')}
                         </>
                       ) : (
                         <>
                           <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-                          Play
+                          {t('game.play')}
                         </>
                       )}
                     </button>
@@ -248,7 +250,7 @@ export function HomeView({
 
       {mostPlayedThisWeek.length > 0 && (
         <section className="mt-8">
-          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "var(--color-text-muted)" }}>Most Played This Week</h2>
+          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "var(--color-text-muted)" }}>{t('game.home.weekly.title')}</h2>
           <div className="rounded-xl p-4 space-y-3" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
             {mostPlayedThisWeek.map(({ game, secs, path }) => {
               const maxSecs = mostPlayedThisWeek[0].secs;
@@ -262,7 +264,7 @@ export function HomeView({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between mb-0.5">
                       <p className="text-xs truncate font-medium" style={{ color: "var(--color-text)" }}>{name}</p>
-                      <span className="text-[10px] ml-2 flex-shrink-0" style={{ color: "var(--color-accent)" }}>{formatTime(secs)}</span>
+                      <span className="text-[10px] ml-2 flex-shrink-0" style={{ color: "var(--color-accent)" }}>{formatTime(secs, t)}</span>
                     </div>
                     <div className="h-1 rounded-full" style={{ background: "var(--color-panel-low)" }}>
                       <div
@@ -284,9 +286,9 @@ export function HomeView({
 
       {sessions.length > 0 && (
         <section className="mt-8">
-          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "var(--color-text-muted)" }}>Library Activity — Last 7 Days</h2>
+          <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "var(--color-text-muted)" }}>{t('game.home.weekly.activity_title')}</h2>
           <div className="rounded-xl p-4" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
-            <PlayChart sessions={sessions} gamePath={null} days={7} />
+            <PlayChart sessions={sessions} gamePath={null} days={7} t={t} />
           </div>
         </section>
       )}

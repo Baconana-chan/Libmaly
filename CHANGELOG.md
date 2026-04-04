@@ -1,5 +1,17 @@
 # Changelog
 
+## Next ver.
+
+### 📦 Package Management
+- **Added .rpm build support** — Red Hat Package Manager packages for Linux distributions (Fedora, CentOS, RHEL)
+- **Added .pacman build support** — Arch Linux packages for Arch-based distributions
+- **Updated build scripts** — added dedicated commands for different package formats:
+  - `npm run tauri:build:rpm` - Build RPM packages
+  - `npm run tauri:build:pacman` - Build Arch Linux packages
+  - `npm run tauri:build:appimage` - Build AppImage packages
+  - `npm run tauri:build:linux` - Build Linux binaries
+- **Added Linux dependencies** — specified required system packages for RPM and Pacman builds
+
 ## 1.6.0 - 2026-04-02
 
 ### 📊 Stats & Analytics Overhaul
@@ -60,6 +72,7 @@
 - **Extracted 30+ utility functions** — path helpers, color helpers, rating helpers, metadata helpers, and formatting functions moved to shared modules
 - **Extracted all constants** — storage keys, job IDs, rating categories, collection colors, and default settings moved to `constants.ts`
 - **Fixed TypeScript errors** — added proper type annotations for `RATING_CATEGORIES` and resolved implicit `any` types
+
 
 ## 1.5.4 - 2026-04-02
 

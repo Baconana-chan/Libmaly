@@ -7,7 +7,13 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:build": "tauri build",
+    "tauri:build:win": "tauri build --target x86_64-pc-windows-msi",
+    "tauri:build:linux": "tauri build --target x86_64-unknown-linux-gnu",
+    "tauri:build:rpm": "tauri build --target x86_64-unknown-linux-gnu --bundle rpm",
+    "tauri:build:pacman": "tauri build --target x86_64-unknown-linux-gnu --bundle pacman",
+    "tauri:build:appimage": "tauri build --target x86_64-unknown-linux-gnu --bundle appimage"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

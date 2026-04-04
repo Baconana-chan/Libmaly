@@ -64,7 +64,7 @@
       "../third_party/discord_social_sdk/lib/release/libdiscord_partner_sdk.so",
       "../third_party/discord_social_sdk/lib/release/libdiscord_partner_sdk.dylib"
     ],
-    "targets": "all",
+    "targets": ["nsis", "appimage", "rpm", "pacman"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -78,7 +78,44 @@
         "silent": true
       },
       "nsis": {
-        "installMode": "currentUser"
+        "headerImage": "nsis/header.bmp",
+        "sidebarImage": "nsis/sidebar.bmp",
+        "installerIcon": "icons/icon.ico",
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "Russian",
+          "Japanese",
+          "SimpChinese",
+          "TradChinese",
+          "Korean",
+          "Polish",
+          "Ukrainian",
+          "German",
+          "French"
+        ],
+        "customLanguageFiles": {
+          "Polish": "nsis/Polish.nsh"
+        },
+        "displayLanguageSelector": true,
+        "compression": "lzma",
+        "startMenuFolder": "LIBMALY"
+      }
+    },
+    "linux": {
+      "rpm": {
+        "depends": [
+          "libwebkit2gtk-4.1-devel",
+          "libappindicator-gtk3-devel",
+          "librsvg2-devel"
+        ]
+      },
+      "pacman": {
+        "depends": [
+          "webkit2gtk-4.1",
+          "libappindicator-gtk3",
+          "librsvg"
+        ]
       }
     }
   }

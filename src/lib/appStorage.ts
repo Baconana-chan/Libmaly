@@ -9,9 +9,23 @@ let initialized = false;
 let portableMode = false;
 const portableEntries = new Map<string, string>();
 let flushTimer: number | null = null;
+let activeProfileId = "default";
+
+const GLOBAL_STORAGE_KEYS = new Set<string>([
+  "libmaly_last_seen_version",
+]);
 
 function hasTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function profileStorageKey(key: string) {
+  if (GLOBAL_STORAGE_KEYS.has(key)) return key;
+  return `libmaly_profile::${activeProfileId}::${key}`;
+}
+
+function shouldUseLegacyFallback(key: string) {
+  return activeProfileId === "default" && !GLOBAL_STORAGE_KEYS.has(key);
 }
 
 function schedulePortableFlush() {
@@ -56,35 +70,63 @@ export async function initAppStorage() {
   }
 }
 
+export function setAppStorageProfile(profileId: string) {
+  const trimmed = (profileId || "").trim();
+  activeProfileId = trimmed || "default";
+}
+
+export function getAppStorageProfile() {
+  return activeProfileId;
+}
+
 export function appStorageGetItem(key: string): string | null {
+  const scopedKey = profileStorageKey(key);
   if (portableMode) {
-    return portableEntries.get(key) ?? null;
+    const value = portableEntries.get(scopedKey);
+    if (value !== undefined) return value;
+    if (shouldUseLegacyFallback(key)) {
+      return portableEntries.get(key) ?? null;
+    }
+    return null;
   }
   try {
-    return localStorage.getItem(key);
+    const value = localStorage.getItem(scopedKey);
+    if (value !== null) return value;
+    if (shouldUseLegacyFallback(key)) {
+      return localStorage.getItem(key);
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
 export function appStorageSetItem(key: string, value: string) {
+  const scopedKey = profileStorageKey(key);
   if (portableMode) {
-    portableEntries.set(key, value);
+    portableEntries.set(scopedKey, value);
     schedulePortableFlush();
     return;
   }
   try {
-    localStorage.setItem(key, value);
+    localStorage.setItem(scopedKey, value);
   } catch {}
 }
 
 export function appStorageRemoveItem(key: string) {
+  const scopedKey = profileStorageKey(key);
   if (portableMode) {
-    portableEntries.delete(key);
+    portableEntries.delete(scopedKey);
+    if (shouldUseLegacyFallback(key)) {
+      portableEntries.delete(key);
+    }
     schedulePortableFlush();
     return;
   }
   try {
-    localStorage.removeItem(key);
+    localStorage.removeItem(scopedKey);
+    if (shouldUseLegacyFallback(key)) {
+      localStorage.removeItem(key);
+    }
   } catch {}
 }

@@ -22,3 +22,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Discord Social SDK: keep only the runtime files actually used by LIBMALY.
+third_party/discord_social_sdk/bin/debug/
+third_party/discord_social_sdk/bin/release/arm64/
+third_party/discord_social_sdk/lib/debug/
+third_party/discord_social_sdk/lib/release/arm64/
+third_party/discord_social_sdk/lib/release/*.aar
+third_party/discord_social_sdk/lib/release/*.dbg
+third_party/discord_social_sdk/lib/release/*.lib
+third_party/discord_social_sdk/lib/release/*.xcframework/

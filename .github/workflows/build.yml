@@ -25,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          lfs: true
 
       - name: Verify WebView2 install mode is not "skip" or bare "downloadBootstrapper"
         run: |
@@ -80,6 +82,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          lfs: true
 
       - name: Clean Rust build cache
         shell: bash
@@ -188,6 +192,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          lfs: true
 
       - uses: oven-sh/setup-bun@v2
         with:

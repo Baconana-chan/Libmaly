@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::AppHandle;
 use tauri::Emitter;
@@ -36,8 +36,13 @@ use screenshot::{
     overwrite_screenshot_png, save_screenshot_tags, take_screenshot_manual,
     get_screenshot_data_url,
 };
+mod discord;
 mod data_paths;
 use data_paths::{app_data_root, crash_report_path, is_portable_mode};
+use discord::{
+    discord_clear_presence, discord_get_snapshot, discord_initialize, discord_open_connected_games_settings,
+    discord_set_presence, discord_shutdown,
+};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Game {
@@ -53,6 +58,41 @@ struct RecentGame {
 }
 
 struct RecentGamesState(std::sync::Mutex<Vec<RecentGame>>);
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LibraryProfile {
+    id: String,
+    display_name: String,
+    handle: Option<String>,
+    tagline: Option<String>,
+    avatar_url: Option<String>,
+    banner_url: Option<String>,
+    accent_color: Option<String>,
+    created_at: u64,
+    updated_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LibraryProfileRegistry {
+    active_profile_id: String,
+    profiles: Vec<LibraryProfile>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LibraryProfileInput {
+    id: Option<String>,
+    display_name: String,
+    handle: Option<String>,
+    tagline: Option<String>,
+    avatar_url: Option<String>,
+    banner_url: Option<String>,
+    accent_color: Option<String>,
+}
+
+struct LibraryProfilesState(std::sync::Mutex<LibraryProfileRegistry>);
 
 #[derive(Serialize, Deserialize, Clone)]
 struct RustLogEntry {
@@ -288,6 +328,99 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+const LIBRARY_PROFILES_FILE: &str = "library_profiles.json";
+
+fn normalize_optional_profile_field(value: Option<String>) -> Option<String> {
+    value.and_then(|s| {
+        let trimmed = s.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn sanitize_profile_slug(input: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in input.chars() {
+        let c = ch.to_ascii_lowercase();
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+fn profiles_registry_path() -> PathBuf {
+    app_data_root().join(LIBRARY_PROFILES_FILE)
+}
+
+fn default_library_profile() -> LibraryProfile {
+    let now = now_ms();
+    LibraryProfile {
+        id: "default".to_string(),
+        display_name: "Default Library".to_string(),
+        handle: Some("main".to_string()),
+        tagline: Some("Primary local profile".to_string()),
+        avatar_url: None,
+        banner_url: None,
+        accent_color: Some("#66c0f4".to_string()),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn ensure_profile_registry(mut registry: LibraryProfileRegistry) -> LibraryProfileRegistry {
+    if registry.profiles.is_empty() {
+        let profile = default_library_profile();
+        registry.active_profile_id = profile.id.clone();
+        registry.profiles.push(profile);
+        return registry;
+    }
+    if registry
+        .profiles
+        .iter()
+        .all(|profile| profile.id != registry.active_profile_id)
+    {
+        registry.active_profile_id = registry
+            .profiles
+            .first()
+            .map(|profile| profile.id.clone())
+            .unwrap_or_else(|| "default".to_string());
+    }
+    registry
+}
+
+fn load_library_profile_registry() -> LibraryProfileRegistry {
+    let path = profiles_registry_path();
+    if !path.exists() {
+        return ensure_profile_registry(LibraryProfileRegistry {
+            active_profile_id: "default".to_string(),
+            profiles: vec![default_library_profile()],
+        });
+    }
+    let raw = std::fs::read_to_string(path).ok();
+    let parsed = raw
+        .as_deref()
+        .and_then(|contents| serde_json::from_str::<LibraryProfileRegistry>(contents).ok());
+    ensure_profile_registry(parsed.unwrap_or(LibraryProfileRegistry {
+        active_profile_id: "default".to_string(),
+        profiles: vec![default_library_profile()],
+    }))
+}
+
+fn save_library_profile_registry(registry: &LibraryProfileRegistry) -> Result<(), String> {
+    let path = profiles_registry_path();
+    let raw = serde_json::to_string_pretty(registry).map_err(|e| e.to_string())?;
+    atomic_write_string(&path, &raw, "save_library_profiles")
 }
 
 fn recent_file_ops_path() -> PathBuf {
@@ -1379,7 +1512,7 @@ fn backup_save_files(
     })
 }
 
-fn push_rust_log(app: Option<&AppHandle>, level: &str, message: impl Into<String>) {
+pub(crate) fn push_rust_log(app: Option<&AppHandle>, level: &str, message: impl Into<String>) {
     let entry = RustLogEntry {
         ts: now_ms(),
         level: level.to_string(),
@@ -2793,6 +2926,7 @@ fn launch_game(
         match command.spawn() {
             Ok(mut child) => {
                 let root_pid = child.id();
+                discord::set_game_window_pid(root_pid as i32);
                 let start_time = Instant::now();
                 let initial_related = vec![root_pid];
 
@@ -2856,6 +2990,7 @@ fn launch_game(
                             related_pids: related_pids.clone(),
                         });
                         screenshot::update_active_pid(tracked_pid);
+                        discord::set_game_window_pid(tracked_pid as i32);
                         last_tracked_pid = tracked_pid;
                         last_related = related_pids;
                     }
@@ -2864,6 +2999,7 @@ fn launch_game(
                 }
 
                 screenshot::stop_hotkey_thread(hotkey_thread_id);
+                discord::set_game_window_pid(std::process::id() as i32);
 
                 {
                     let state = app.state::<screenshot::ActiveGameState>();
@@ -3235,10 +3371,138 @@ async fn apply_update(app: AppHandle, download_url: String) -> Result<(), String
     Ok(())
 }
 
+#[tauri::command]
+fn get_library_profiles(app: AppHandle) -> LibraryProfileRegistry {
+    app.state::<LibraryProfilesState>().0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn save_library_profile(
+    app: AppHandle,
+    profile: LibraryProfileInput,
+) -> Result<LibraryProfileRegistry, String> {
+    let profiles_state = app.state::<LibraryProfilesState>();
+    let mut registry = profiles_state.0.lock().unwrap();
+    let trimmed_name = profile.display_name.trim();
+    if trimmed_name.is_empty() {
+        return Err("Profile name cannot be empty".to_string());
+    }
+
+    let requested_id = profile.id.as_deref().map(str::trim).unwrap_or("");
+    let mut profile_id = if requested_id.is_empty() {
+        sanitize_profile_slug(trimmed_name)
+    } else {
+        sanitize_profile_slug(requested_id)
+    };
+    if profile_id.is_empty() {
+        profile_id = format!("profile-{}", now_ms());
+    }
+
+    let mut candidate_id = profile_id.clone();
+    let mut suffix = 2usize;
+    while registry
+        .profiles
+        .iter()
+        .any(|existing| existing.id == candidate_id && existing.id != requested_id)
+    {
+        candidate_id = format!("{profile_id}-{suffix}");
+        suffix += 1;
+    }
+    profile_id = candidate_id;
+
+    let now = now_ms();
+    if let Some(existing) = registry
+        .profiles
+        .iter_mut()
+        .find(|existing| existing.id == requested_id && !requested_id.is_empty())
+    {
+        existing.display_name = trimmed_name.to_string();
+        existing.handle = normalize_optional_profile_field(profile.handle);
+        existing.tagline = normalize_optional_profile_field(profile.tagline);
+        existing.avatar_url = normalize_optional_profile_field(profile.avatar_url);
+        existing.banner_url = normalize_optional_profile_field(profile.banner_url);
+        existing.accent_color = normalize_optional_profile_field(profile.accent_color);
+        existing.updated_at = now;
+    } else {
+        registry.profiles.push(LibraryProfile {
+            id: profile_id.clone(),
+            display_name: trimmed_name.to_string(),
+            handle: normalize_optional_profile_field(profile.handle),
+            tagline: normalize_optional_profile_field(profile.tagline),
+            avatar_url: normalize_optional_profile_field(profile.avatar_url),
+            banner_url: normalize_optional_profile_field(profile.banner_url),
+            accent_color: normalize_optional_profile_field(profile.accent_color),
+            created_at: now,
+            updated_at: now,
+        });
+        if registry.active_profile_id.is_empty() {
+            registry.active_profile_id = profile_id;
+        }
+    }
+
+    *registry = ensure_profile_registry(registry.clone());
+    save_library_profile_registry(&registry)?;
+    let snapshot = registry.clone();
+    drop(registry);
+    refresh_tray(&app, &app.state::<RecentGamesState>().0.lock().unwrap().clone(), &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn switch_library_profile(
+    app: AppHandle,
+    profile_id: String,
+) -> Result<LibraryProfileRegistry, String> {
+    let profiles_state = app.state::<LibraryProfilesState>();
+    let mut registry = profiles_state.0.lock().unwrap();
+    if registry.profiles.iter().all(|profile| profile.id != profile_id) {
+        return Err("Profile not found".to_string());
+    }
+    registry.active_profile_id = profile_id;
+    save_library_profile_registry(&registry)?;
+    let snapshot = registry.clone();
+    drop(registry);
+    refresh_tray(&app, &app.state::<RecentGamesState>().0.lock().unwrap().clone(), &snapshot);
+    let _ = app.emit("library-profile-switched", &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn delete_library_profile(
+    app: AppHandle,
+    profile_id: String,
+) -> Result<LibraryProfileRegistry, String> {
+    let profiles_state = app.state::<LibraryProfilesState>();
+    let mut registry = profiles_state.0.lock().unwrap();
+    if registry.profiles.len() <= 1 {
+        return Err("At least one profile must remain".to_string());
+    }
+    let before_len = registry.profiles.len();
+    registry.profiles.retain(|profile| profile.id != profile_id);
+    if registry.profiles.len() == before_len {
+        return Err("Profile not found".to_string());
+    }
+    if registry.active_profile_id == profile_id {
+        registry.active_profile_id = registry
+            .profiles
+            .first()
+            .map(|profile| profile.id.clone())
+            .unwrap_or_else(|| "default".to_string());
+    }
+    *registry = ensure_profile_registry(registry.clone());
+    save_library_profile_registry(&registry)?;
+    let snapshot = registry.clone();
+    drop(registry);
+    refresh_tray(&app, &app.state::<RecentGamesState>().0.lock().unwrap().clone(), &snapshot);
+    let _ = app.emit("library-profile-switched", &snapshot);
+    Ok(snapshot)
+}
+
 /// Build the tray context-menu from a list of recent games.
 fn build_tray_menu(
     app: &AppHandle,
     recent: &[RecentGame],
+    registry: &LibraryProfileRegistry,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let title = MenuItemBuilder::with_id("_title", "LIBMALY")
         .enabled(false)
@@ -3248,6 +3512,21 @@ fn build_tray_menu(
     let sep3 = PredefinedMenuItem::separator(app)?;
     let show = MenuItemBuilder::with_id("show", "Show Window").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit LIBMALY").build(app)?;
+    let mut profiles_submenu = SubmenuBuilder::new(app, "Profiles");
+    for profile in &registry.profiles {
+        let prefix = if profile.id == registry.active_profile_id {
+            "● "
+        } else {
+            ""
+        };
+        let item = MenuItemBuilder::with_id(
+            format!("profile_switch_{}", profile.id),
+            format!("{prefix}{}", profile.display_name),
+        )
+        .build(app)?;
+        profiles_submenu = profiles_submenu.item(&item);
+    }
+    let profiles_submenu = profiles_submenu.build()?;
 
     let mut builder = MenuBuilder::new(app).item(&title).item(&sep1);
 
@@ -3266,16 +3545,17 @@ fn build_tray_menu(
 
     builder
         .item(&sep2)
-        .item(&show)
+        .item(&profiles_submenu)
         .item(&sep3)
+        .item(&show)
         .item(&quit)
         .build()
 }
 
 /// Update the tray menu with a new list of recent games.
-fn refresh_tray(app: &AppHandle, recent: &[RecentGame]) {
+fn refresh_tray(app: &AppHandle, recent: &[RecentGame], registry: &LibraryProfileRegistry) {
     if let Some(tray) = app.tray_by_id("main-tray") {
-        if let Ok(menu) = build_tray_menu(app, recent) {
+        if let Ok(menu) = build_tray_menu(app, recent, registry) {
             let _ = tray.set_menu(Some(menu));
         }
     }
@@ -3285,7 +3565,8 @@ fn refresh_tray(app: &AppHandle, recent: &[RecentGame]) {
 #[tauri::command]
 fn set_recent_games(app: AppHandle, games: Vec<RecentGame>) -> Result<(), String> {
     *app.state::<RecentGamesState>().0.lock().unwrap() = games.clone();
-    refresh_tray(&app, &games);
+    let registry = app.state::<LibraryProfilesState>().0.lock().unwrap().clone();
+    refresh_tray(&app, &games, &registry);
     Ok(())
 }
 
@@ -4221,6 +4502,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(screenshot::ActiveGameState(std::sync::Mutex::new(None)))
         .manage(RecentGamesState(std::sync::Mutex::new(Vec::new())))
+        .manage(LibraryProfilesState(std::sync::Mutex::new(
+            load_library_profile_registry(),
+        )))
         .invoke_handler(tauri::generate_handler![
             scan_games,
             scan_games_incremental,
@@ -4272,9 +4556,19 @@ pub fn run() {
             delete_screenshot_file,
             get_screenshot_data_url,
             backup_save_files,
+            discord_initialize,
+            discord_shutdown,
+            discord_get_snapshot,
+            discord_set_presence,
+            discord_clear_presence,
+            discord_open_connected_games_settings,
             import_steam_playtime,
             get_steam_playtime_minutes,
             import_steam_library,
+            get_library_profiles,
+            save_library_profile,
+            switch_library_profile,
+            delete_library_profile,
             set_tray_tooltip,
             fetch_rss,
             save_string_to_file,
@@ -4325,7 +4619,8 @@ pub fn run() {
             }));
 
             // ── System tray ───────────────────────────────────────────────
-            let initial_menu = build_tray_menu(app.handle(), &[])?;
+            let initial_profiles = app.state::<LibraryProfilesState>().0.lock().unwrap().clone();
+            let initial_menu = build_tray_menu(app.handle(), &[], &initial_profiles)?;
             #[allow(unused_mut)]
             let mut tray_builder = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
@@ -4342,6 +4637,23 @@ pub fn run() {
                             }
                         }
                         "quit" => app.exit(0),
+                        _ if id.starts_with("profile_switch_") => {
+                            let profile_id = id["profile_switch_".len()..].to_string();
+                            let profiles_state = app.state::<LibraryProfilesState>();
+                            let mut registry = profiles_state.0.lock().unwrap();
+                            if registry.profiles.iter().any(|profile| profile.id == profile_id) {
+                                registry.active_profile_id = profile_id;
+                                let _ = save_library_profile_registry(&registry);
+                                let snapshot = registry.clone();
+                                drop(registry);
+                                refresh_tray(
+                                    app,
+                                    &app.state::<RecentGamesState>().0.lock().unwrap().clone(),
+                                    &snapshot,
+                                );
+                                let _ = app.emit("library-profile-switched", &snapshot);
+                            }
+                        }
                         _ if id.starts_with("recent_") => {
                             // Quick-launch game from tray
                             if let Ok(idx) = id["recent_".len()..].parse::<usize>() {

@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.6.0 - 2026-04-02
+
+### 📊 Stats & Analytics Overhaul
+- **Complete StatsView redesign** — replaced basic 4-block layout with a comprehensive analytics dashboard
+- **12 new stat cards** across 3 rows: total playtime, most played, longest session, busiest day, total launches, avg session, games with notes, games rated, total games, custom tags, collections, and wishlist
+- **Top 5 rankings** — progress bar visualizations for most-played games by time and by launch count
+- **Completion status breakdown** — color-coded badges showing Playing/Completed/On Hold/Dropped distribution
+- **Playtime & games by source** — bar charts breaking down library by F95/DLsite/VNDB/etc.
+- **Activity streak tracker** — counts consecutive days with at least one gaming session
+- **Favorite gaming time** — 24-hour histogram showing when you play most
+- **Top developers by playtime** — ranked list of most-played studios/creators
+- **Rating distribution** — histogram of your ratings across 5 buckets (0-20 to 81-100)
+- **Monthly playtime trend** — sparkline chart showing activity over the last 6 months
+- **Activity heatmap** — GitHub-style 365-day calendar heatmap of gaming activity
+- **Category ratings radar** — radar chart showing average scores across Gameplay/Story/Soundtrack/Visuals/Characters/Performance
+- **Session mood distribution** — progress bars for Hype/Chill/Chaos mood tags
+- **Playtime donut chart** — ring chart showing time distribution by source platform
+
+### 🌐 Internationalization
+- **10 languages now supported** — added **German** (Deutsch) and **French** (Français) to the existing 8 languages
+- **External language pack support** — users can now import custom JSON translations from settings without waiting for an app update
+
+### 👤 Profiles & Personalization
+- **Multiple library profiles** — separate profiles with isolated library/state/settings storage, designed for different PCs, users, or future synced identities
+- **Tray profile switching** — active profile can now be changed directly from the tray menu without reopening settings
+- **Custom profile identity fields** — profiles now support `displayName`, `handle`, `tagline`, `avatarUrl`, `bannerUrl`, and `accentColor`
+- **Active profile badge** — the current profile is surfaced in the top bar for clearer context while switching libraries
+
+### 🎮 Game Page & Launch
+- **Per-game media fix button** — "Fix Video Playback" button on game detail page (Linux/macOS) that installs recommended winetricks verbs for the game's Wine/Proton prefix
+- **Launch-time video playback warning** — warns before launching if the selected prefix has known media component issues
+- **Smart button visibility** — media fix button only shown on non-Windows platforms
+
+### 🔔 Notifications
+- **Custom in-app notification layer** — themed toast notifications for session end, replacing/augmenting system notifications
+- **Session end toasts** — shows game name and playtime in a styled in-app toast with dismiss button
+- **System notification fallback** — OS notifications still sent if permission granted (optional)
+
+### 💬 Discord Integration
+- **Discord Social SDK integration** — added Windows-first Discord connection layer with runtime SDK loading and diagnostics
+- **Rich Presence for games** — active games now show title, session state, and elapsed time in Discord
+- **Idle launcher presence** — optional status while LIBMALY is open but no game is running
+- **Join secret support** — optional Discord join secret for the active game with launch/open handling in LIBMALY
+- **Cover art in Rich Presence** — game cover images from metadata/custom covers are now used as Discord large art when available
+- **Connected Games bridge** — quick access to Discord Connected Games settings from inside LIBMALY
+- **Discord diagnostics logging** — status changes, reconnects, and presence updates now appear in the app diagnostics log
+
+### 📸 Screenshots
+- **Screenshot overlay history** — quick recent-captures strip in the overlay window to confirm/save/tag the last few screenshots without leaving the game
+
+### 🧭 Sidebar & Navigation
+- **Minimal sidebar mode** — denser sidebar layout for users who want more room for the game list
+- **Customizable sidebar sections** — users can now hide unused tabs and action buttons such as News, Stats, Wishlist, Surprise, Add, Settings, and Logs
+- **Settings access fallback** — if the sidebar settings button is hidden, a compact settings button is shown in the top bar so access is never lost
+
+### 🛠️ Technical
+- **Code modularization** — split `App.tsx` (500KB+) into `lib/constants.ts` and `lib/helpers.ts` to eliminate Babel deoptimization warning
+- **Extracted 30+ utility functions** — path helpers, color helpers, rating helpers, metadata helpers, and formatting functions moved to shared modules
+- **Extracted all constants** — storage keys, job IDs, rating categories, collection colors, and default settings moved to `constants.ts`
+- **Fixed TypeScript errors** — added proper type annotations for `RATING_CATEGORIES` and resolved implicit `any` types
+
 ## 1.5.4 - 2026-04-02
 
 ### Internationalization (i18n)

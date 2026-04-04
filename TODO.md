@@ -24,7 +24,7 @@
 
 ## 🖼️ Screenshots
 
-- [ ] **Screenshot overlay history** — quick recent-captures strip in the overlay to confirm/save/tag the last few screenshots without leaving the game
+- [x] **Screenshot overlay history** — quick recent-captures strip in the overlay to confirm/save/tag the last few screenshots without leaving the game
 
 
 ---
@@ -71,7 +71,10 @@
 
 - [ ] **Google Drive / Dropbox auto-backup** — optional periodic upload of library JSON to a cloud folder
 - [ ] **Save-file cloud sync** — upload save zips to a configured folder (Google Drive, local NAS, etc.)
-- [ ] **Multiple library profiles** — separate profiles for different PCs or users; switchable from the tray
+- [x] **Multiple library profiles** — separate profiles for different PCs or users; switchable from the tray
+  - [x] Per-profile library/state/settings storage namespaces
+  - [x] Tray profile switching
+  - [x] Custom profile identity fields (`displayName`, `handle`, `tagline`, `avatarUrl`, `bannerUrl`, `accentColor`)
 - [ ] **Cloud sync conflict resolver** — 3-way merge for local/remote/base snapshots to avoid silent data loss
 
 ---
@@ -82,15 +85,15 @@
   - [x] Prefix-level media component detection for `mf` / `quartz` / `wmp` / `lavfilters`-style gaps
   - [x] Human-readable summary + recommended fix verbs in Wine/Proton settings
   - [ ] Per-game media diagnostics — combine prefix health with game executable / engine hints to estimate actual intro-video risk
-  - [ ] Launch-time warning for likely broken video playback — warn before first launch when the selected prefix is missing required media components
-  - [ ] Diagnostics export integration — include media compatibility findings in JSON diagnostics / support reports
+  - [x] Launch-time warning for likely broken video playback — warn before first launch when the selected prefix is missing required media components
+  - [x] Diagnostics export integration — include media compatibility findings in JSON diagnostics / support reports
   - [ ] Known-issues knowledge base — map common engines / launchers to recommended media fixes and known bad combinations
 - [/] **One-click media compatibility fixes** — install recommended media playback components for a prefix via winetricks / compatibility helpers
   - [x] One-click install of recommended media fix verbs for a prefix
-  - [ ] Per-game apply flow — install fixes directly from a game page using that game’s effective prefix/runner
+- [x] **Per-game apply flow** — install fixes directly from a game page using that game's effective prefix/runner
   - [ ] Dry-run / preview step — show which verbs/components will be installed before applying
   - [ ] Post-install verification — re-scan the prefix and show which components were actually fixed
-  - [ ] Compatibility presets — offer safe presets like `Legacy WMV videos`, `RPG Maker intro fix`, `WMP-heavy game`, `Fallback filters only`
+  - [x] Compatibility presets — offer safe presets like `Legacy WMV videos`, `RPG Maker intro fix`, `WMP-heavy game`, `Fallback filters only`
   - [ ] Failure-specific guidance — when `winetricks` fails, surface actionable next steps instead of only raw stderr
 - [ ] **Shader pre-caching / DXVK cache management** — detect, import, export, and optionally share DXVK/Proton shader cache artifacts to reduce first-run stutter
 - [ ] **Per-game shader cache warmup hints** — show when a game is likely to benefit from shader cache prep and surface cache status before first launch
@@ -101,7 +104,7 @@
 
 ## 📥 Import & Interop
 
-- [/] **Steam launch bridge / playtime sync** — optionally launch imported Steam titles through Steam and pull updated playtime back into LIBMALY with best-effort session tracking
+- [x] **Steam launch bridge / playtime sync** — optionally launch imported Steam titles through Steam and pull updated playtime back into LIBMALY with best-effort session tracking
 
 ---
 
@@ -110,9 +113,9 @@
 - [x] **i18n / l10n** — internationalisation framework; provide RU, JA, ZH translations
 - [ ] **Plugin system** — allow JS/WASM plugins to add metadata sources or UI panels
 - [ ] **REST API mode** — optional local HTTP server so external scripts can query/control the library
-- [ ] **Custom notification layer migration** — replace most system notifications with themed in-app / in-overlay notifications while keeping OS notifications only as optional fallback
+- [x] **Custom notification layer migration** — replace most system notifications with themed in-app / in-overlay notifications while keeping OS notifications only as optional fallback
 - [ ] **Data consistency tests** — integration scenarios for scan → launch → crash → recovery across Windows/Linux/macOS
-- [ ] **Roadmap hygiene task** — keep README and TODO in sync for backup/sync feature status
+- [x] **Roadmap hygiene task** — keep README and TODO in sync for backup/sync feature status
 
 ### Internal Interfaces / Types (planned)
 
@@ -130,7 +133,7 @@
 ## 🤝 Community / Social (long-term)
 
 - [ ] **Achievement tracker** — manual checklist per game for tracking in-game routes or achievements
-- [ ] **Public wishlist** — export a sharable static HTML page of your collection/wishlist
+- [x] **Public wishlist** — export a sharable static HTML page of your collection/wishlist
 - [ ] **Friend activity** — optional peer-to-peer "what are friends playing" via a relay server
 
 ---
@@ -158,6 +161,7 @@
 - [x] **Sidebar width** — resizable via drag handle
 - [x] **Grid view** — toggle between list and cover-art grid (Steam-style)
 - [x] **Compact list mode** — denser rows with tiny thumbnail for large libraries
+- [x] **Minimal / customizable sidebar** — compact sidebar mode with per-section visibility toggles for News, Stats, filters, Collections, Developers, Wishlist, Surprise, Add, Settings, and Logs
 - [x] **Keyboard navigation** — arrow keys through game list, Space to launch
 - [x] **Global search** — Ctrl+K command palette; search by name, tag, developer, notes
 - [x] **Sidebar badge** — total hidden count next to "Hidden" filter chip
@@ -206,6 +210,7 @@
 - [x] **Session end toast** — system notification on game exit: "Played Foo for 1h 23m"
 - [x] **Tray tooltip** — currently-running game name + live session duration
 - [x] **Startup with Windows** — option to launch minimised to tray on login
+- [x] **Settings fallback button** — topbar fallback keeps settings reachable when the sidebar settings button is hidden
 
 ### Screenshots (Windows)
 - [x] **F12 global hotkey** — capture foreground window while any game is running
@@ -246,6 +251,7 @@
 
 ### Community / Social (long-term)
 - [x] **Review & rating** — personal 1–10 rating + short review stored locally; exportable
+- [x] **Profile identity customization** — local profile identity fields (`displayName`, `handle`, `tagline`, `avatarUrl`, `bannerUrl`, `accentColor`) as groundwork for future online/social features
 
 ### Sync & Backup
 - [x] **Cloud config sync** — export/import full library state (stats, metadata, notes, collections) as JSON

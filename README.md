@@ -71,6 +71,9 @@ LIBMALY is focused on unmanaged/standalone games (including F95zone and DLsite):
 - DXVK/VKD3D detection + one-click install
 - Winetricks verb runner (e.g. `vcrun2019`, `d3dx9`)
 - Lutris import (games + per-game runner/prefix mapping)
+- Media playback diagnostics — detect missing Media Foundation / Quartz / WMP-style components in a prefix
+- One-click install of recommended media fix verbs for a prefix
+- Per-game media diagnostics, launch-time warnings, and compatibility presets are planned in the roadmap (`TODO.md`)
 
 ### Import & Interop
 - Playnite import
@@ -80,7 +83,12 @@ LIBMALY is focused on unmanaged/standalone games (including F95zone and DLsite):
 ### Sync & Backup
 - Cloud config export/import JSON (library state, stats, metadata, notes, collections, settings)
 - Portable mode (store data next to executable using `portable.mode` marker)
-- Save-file backup and save-file cloud sync are planned in the roadmap (`TODO.md`)
+- Save-file backup on game exit (optional)
+- Backup retention policy (daily/weekly/monthly pruning)
+- State snapshots before risky operations + manual restore wizard
+- Crash-safe writes with atomic temp-and-rename flow
+- Auto-recovery mode after crash with deferred background work
+- Save-file cloud sync and Google Drive/Dropbox auto-backup are planned in the roadmap (`TODO.md`)
 
 ## Tech Stack
 

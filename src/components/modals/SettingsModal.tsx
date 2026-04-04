@@ -1,6 +1,8 @@
-import { useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
+import { addCustomLanguage, loadCustomLanguages, removeCustomLanguage } from "../../i18n";
 
 interface Game { name: string; path: string; }
 type BackgroundJobStatus = "queued" | "running" | "retrying" | "failed" | "permanent_failed";
@@ -40,6 +42,21 @@ interface AppSettingsLike {
   metadataAutoRefetchDays: number;
   autoScreenshotInterval: number;
   saveBackupOnExit: boolean;
+  sidebarMinimalMode?: boolean;
+  sidebarShowNews?: boolean;
+  sidebarShowStats?: boolean;
+  sidebarShowSearchTools?: boolean;
+  sidebarShowCollections?: boolean;
+  sidebarShowDevelopers?: boolean;
+  sidebarShowWishlist?: boolean;
+  sidebarShowSurpriseButton?: boolean;
+  sidebarShowAddButton?: boolean;
+  sidebarShowSettingsButton?: boolean;
+  sidebarShowLogsButton?: boolean;
+  discordEnabled?: boolean;
+  discordShowElapsedTime?: boolean;
+  discordShowIdlePresence?: boolean;
+  discordAllowActivityJoin?: boolean;
   backupRetentionDailyKeep: number;
   backupRetentionWeeklyKeep: number;
   backupRetentionMonthlyKeep: number;
@@ -50,6 +67,50 @@ interface AppSettingsLike {
   bossKeyFallbackUrl?: string;
   customThemeColors?: Record<string, string>;
   language?: string;
+}
+
+interface DiscordSdkSnapshotLike {
+  available: boolean;
+  initialized: boolean;
+  connected: boolean;
+  ready: boolean;
+  clientStatus: string;
+  launchRegistered: boolean;
+  richPresenceActive: boolean;
+  currentUser?: {
+    displayName: string;
+    username: string;
+    status: string;
+  } | null;
+  relationshipCounts: {
+    onlinePlayingGame: number;
+    onlineElsewhere: number;
+    offline: number;
+    total: number;
+  };
+  lastError?: string | null;
+}
+
+interface LibraryProfileLike {
+  id: string;
+  displayName: string;
+  handle?: string | null;
+  tagline?: string | null;
+  avatarUrl?: string | null;
+  bannerUrl?: string | null;
+  accentColor?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface LibraryProfileDraftLike {
+  id?: string;
+  displayName: string;
+  handle?: string;
+  tagline?: string;
+  avatarUrl?: string;
+  bannerUrl?: string;
+  accentColor?: string;
 }
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
@@ -245,7 +306,8 @@ function SettingsModal({
   onRescanAll, onWineSettings, onSteamImport, onSteamLibraryImport, onLutrisImport, onPlayniteImport, onGogImport, onAppUpdate, onOpenWhatsNew, onSaveSettings, onOpenMigrationWizard, onClose,
   onRunIntegrityCheck, onOpenRestoreSnapshots, onExportCSV, onExportHTML, onExportCloudState, onImportCloudState, onBatchMetadataRefresh, batchRefreshStatus, integrityCheckStatus,
   backgroundJobs, syncStatusText, isIntegrityCheckBusy, isBatchMetadataRefreshBusy, onAutoHealPaths, autoHealPathsStatus, isAutoHealPathsBusy,
-  onApplyBackupRetentionPolicy, backupRetentionStatus, isBackupRetentionBusy
+  onApplyBackupRetentionPolicy, backupRetentionStatus, isBackupRetentionBusy, discordSnapshot, onOpenDiscordSettings
+  , libraryProfiles, activeLibraryProfileId, onSwitchLibraryProfile, onSaveLibraryProfile, onDeleteLibraryProfile
 }: {
   f95LoggedIn: boolean; dlsiteLoggedIn: boolean; fakkuLoggedIn: boolean; libraryFolders: { path: string }[]; syncState: string;
   platform: string; launchConfig: { enabled: boolean; runner: string };
@@ -273,9 +335,115 @@ function SettingsModal({
   onApplyBackupRetentionPolicy: () => void;
   backupRetentionStatus: string | null;
   isBackupRetentionBusy: boolean;
+  discordSnapshot: DiscordSdkSnapshotLike | null;
+  onOpenDiscordSettings: () => void;
+  libraryProfiles: LibraryProfileLike[];
+  activeLibraryProfileId: string;
+  onSwitchLibraryProfile: (profileId: string) => void;
+  onSaveLibraryProfile: (profile: LibraryProfileDraftLike) => Promise<void> | void;
+  onDeleteLibraryProfile: (profileId: string) => Promise<void> | void;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "wine">("general");
+  const [customLangs, setCustomLangs] = useState<Record<string, { name: string; translation: Record<string, unknown> }>>({});
+  const [langImporting, setLangImporting] = useState(false);
+  const discordStatusSummary = !discordSnapshot
+    ? t('settings.system.discord_not_initialized')
+    : (!discordSnapshot.connected && discordSnapshot.richPresenceActive)
+      ? t('settings.system.discord_status_with_linger', {
+        status: t(`settings.system.discord_client_status.${discordSnapshot.clientStatus}`, { defaultValue: discordSnapshot.clientStatus }),
+      })
+      : t(`settings.system.discord_client_status.${discordSnapshot.clientStatus}`, { defaultValue: discordSnapshot.clientStatus });
+  const showDiscordError = !!discordSnapshot?.lastError && !discordSnapshot?.connected && !discordSnapshot?.ready;
+  const makeEmptyProfileDraft = (): LibraryProfileDraftLike => ({
+    displayName: "",
+    handle: "",
+    tagline: "",
+    avatarUrl: "",
+    bannerUrl: "",
+    accentColor: appSettings.accentColor || "#66c0f4",
+  });
+  const profileById = useMemo(
+    () => Object.fromEntries(libraryProfiles.map((profile) => [profile.id, profile])),
+    [libraryProfiles]
+  );
+  const [selectedProfileId, setSelectedProfileId] = useState<string>(activeLibraryProfileId || "new");
+  const [profileDraft, setProfileDraft] = useState<LibraryProfileDraftLike>(makeEmptyProfileDraft());
+  const selectedProfile = selectedProfileId && selectedProfileId !== "new" ? profileById[selectedProfileId] : null;
+
+  // Load custom languages on mount
+  useMemo(() => {
+    const loaded = loadCustomLanguages();
+    setCustomLangs(loaded);
+    // Register each custom language with i18n
+    for (const [code, { name, translation }] of Object.entries(loaded)) {
+      addCustomLanguage(code, name, translation);
+    }
+  }, []);
+
+  useEffect(() => {
+    setSelectedProfileId(activeLibraryProfileId || "new");
+  }, [activeLibraryProfileId]);
+
+  useEffect(() => {
+    if (selectedProfile) {
+      setProfileDraft({
+        id: selectedProfile.id,
+        displayName: selectedProfile.displayName,
+        handle: selectedProfile.handle || "",
+        tagline: selectedProfile.tagline || "",
+        avatarUrl: selectedProfile.avatarUrl || "",
+        bannerUrl: selectedProfile.bannerUrl || "",
+        accentColor: selectedProfile.accentColor || appSettings.accentColor || "#66c0f4",
+      });
+      return;
+    }
+    setProfileDraft(makeEmptyProfileDraft());
+  }, [selectedProfileId, selectedProfile, appSettings.accentColor]);
+
+  const handleImportLanguage = async () => {
+    const path = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    }).catch(() => null);
+    if (!path || typeof path !== "string") return;
+
+    setLangImporting(true);
+    try {
+      const raw = await invoke<string>("read_string_from_file", { path });
+      const data = JSON.parse(raw);
+
+      // Validate structure
+      if (!data.code || !data.name || !data.translation || typeof data.translation !== "object") {
+        alert("Invalid language file. Expected format: { \"code\": \"pt\", \"name\": \"Português\", \"translation\": { ... } }");
+        return;
+      }
+
+      const { code, name, translation } = data;
+      addCustomLanguage(code, name, translation);
+      setCustomLangs(prev => ({ ...prev, [code]: { name, translation } }));
+      onSaveSettings({ ...appSettings, language: code });
+      alert(`Language "${name}" (${code}) imported and activated!`);
+    } catch (e: any) {
+      alert("Failed to import language: " + String(e));
+    } finally {
+      setLangImporting(false);
+    }
+  };
+
+  const handleRemoveCustomLanguage = (code: string) => {
+    if (!confirm(`Remove custom language "${customLangs[code]?.name || code}"?`)) return;
+    removeCustomLanguage(code);
+    setCustomLangs(prev => {
+      const next = { ...prev };
+      delete next[code];
+      return next;
+    });
+    if (appSettings.language === code) {
+      onSaveSettings({ ...appSettings, language: "en" });
+    }
+  };
   const tabs: { id: typeof tab; label: string }[] = [
     { id: "general", label: t('settings.tabs.general') },
     { id: "scanner", label: t('settings.tabs.scanner') },
@@ -368,7 +536,197 @@ function SettingsModal({
                   <option value="zh-TW" style={{ background: "var(--color-panel-2)" }}>繁體中文 (Taiwanese)</option>
                   <option value="pl" style={{ background: "var(--color-panel-2)" }}>Polski (Polish)</option>
                   <option value="uk" style={{ background: "var(--color-panel-2)" }}>Українська (Ukrainian)</option>
+                  <option value="de" style={{ background: "var(--color-panel-2)" }}>Deutsch (German)</option>
+                  <option value="fr" style={{ background: "var(--color-panel-2)" }}>Français (French)</option>
+                  {Object.entries(customLangs).map(([code, { name }]) => (
+                    <option key={code} value={code} style={{ background: "var(--color-panel-2)" }}>
+                      {name} ({code})
+                    </option>
+                  ))}
                 </select>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleImportLanguage}
+                    disabled={langImporting}
+                    className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}
+                    title="Import a custom language JSON file"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    {langImporting ? "Importing..." : "Import Language"}
+                  </button>
+                  {customLangs[appSettings.language || ""] && (
+                    <button
+                      onClick={() => handleRemoveCustomLanguage(appSettings.language!)}
+                      className="py-1.5 px-3 rounded text-xs flex items-center justify-center gap-1"
+                      style={{ background: "var(--color-danger-bg)", color: "var(--color-danger)", border: "1px solid var(--color-danger-border)" }}
+                      title="Remove this custom language"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+                {Object.keys(customLangs).length > 0 && (
+                  <p className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>
+                    💡 Custom languages: {Object.keys(customLangs).map(c => customLangs[c].name).join(", ")}
+                  </p>
+                )}
+              </section>
+
+              <section className="space-y-3">
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.profiles.title')}</h3>
+                <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="w-11 h-11 rounded-xl flex items-center justify-center text-sm font-black overflow-hidden"
+                      style={{
+                        background: selectedProfile?.avatarUrl
+                          ? `center / cover no-repeat url(${selectedProfile.avatarUrl})`
+                          : `linear-gradient(135deg, ${profileDraft.accentColor || "#66c0f4"}, color-mix(in srgb, ${profileDraft.accentColor || "#66c0f4"} 45%, black 55%))`,
+                        color: "white",
+                      }}
+                    >
+                      {!selectedProfile?.avatarUrl && (profileDraft.displayName || "P").slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold truncate" style={{ color: "var(--color-text)" }}>
+                        {selectedProfile?.displayName || profileDraft.displayName || t('settings.profiles.new_profile')}
+                      </div>
+                      <div className="text-[11px] truncate" style={{ color: "var(--color-text-dim)" }}>
+                        {selectedProfile?.id === activeLibraryProfileId ? t('settings.profiles.active_profile') : t('settings.profiles.profile_editor')}
+                        {profileDraft.handle ? ` · @${profileDraft.handle}` : ""}
+                      </div>
+                      {(profileDraft.tagline || selectedProfile?.tagline) && (
+                        <div className="text-[11px] truncate mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+                          {profileDraft.tagline || selectedProfile?.tagline}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedProfileId}
+                      onChange={(e) => setSelectedProfileId(e.currentTarget.value)}
+                      className="flex-1 px-3 py-2 rounded text-sm bg-transparent border outline-none"
+                      style={{ background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                    >
+                      {libraryProfiles.map((profile) => (
+                        <option key={profile.id} value={profile.id} style={{ background: "var(--color-panel-2)" }}>
+                          {profile.displayName}{profile.id === activeLibraryProfileId ? t('settings.profiles.active_suffix') : ""}
+                        </option>
+                      ))}
+                      <option value="new" style={{ background: "var(--color-panel-2)" }}>{t('settings.profiles.create_new')}</option>
+                    </select>
+                    {selectedProfileId !== activeLibraryProfileId && selectedProfileId !== "new" && (
+                      <button
+                        onClick={() => onSwitchLibraryProfile(selectedProfileId)}
+                        className="px-3 py-2 rounded text-xs font-semibold"
+                        style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                      >
+                        {t('settings.profiles.switch')}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setSelectedProfileId("new")}
+                      className="px-3 py-2 rounded text-xs font-semibold"
+                      style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}
+                    >
+                      {t('settings.profiles.new_button')}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.profiles.display_name')}
+                      <input
+                        type="text"
+                        value={profileDraft.displayName || ""}
+                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, displayName: (e.target as HTMLInputElement).value }))}
+                        className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
+                        style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                      />
+                    </label>
+                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.profiles.handle')}
+                      <input
+                        type="text"
+                        value={profileDraft.handle || ""}
+                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, handle: (e.target as HTMLInputElement).value.replace(/^@+/, "") }))}
+                        className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
+                        style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                        placeholder={t('settings.profiles.handle_placeholder')}
+                      />
+                    </label>
+                    <label className="text-xs col-span-2" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.profiles.tagline')}
+                      <input
+                        type="text"
+                        value={profileDraft.tagline || ""}
+                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, tagline: (e.target as HTMLInputElement).value }))}
+                        className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
+                        style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                        placeholder={t('settings.profiles.tagline_placeholder')}
+                      />
+                    </label>
+                    <label className="text-xs col-span-2" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.profiles.avatar_url')}
+                      <input
+                        type="text"
+                        value={profileDraft.avatarUrl || ""}
+                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, avatarUrl: (e.target as HTMLInputElement).value }))}
+                        className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
+                        style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                        placeholder="https://..."
+                      />
+                    </label>
+                    <label className="text-xs col-span-2" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.profiles.banner_url')}
+                      <input
+                        type="text"
+                        value={profileDraft.bannerUrl || ""}
+                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, bannerUrl: (e.target as HTMLInputElement).value }))}
+                        className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
+                        style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                        placeholder="https://..."
+                      />
+                    </label>
+                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.profiles.accent_color')}
+                      <input
+                        type="color"
+                        value={profileDraft.accentColor || "#66c0f4"}
+                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, accentColor: (e.target as HTMLInputElement).value }))}
+                        className="mt-1 w-full h-9 rounded bg-transparent border outline-none"
+                        style={{ borderColor: "var(--color-border)" }}
+                      />
+                    </label>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => onSaveLibraryProfile(profileDraft)}
+                      disabled={!profileDraft.displayName?.trim()}
+                      className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                      style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                    >
+                      {profileDraft.id ? t('settings.profiles.save_profile') : t('settings.profiles.create_profile')}
+                    </button>
+                    {selectedProfile && libraryProfiles.length > 1 && (
+                      <button
+                        onClick={() => onDeleteLibraryProfile(selectedProfile.id)}
+                        className="px-3 py-2 rounded text-xs font-semibold"
+                        style={{ background: "var(--color-danger-bg)", color: "var(--color-danger)", border: "1px solid var(--color-danger-border)" }}
+                      >
+                        {t('common.delete')}
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[11px] leading-relaxed" style={{ color: "var(--color-text-dim)" }}>
+                    {t('settings.profiles.description')}
+                  </p>
+                </div>
               </section>
 
               <section className="space-y-2">
@@ -516,6 +874,125 @@ function SettingsModal({
                   />
                   {t('settings.system.backup_on_exit')}
                 </label>
+                <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.sidebar_layout')}</div>
+                    <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.system.sidebar_description')}
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                    <input
+                      type="checkbox"
+                      checked={!!appSettings.sidebarMinimalMode}
+                      onChange={(e) => onSaveSettings({ ...appSettings, sidebarMinimalMode: e.currentTarget.checked })}
+                    />
+                    {t('settings.system.sidebar_minimal_mode')}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                    {[
+                      ["sidebarShowNews", "settings.system.sidebar_show_news"],
+                      ["sidebarShowStats", "settings.system.sidebar_show_stats"],
+                      ["sidebarShowSearchTools", "settings.system.sidebar_show_search_tools"],
+                      ["sidebarShowCollections", "settings.system.sidebar_show_collections"],
+                      ["sidebarShowDevelopers", "settings.system.sidebar_show_developers"],
+                      ["sidebarShowWishlist", "settings.system.sidebar_show_wishlist"],
+                      ["sidebarShowSurpriseButton", "settings.system.sidebar_show_surprise"],
+                      ["sidebarShowAddButton", "settings.system.sidebar_show_add"],
+                      ["sidebarShowSettingsButton", "settings.system.sidebar_show_settings"],
+                      ["sidebarShowLogsButton", "settings.system.sidebar_show_logs"],
+                    ].map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={(appSettings as any)[key] !== false}
+                          onChange={(e) => onSaveSettings({ ...appSettings, [key]: e.currentTarget.checked } as AppSettingsLike)}
+                        />
+                        <span>{t(label)}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.discord_sdk')}</div>
+                    <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.system.discord_description')}
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                    <input
+                      type="checkbox"
+                      checked={!!appSettings.discordEnabled}
+                      onChange={(e) => onSaveSettings({ ...appSettings, discordEnabled: e.currentTarget.checked })}
+                    />
+                    {t('settings.system.discord_enable')}
+                  </label>
+                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                    <input
+                      type="checkbox"
+                      checked={appSettings.discordShowElapsedTime !== false}
+                      disabled={!appSettings.discordEnabled}
+                      onChange={(e) => onSaveSettings({ ...appSettings, discordShowElapsedTime: e.currentTarget.checked })}
+                    />
+                    {t('settings.system.discord_show_elapsed')}
+                  </label>
+                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                    <input
+                      type="checkbox"
+                      checked={!!appSettings.discordShowIdlePresence}
+                      disabled={!appSettings.discordEnabled}
+                      onChange={(e) => onSaveSettings({ ...appSettings, discordShowIdlePresence: e.currentTarget.checked })}
+                    />
+                    {t('settings.system.discord_show_idle')}
+                  </label>
+                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                    <input
+                      type="checkbox"
+                      checked={appSettings.discordAllowActivityJoin !== false}
+                      disabled={!appSettings.discordEnabled}
+                      onChange={(e) => onSaveSettings({ ...appSettings, discordAllowActivityJoin: e.currentTarget.checked })}
+                    />
+                    {t('settings.system.discord_allow_join')}
+                  </label>
+                  <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "var(--color-bg-overlay)", border: "1px solid var(--color-border-soft)", color: "var(--color-text-muted)" }}>
+                    <div>{t('settings.system.discord_status_label')}: <span style={{ color: "var(--color-text)" }}>{discordStatusSummary}</span></div>
+                    {discordSnapshot && (
+                      <div className="mt-1">
+                        {t('settings.system.discord_presence_label')}: <span style={{ color: "var(--color-text)" }}>{discordSnapshot.richPresenceActive ? t('settings.system.discord_presence_active') : t('settings.system.discord_presence_idle')}</span>
+                      </div>
+                    )}
+                    {discordSnapshot?.currentUser && (
+                      <div className="mt-1">
+                        {t('settings.system.discord_account_label')}: <span style={{ color: "var(--color-text)" }}>{discordSnapshot.currentUser.displayName || discordSnapshot.currentUser.username}</span>
+                        {" · "}
+                        <span>{discordSnapshot.currentUser.status}</span>
+                      </div>
+                    )}
+                    {discordSnapshot && (
+                      <div className="mt-1">
+                        {t('settings.system.discord_friends_snapshot', {
+                          playing: discordSnapshot.relationshipCounts.onlinePlayingGame,
+                          online: discordSnapshot.relationshipCounts.onlineElsewhere,
+                          offline: discordSnapshot.relationshipCounts.offline,
+                        })}
+                      </div>
+                    )}
+                    {showDiscordError && (
+                      <div className="mt-1" style={{ color: "var(--color-danger)" }}>
+                        {t('settings.system.discord_last_error')}: {discordSnapshot.lastError}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={onOpenDiscordSettings}
+                    disabled={!appSettings.discordEnabled}
+                    className="w-full py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                    style={{ background: "#26314e", color: "#b9c7ff", border: "1px solid #4a5f94" }}
+                  >
+                    {t('settings.system.discord_open_settings')}
+                  </button>
+                </div>
                 <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
                   <div>
                     <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.backup_retention')}</div>

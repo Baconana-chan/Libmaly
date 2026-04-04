@@ -26,7 +26,26 @@ import { FeedView } from "./components/views/FeedView";
 import { HomeView } from "./components/views/HomeView";
 import { StatsView } from "./components/views/StatsView";
 import { mergeFolderGames, mergeFolderMtimes } from "./lib/scanner";
-import { appStorageGetItem, appStorageRemoveItem, appStorageSetItem } from "./lib/appStorage";
+import { appStorageGetItem, appStorageRemoveItem, appStorageSetItem, getAppStorageProfile, setAppStorageProfile } from "./lib/appStorage";
+import {
+  SK_GAMES, SK_MTIMES, SK_PATH, SK_FOLDERS, SK_STATS, SK_META, SK_HIDDEN, SK_FAVS,
+  SK_CUSTOM, SK_NOTES, SK_COLLECTIONS, SK_LAUNCH, SK_RECENT, SK_ORDER, SK_SESSION_LOG,
+  SK_WISHLIST, SK_HISTORY, SK_SETTINGS,
+  JOB_INCREMENTAL_SYNC, JOB_FULL_SCAN, JOB_INTEGRITY_CHECK, JOB_BATCH_METADATA_REFRESH,
+  JOB_AUTO_METADATA_REFRESH, JOB_UPDATE_CHECKER, JOB_AUTO_HEAL_PATHS, JOB_BACKUP_RETENTION,
+  DEFAULT_METADATA_QUEUE_CONCURRENCY, DEFAULT_METADATA_QUEUE_MAX_ATTEMPTS, DEFAULT_METADATA_QUEUE_BACKOFF_MS,
+  COLLECTION_COLORS, SCREENSHOT_TOAST_TTL_MS, DEFAULT_SETTINGS, DEFAULT_LAUNCH_CONFIG,
+  GENERIC_EXE_NAMES, RATING_CATEGORIES,
+} from "./lib/constants";
+import {
+  normalizePathForMatch, normalizePathNoCase, pathDirname, remapPathByRoot, remapPathByPrefix,
+  pathSegmentsRelativeToRoot, deriveGameName, parseDeepLinkUrl, resolveSeasonFromDate,
+  detectMetadataSourceFromUrl, metadataFetchCommand, metadataSourceLabel,
+  normalizeHexColor, shiftHexColor, formatScoreForScale,
+  resolveOverallScore100, mergeDefaultRssFeeds,
+  formatTime, heroGradient, allowsNativeContextMenu,
+  isBackgroundJobBusy, backgroundJobButtonLabel, sleep,
+} from "./lib/helpers";
 import "./App.css";
 
 // ─── Virtual list hook ────────────────────────────────────────────────────────
@@ -346,46 +365,6 @@ interface SaveBackupResult {
   directories: string[];
 }
 
-const BACKGROUND_JOB_BUSY_STATUSES: BackgroundJobStatus[] = ["queued", "running", "retrying"];
-const JOB_INCREMENTAL_SYNC = "incremental-sync";
-const JOB_FULL_SCAN = "full-scan";
-const JOB_INTEGRITY_CHECK = "integrity-check";
-const JOB_BATCH_METADATA_REFRESH = "batch-metadata-refresh";
-const JOB_AUTO_METADATA_REFRESH = "auto-metadata-refresh";
-const JOB_UPDATE_CHECKER = "update-checker";
-const JOB_AUTO_HEAL_PATHS = "auto-heal-paths";
-const JOB_BACKUP_RETENTION = "backup-retention";
-const DEFAULT_METADATA_QUEUE_CONCURRENCY = 2;
-const DEFAULT_METADATA_QUEUE_MAX_ATTEMPTS = 3;
-const DEFAULT_METADATA_QUEUE_BACKOFF_MS = 1500;
-
-function isBackgroundJobBusy(status: BackgroundJobStatus) {
-  return BACKGROUND_JOB_BUSY_STATUSES.includes(status);
-}
-
-function backgroundJobButtonLabel(job: BackgroundJob | null | undefined, fallback: string) {
-  if (!job) return fallback;
-  if (job.detail?.trim()) return job.detail.trim();
-  switch (job.status) {
-    case "queued":
-      return `${job.label} (Queued)`;
-    case "running":
-      return `${job.label}...`;
-    case "retrying":
-      return `${job.label} (Retrying)`;
-    case "failed":
-      return `${job.label} (Failed)`;
-    case "permanent_failed":
-      return `${job.label} (Stopped)`;
-    default:
-      return fallback;
-  }
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 type LogLevelFilter = "all" | "error" | "warn" | "info";
 
 interface HistoryEntry {
@@ -440,14 +419,6 @@ type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | 
   | "chroma-glow" | "forest" | "midnight-blurple" | "mars" | "dusk" | "retro-storm" | "neon-nights" | "strawberry-lemonade" | "aurora" | "blurple-twilight"
   | "custom";
 type RatingCategoryKey = "gameplay" | "story" | "soundtrack" | "visuals" | "characters" | "performance";
-const RATING_CATEGORIES: { key: RatingCategoryKey; label: string }[] = [
-  { key: "gameplay", label: "Gameplay" },
-  { key: "story", label: "Story" },
-  { key: "soundtrack", label: "Soundtrack" },
-  { key: "visuals", label: "Visuals" },
-  { key: "characters", label: "Characters" },
-  { key: "performance", label: "Performance" },
-];
 
 interface SearchResultItem {
   title: string;
@@ -456,51 +427,7 @@ interface SearchResultItem {
   source: string;
 }
 
-// ─── Generic exe-name detection ──────────────────────────────────────────────
-/** Exe stems that are engine/launcher names and give no info about the game. */
-const GENERIC_EXE_NAMES = new Set([
-  "game", "start", "play", "launch", "launcher",
-  "nw", "nwjs", "app", "electron",
-  "main", "run", "exec",
-  "renpy", "lib", "engine",
-  "ux", "client", "project",
-  "visual_novel", "vn",
-]);
-
-/**
- * Given a full exe path, derive a human-readable game name:
- * - If the exe stem is a known generic name, return the parent folder name
- * - Otherwise return the stem
- * Mirrors the Rust logic in scan_dir_shallow / is_generic_name.
- */
-function deriveGameName(exePath: string): string {
-  const parts = exePath.replace(/\\/g, "/").split("/");
-  const fileName = parts[parts.length - 1] ?? exePath;
-  const stem = fileName.replace(/\.[^.]+$/, "");
-  if (GENERIC_EXE_NAMES.has(stem.toLowerCase()) && parts.length >= 2) {
-    return parts[parts.length - 2]; // parent folder name
-  }
-  return stem;
-}
-
-// ─── Storage keys ─────────────────────────────────────────────────────────────
-const SK_GAMES = "games-list-v2";
-const SK_MTIMES = "dir-mtimes-v2";
-const SK_PATH = "scanned-path";        // legacy – single folder
-const SK_FOLDERS = "library-folders-v1"; // v3: array of LibraryFolder
-const SK_STATS = "game-stats";
-const SK_META = "game-metadata";
-const SK_HIDDEN = "hidden-games-v1";
-const SK_FAVS = "fav-games-v1";
-const SK_CUSTOM = "game-custom-v1";
-const SK_NOTES = "game-notes-v1";
-const SK_COLLECTIONS = "collections-v1";
-const SK_LAUNCH = "launch-config-v1";
-const SK_RECENT = "recent-games-v1";
-const SK_ORDER = "custom-order-v1";
-const SK_SESSION_LOG = "session-log-v1";
-const SK_WISHLIST = "wishlist-v1";
-const SK_HISTORY = "game-history-v1";
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface WishlistItem {
   id: string; // usually a URL
@@ -515,6 +442,23 @@ interface LibraryFolder { path: string; }
 
 interface RecentGame { name: string; path: string; }
 
+interface LibraryProfile {
+  id: string;
+  displayName: string;
+  handle?: string | null;
+  tagline?: string | null;
+  avatarUrl?: string | null;
+  bannerUrl?: string | null;
+  accentColor?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface LibraryProfileRegistry {
+  activeProfileId: string;
+  profiles: LibraryProfile[];
+}
+
 type RunnerKind = "wine" | "proton" | "custom";
 
 interface LaunchConfig {
@@ -523,8 +467,6 @@ interface LaunchConfig {
   runnerPath: string;         // path to wine/proton binary
   prefixPath: string;         // WINEPREFIX / STEAM_COMPAT_DATA_PATH
 }
-
-const DEFAULT_LAUNCH_CONFIG: LaunchConfig = { enabled: false, runner: "wine", runnerPath: "", prefixPath: "" };
 
 interface RunnerOverrideConfig {
   runner: RunnerKind;
@@ -569,7 +511,6 @@ interface InteropGameEntry {
   source: string;
 }
 
-const SK_SETTINGS = "libmaly_app_settings-v1";
 interface AppSettings {
   updateCheckerEnabled: boolean;
   sessionToastEnabled: boolean;
@@ -590,6 +531,21 @@ interface AppSettings {
   metadataAutoRefetchDays: number;
   autoScreenshotInterval: number;
   saveBackupOnExit: boolean;
+  sidebarMinimalMode?: boolean;
+  sidebarShowNews?: boolean;
+  sidebarShowStats?: boolean;
+  sidebarShowSearchTools?: boolean;
+  sidebarShowCollections?: boolean;
+  sidebarShowDevelopers?: boolean;
+  sidebarShowWishlist?: boolean;
+  sidebarShowSurpriseButton?: boolean;
+  sidebarShowAddButton?: boolean;
+  sidebarShowSettingsButton?: boolean;
+  sidebarShowLogsButton?: boolean;
+  discordEnabled?: boolean;
+  discordShowElapsedTime?: boolean;
+  discordShowIdlePresence?: boolean;
+  discordAllowActivityJoin?: boolean;
   backupRetentionDailyKeep: number;
   backupRetentionWeeklyKeep: number;
   backupRetentionMonthlyKeep: number;
@@ -600,6 +556,51 @@ interface AppSettings {
   bossKeyFallbackUrl?: string;
   customThemeColors?: Record<string, string>;
   language?: string;
+}
+
+interface DiscordUserSnapshot {
+  id: string;
+  username: string;
+  displayName: string;
+  globalName?: string | null;
+  avatarUrl?: string | null;
+  status: string;
+}
+
+interface DiscordRelationshipCounts {
+  onlinePlayingGame: number;
+  onlineElsewhere: number;
+  offline: number;
+  total: number;
+}
+
+interface DiscordSdkSnapshot {
+  available: boolean;
+  initialized: boolean;
+  connected: boolean;
+  ready: boolean;
+  appInstalled?: boolean | null;
+  clientStatus: string;
+  launchRegistered: boolean;
+  richPresenceActive: boolean;
+  sdkPath?: string | null;
+  currentUser?: DiscordUserSnapshot | null;
+  relationshipCounts: DiscordRelationshipCounts;
+  lastJoinSecret?: string | null;
+  lastError?: string | null;
+}
+
+interface DiscordPresenceInput {
+  title: string;
+  details?: string | null;
+  state?: string | null;
+  startTimestampMs?: number | null;
+  largeImage?: string | null;
+  largeText?: string | null;
+  largeUrl?: string | null;
+  smallImage?: string | null;
+  smallText?: string | null;
+  joinSecret?: string | null;
 }
 
 interface CloudSyncPayloadV1 {
@@ -623,47 +624,16 @@ interface CloudSyncPayloadV1 {
     appSettings: AppSettings;
   }>;
 }
-const DEFAULT_SETTINGS: AppSettings = {
-  updateCheckerEnabled: false,
-  sessionToastEnabled: false,
-  trayTooltipEnabled: false,
-  startupWithWindows: false,
-  surpriseLaunchesImmediately: true,
-  themeMode: "dark",
-  seasonalTheme: "auto",
-  ratingScale: "10",
-  themeScheduleMode: "manual",
-  dayThemeMode: "light",
-  nightThemeMode: "dark",
-  lightStartHour: 7,
-  darkStartHour: 19,
-  accentColor: "#66c0f4",
-  blurNsfwContent: true,
-  rssFeeds: [
-    { url: "https://f95zone.to/sam/latest_alpha/latest_data.php?cmd=rss&cat=games", name: "F95zone Latest", enabled: true },
-    { url: "https://rss.tia-chan.top/official", name: "VNDB Official (via vndb-rss)", enabled: true },
-    { url: "https://rss.tia-chan.top/unofficial", name: "VNDB Unofficial (via vndb-rss)", enabled: false },
-    { url: "https://rss.tia-chan.top/offi-jp", name: "VNDB Official JP (via vndb-rss)", enabled: false },
-  ],
-  metadataAutoRefetchDays: 0,
-  autoScreenshotInterval: 0,
-  saveBackupOnExit: false,
-  backupRetentionDailyKeep: 7,
-  backupRetentionWeeklyKeep: 4,
-  backupRetentionMonthlyKeep: 6,
-  bossKeyEnabled: false,
-  bossKeyCode: 0x7A, // F11
-  bossKeyAction: "hide",
-  bossKeyMuteSystem: false,
-  bossKeyFallbackUrl: "",
-  customThemeColors: {},
-  language: "en",
-};
-const SCREENSHOT_TOAST_TTL_MS = 3600;
 
-
-
-const COLLECTION_COLORS = ["var(--color-accent)", "var(--color-warning)", "#a170c8", "#e8734a", "#5ba85b", "#d45252", "#4a8ee8", "#e85480"];
+interface SteamLaunchBridge {
+  path: string;
+  appId: string;
+  baselineMinutes: number;
+  lastSeenMinutes: number;
+  sawIncrease: boolean;
+  stalledPolls: number;
+  pollCount: number;
+}
 
 interface Collection {
   id: string;
@@ -681,6 +651,62 @@ function loadCache<T>(key: string, fallback: T): T {
   catch { return fallback; }
 }
 function saveCache(key: string, val: unknown) { appStorageSetItem(key, JSON.stringify(val)); }
+
+type ProfileStorageSnapshot = {
+  libraryFolders: LibraryFolder[];
+  games: Game[];
+  stats: Record<string, GameStats>;
+  metadata: Record<string, GameMetadata>;
+  hiddenGames: Record<string, boolean>;
+  favGames: Record<string, boolean>;
+  customizations: Record<string, GameCustomization>;
+  notes: Record<string, string>;
+  collections: Collection[];
+  launchConfig: LaunchConfig;
+  recentGames: RecentGame[];
+  customOrder: Record<string, string[]>;
+  sessionLog: SessionEntry[];
+  wishlist: WishlistItem[];
+  history: GameHistoryMap;
+  appSettings: AppSettings;
+  dirMtimes: DirMtime[];
+  viewMode: "list" | "compact" | "grid";
+  sidebarWidth: number;
+};
+
+function readProfileStorageSnapshot(): ProfileStorageSnapshot {
+  const cachedSettings = loadCache(SK_SETTINGS, DEFAULT_SETTINGS) as Partial<AppSettings>;
+  return {
+    libraryFolders: (() => {
+      const stored = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
+      if (stored.length > 0) return stored;
+      const legacy = appStorageGetItem(SK_PATH);
+      return legacy ? [{ path: legacy }] : [];
+    })(),
+    games: loadCache<Game[]>(SK_GAMES, []),
+    stats: loadCache(SK_STATS, {}),
+    metadata: loadCache(SK_META, {}),
+    hiddenGames: loadCache(SK_HIDDEN, {}),
+    favGames: loadCache(SK_FAVS, {}),
+    customizations: loadCache(SK_CUSTOM, {}),
+    notes: loadCache(SK_NOTES, {}),
+    collections: loadCache(SK_COLLECTIONS, []),
+    launchConfig: loadCache(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG),
+    recentGames: loadCache(SK_RECENT, []),
+    customOrder: loadCache(SK_ORDER, {}),
+    sessionLog: loadCache(SK_SESSION_LOG, []),
+    wishlist: loadCache(SK_WISHLIST, []),
+    history: loadCache(SK_HISTORY, {}),
+    appSettings: {
+      ...DEFAULT_SETTINGS,
+      ...cachedSettings,
+      rssFeeds: mergeDefaultRssFeeds(cachedSettings.rssFeeds),
+    },
+    dirMtimes: loadCache(SK_MTIMES, []),
+    viewMode: loadCache("libmaly_view_mode", "list"),
+    sidebarWidth: loadCache("libmaly_sidebar_w", 256),
+  };
+}
 
 function buildSnapshotEntries(payload: {
   libraryFolders: LibraryFolder[];
@@ -732,211 +758,7 @@ interface SteamLaunchBridge {
   pollCount: number;
 }
 
-function normalizeHexColor(input: string, fallback: string) {
-  const x = (input || "").trim();
-  const hex = x.startsWith("#") ? x : `#${x}`;
-  return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex.toLowerCase() : fallback;
-}
-
-function allowsNativeContextMenu(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  const editable = target.closest(
-    'input, textarea, select, [contenteditable=""], [contenteditable="true"], [data-allow-native-context-menu="true"]',
-  );
-  return !!editable || (target instanceof HTMLElement && target.isContentEditable);
-}
-
-function shiftHexColor(hex: string, amount: number) {
-  const safe = normalizeHexColor(hex, "#66c0f4");
-  const r = parseInt(safe.slice(1, 3), 16);
-  const g = parseInt(safe.slice(3, 5), 16);
-  const b = parseInt(safe.slice(5, 7), 16);
-  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
-  const toHex = (v: number) => clamp(v).toString(16).padStart(2, "0");
-  const factor = amount >= 0 ? 1 + amount : 1 - Math.abs(amount);
-  return `#${toHex(r * factor)}${toHex(g * factor)}${toHex(b * factor)}`;
-}
-
-function clampScore100(v: number) {
-  return Math.max(0, Math.min(100, Math.round(v)));
-}
-
-function formatScoreForScale(score100: number, scale: RatingScale) {
-  const s = clampScore100(score100);
-  if (scale === "10") return `${Math.round(s / 10)}/10`;
-  if (scale === "10_decimal") return `${(s / 10).toFixed(1)}/10`;
-  if (scale === "100") return `${s}/100`;
-  if (scale === "5_star") return `${(s / 20).toFixed(1)}/5`;
-  if (s <= 40) return "😞";
-  if (s <= 75) return "😐";
-  return "😄";
-}
-
-function categoryAverageScore100(custom?: GameCustomization) {
-  if (!custom?.categoryRatings) return undefined;
-  const values = RATING_CATEGORIES
-    .map((c) => custom.categoryRatings?.[c.key])
-    .filter((v): v is number => typeof v === "number" && !Number.isNaN(v))
-    .map(clampScore100);
-  if (values.length === 0) return undefined;
-  return Math.round(values.reduce((a, b) => a + b, 0) / values.length);
-}
-
-function resolveOverallScore100(custom?: GameCustomization) {
-  if (!custom) return undefined;
-  if (custom.ratingMode === "categories") {
-    const avg = categoryAverageScore100(custom);
-    if (typeof avg === "number") return avg;
-  }
-  if (typeof custom.overallScore100 === "number") return clampScore100(custom.overallScore100);
-  if (typeof custom.personalRating === "number") return clampScore100(custom.personalRating * 10);
-  return categoryAverageScore100(custom);
-}
-
-function mergeDefaultRssFeeds(existing: { url: string; name: string; enabled?: boolean }[] | undefined) {
-  const base = (existing || []).map((f) => ({ ...f, enabled: f.enabled !== false }));
-  const seen = new Set(base.map((f) => f.url.trim().toLowerCase()));
-  for (const def of DEFAULT_SETTINGS.rssFeeds) {
-    const key = def.url.trim().toLowerCase();
-    if (!key || seen.has(key)) continue;
-    base.push({ ...def, enabled: def.enabled !== false });
-    seen.add(key);
-  }
-  return base;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function formatTime(s: number) {
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
-  if (h > 0) return `${h} hrs ${m} mins`;
-  if (m > 0) return `${m} mins`;
-  return "< 1 min";
-}
-function heroGradient(name: string) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
-  const hue = Math.abs(h) % 360;
-  return `linear-gradient(135deg,hsl(${hue},40%,15%) 0%,hsl(${(hue + 50) % 360},55%,25%) 100%)`;
-}
-function isF95Url(url: string) { return url.includes("f95zone.to"); }
-function isDLsiteUrl(url: string) { return url.includes("dlsite.com"); }
-function isVNDBUrl(url: string) { return /vndb\.org\/v\d+/i.test(url); }
-function isMangaGamerUrl(url: string) { return /mangagamer\.com/i.test(url); }
-function isJohrenUrl(url: string) { return /johren\.net/i.test(url); }
-function isFakkuUrl(url: string) { return /fakku\.net/i.test(url); }
-function detectMetadataSourceFromUrl(url: string): GameMetadata["source"] | null {
-  if (isF95Url(url)) return "f95";
-  if (isDLsiteUrl(url)) return "dlsite";
-  if (isVNDBUrl(url)) return "vndb";
-  if (isMangaGamerUrl(url)) return "mangagamer";
-  if (isJohrenUrl(url)) return "johren";
-  if (isFakkuUrl(url)) return "fakku";
-  return null;
-}
-function metadataFetchCommand(source: GameMetadata["source"]) {
-  if (source === "f95") return "fetch_f95_metadata";
-  if (source === "dlsite") return "fetch_dlsite_metadata";
-  if (source === "vndb") return "fetch_vndb_metadata";
-  if (source === "mangagamer") return "fetch_mangagamer_metadata";
-  if (source === "johren") return "fetch_johren_metadata";
-  if (source === "fakku") return "fetch_fakku_metadata";
-  return null;
-}
-function resolveSeasonFromDate(date: Date): "winter" | "summer" | "halloween" | "none" {
-  const m = date.getMonth(); // 0-11
-  if (m === 9) return "halloween";
-  if (m === 11 || m === 0 || m === 1) return "winter";
-  if (m >= 5 && m <= 7) return "summer";
-  return "none";
-}
-function metadataSourceLabel(source?: string) {
-  if (source === "f95") return "F95zone";
-  if (source === "dlsite") return "DLsite";
-  if (source === "vndb") return "VNDB";
-  if (source === "mangagamer") return "MangaGamer";
-  if (source === "johren") return "Johren";
-  if (source === "fakku") return "FAKKU";
-  return "Unknown";
-}
-function normalizePathForMatch(path: string) {
-  return path.trim().replace(/\\/g, "/").toLowerCase();
-}
-function normalizePathNoCase(path: string) {
-  return path.trim().replace(/\\/g, "/").replace(/\/+$/, "");
-}
-function remapPathByRoot(path: string, oldRoot: string, newRoot: string): string | null {
-  const src = normalizePathNoCase(path);
-  const oldN = normalizePathNoCase(oldRoot);
-  const newN = normalizePathNoCase(newRoot);
-  const srcL = src.toLowerCase();
-  const oldL = oldN.toLowerCase();
-  if (!(srcL === oldL || srcL.startsWith(`${oldL}/`))) return null;
-  const suffix = src.slice(oldN.length);
-  const mappedUnix = `${newN}${suffix}`;
-  const preferBackslash = newRoot.includes("\\") && !newRoot.includes("/");
-  return preferBackslash ? mappedUnix.replace(/\//g, "\\") : mappedUnix;
-}
-function pathDirname(path: string) {
-  const norm = path.trim().replace(/\\/g, "/").replace(/\/+$/, "");
-  const idx = norm.lastIndexOf("/");
-  if (idx <= 0) return idx === 0 ? "/" : "";
-  return norm.slice(0, idx);
-}
-function remapPathByPrefix(path: string, oldPrefix: string, newPrefix: string): string | null {
-  const src = normalizePathNoCase(path);
-  const oldN = normalizePathNoCase(oldPrefix);
-  const newN = normalizePathNoCase(newPrefix);
-  const srcL = src.toLowerCase();
-  const oldL = oldN.toLowerCase();
-  if (!(srcL === oldL || srcL.startsWith(`${oldL}/`))) return null;
-  const suffix = src.slice(oldN.length);
-  const mappedUnix = `${newN}${suffix}`;
-  const preferBackslash = newPrefix.includes("\\") && !newPrefix.includes("/");
-  return preferBackslash ? mappedUnix.replace(/\//g, "\\") : mappedUnix;
-}
-function pathSegmentsRelativeToRoot(path: string, roots: LibraryFolder[]) {
-  const normalizedPath = normalizePathNoCase(path);
-  const matchedRoot = roots
-    .slice()
-    .sort((a, b) => normalizePathNoCase(b.path).length - normalizePathNoCase(a.path).length)
-    .find((root) => {
-      const normalizedRoot = normalizePathNoCase(root.path);
-      const pathLower = normalizedPath.toLowerCase();
-      const rootLower = normalizedRoot.toLowerCase();
-      return pathLower === rootLower || pathLower.startsWith(`${rootLower}/`);
-    });
-  if (!matchedRoot) return [];
-  const rootNormalized = normalizePathNoCase(matchedRoot.path);
-  const suffix = normalizedPath.slice(rootNormalized.length).replace(/^\/+/, "");
-  return suffix ? suffix.split("/").filter(Boolean) : [];
-}
-function parseDeepLinkUrl(rawUrl: string): LaunchRequest | null {
-  try {
-    const u = new URL(rawUrl);
-    if (u.protocol !== "libmaly:") return null;
-    if (u.hostname === "launch") {
-      const raw = u.pathname.replace(/^\/+/, "");
-      if (!raw) return null;
-      return { mode: "path", value: decodeURIComponent(raw) };
-    }
-    if (u.hostname === "launch-name") {
-      const raw = u.pathname.replace(/^\/+/, "");
-      if (!raw) return null;
-      return { mode: "name", value: decodeURIComponent(raw) };
-    }
-    return null;
-  } catch {
-    const pathMatch = rawUrl.match(/^libmaly:\/\/launch\/(.+)$/i);
-    if (pathMatch?.[1]) {
-      return { mode: "path", value: decodeURIComponent(pathMatch[1]) };
-    }
-    const nameMatch = rawUrl.match(/^libmaly:\/\/launch-name\/(.+)$/i);
-    if (nameMatch?.[1]) {
-      return { mode: "name", value: decodeURIComponent(nameMatch[1]) };
-    }
-    return null;
-  }
-}
+// ─── TagBadge ─────────────────────────────────────────────────────────────────
 
 // ─── TagBadge ─────────────────────────────────────────────────────────────────
 
@@ -2435,6 +2257,44 @@ function WineSettingsModal({ config, onSave, onClose }: {
                       >
                         Install media fixes
                       </button>
+
+                      {/* Compatibility presets */}
+                      <div className="flex items-center gap-1.5 mt-1.5 pt-1.5" style={{ borderTop: "1px solid var(--color-border-subtle)" }}>
+                        <span className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>Presets:</span>
+                        {[
+                          { label: "Legacy WMV", verbs: ["wmp9", "wmv9vcm", "qasf"] },
+                          { label: "RPG Maker", verbs: ["directshow", "quartz", "lavfilters"] },
+                          { label: "WMP Heavy", verbs: ["wmp11", "mf", "qasf", "lavfilters"] },
+                          { label: "Fallback Only", verbs: ["directshow", "quartz"] },
+                        ].map((preset) => (
+                          <button
+                            key={preset.label}
+                            onClick={async () => {
+                              if (!confirm(`Install "${preset.label}" preset?\nVerbs: ${preset.verbs.join(", ")}\n\nThis may take a few minutes.`)) return;
+                              setToolBusy(`preset:${preset.label}:${pfx.path}`);
+                              try {
+                                await invoke("install_prefix_media_fixes", {
+                                  prefix: pfx.path,
+                                  verbs: preset.verbs,
+                                });
+                                await refreshPrefixes();
+                                alert(`"${preset.label}" preset installed.`);
+                              } catch (e) {
+                                alert(`Preset install failed: ${e}`);
+                              } finally {
+                                setToolBusy(null);
+                              }
+                            }}
+                            disabled={toolBusy !== null}
+                            className="px-1.5 py-0.5 rounded text-[9px] disabled:opacity-40"
+                            style={{ background: "var(--color-bg-code)", color: "var(--color-accent-soft)", border: "1px solid var(--color-border-subtle)" }}
+                            title={`Install: ${preset.verbs.join(", ")}`}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+
                       <select
                         value={selectedVerb}
                         onChange={(e) => setSelectedVerb((e.target as HTMLSelectElement).value)}
@@ -3140,6 +3000,14 @@ function InteropImportModal({
 // ─── Migration Wizard ────────────────────────────────────────────────────────
 export default function App() {
   const { t } = useTranslation();
+  const [profileRegistry, setProfileRegistry] = useState<LibraryProfileRegistry>({
+    activeProfileId: getAppStorageProfile(),
+    profiles: [],
+  });
+  const activeLibraryProfile = useMemo(
+    () => profileRegistry.profiles.find((profile) => profile.id === profileRegistry.activeProfileId) ?? null,
+    [profileRegistry]
+  );
   // ── Migrate legacy single-path storage to new multi-folder array ────────────
   const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>(() => {
     const stored = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
@@ -3154,6 +3022,8 @@ export default function App() {
   const [stats, setStats] = useState<Record<string, GameStats>>(() => loadCache(SK_STATS, {}));
   const [metadata, setMetadata] = useState<Record<string, GameMetadata>>(() => loadCache(SK_META, {}));
   const [selected, setSelected] = useState<Game | null>(null);
+  const selectedRef = useRef<Game | null>(null);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
   const [activeMainTab, setActiveMainTab] = useState<"library" | "feed" | "stats">("library");
   const [navHistory, setNavHistory] = useState<NavEntry[]>([]);
   const [navIndex, setNavIndex] = useState(0);
@@ -3419,9 +3289,74 @@ export default function App() {
     }
   };
 
+  const handleExportWishlistHTML = async () => {
+    if (wishlist.length === 0) {
+      alert("Your wishlist is empty.");
+      return;
+    }
+    const now = new Date().toLocaleDateString();
+    let html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Wishlist — LIBMALY</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; }
+  .header { text-align: center; padding: 40px 20px 20px; border-bottom: 1px solid #2a2a3a; }
+  .header h1 { font-size: 28px; font-weight: 700; background: linear-gradient(90deg, #66c0f4, #f0c040); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px; }
+  .header p { font-size: 13px; color: #888; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; padding: 24px; max-width: 1200px; margin: 0 auto; }
+  .card { background: #1a1d28; border-radius: 10px; overflow: hidden; border: 1px solid #2a2a3a; transition: transform 0.15s, border-color 0.15s; }
+  .card:hover { transform: translateY(-2px); border-color: #66c0f4; }
+  .card-img { width: 100%; aspect-ratio: 2/3; object-fit: cover; background: #2a2a3a; }
+  .card-img-placeholder { width: 100%; aspect-ratio: 2/3; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #2a2a3a, #1a1d28); font-size: 32px; color: #555; }
+  .card-body { padding: 12px; }
+  .card-title { font-size: 14px; font-weight: 600; color: #e0e0e0; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-source { font-size: 11px; color: #888; margin-bottom: 4px; }
+  .card-status { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; display: inline-block; }
+  .status-released { background: #1a3a1a; color: #4caf50; }
+  .status-upcoming { background: #3a3a1a; color: #f0c040; }
+  .status-unknown { background: #2a2a3a; color: #888; }
+  .card-link { display: inline-block; margin-top: 8px; font-size: 11px; color: #66c0f4; text-decoration: none; }
+  .card-link:hover { text-decoration: underline; }
+  .footer { text-align: center; padding: 20px; color: #555; font-size: 11px; border-top: 1px solid #2a2a3a; }
+</style></head><body>
+<div class="header">
+  <h1>🎮 My Wishlist</h1>
+  <p>${wishlist.length} game${wishlist.length !== 1 ? "s" : ""} · Generated ${now} with LIBMALY</p>
+</div>
+<div class="grid">`;
+
+    for (const item of wishlist) {
+      const statusClass = item.releaseStatus === "Released" ? "status-released" : item.releaseStatus === "Upcoming" ? "status-upcoming" : "status-unknown";
+      html += `<div class="card">
+        <div class="card-img-placeholder">🎮</div>
+        <div class="card-body">
+          <div class="card-title">${item.title.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+          <div class="card-source">${item.source}</div>
+          <span class="card-status ${statusClass}">${item.releaseStatus}</span><br>
+          <a class="card-link" href="${item.id}" target="_blank" rel="noopener">View on ${item.source} ↗</a>
+        </div>
+      </div>`;
+    }
+
+    html += `</div>
+<div class="footer">Generated by <a href="https://github.com/Baconana-chan/Libmaly" target="_blank" style="color: #66c0f4;">LIBMALY</a> · ${now}</div>
+</body></html>`;
+
+    const savePath = await save({ defaultPath: "libmaly-wishlist.html", filters: [{ name: "HTML", extensions: ["html"] }] });
+    if (savePath) {
+      try {
+        await invoke("save_string_to_file", { path: savePath, contents: html });
+      } catch (e) {
+        await showPermissionDiagnostic("export the wishlist HTML page", savePath, e);
+      }
+    }
+  };
+
   const [screenshots, setScreenshots] = useState<Record<string, Screenshot[]>>({});
   const [pendingAnnotatedShot, setPendingAnnotatedShot] = useState<{ gamePath: string; shot: Screenshot } | null>(null);
   const [screenshotToasts, setScreenshotToasts] = useState<ScreenshotToast[]>([]);
+  const [inAppToasts, setInAppToasts] = useState<{ id: string; type: "session" | "warning" | "info" | "success"; title: string; message: string; icon?: string }[]>([]);
+  const [discordSnapshot, setDiscordSnapshot] = useState<DiscordSdkSnapshot | null>(null);
   const [hiddenGames, setHiddenGames] = useState<Record<string, boolean>>(() => loadCache(SK_HIDDEN, {}));
   const [favGames, setFavGames] = useState<Record<string, boolean>>(() => loadCache(SK_FAVS, {}));
   const [customizations, setCustomizations] = useState<Record<string, GameCustomization>>(() => loadCache(SK_CUSTOM, {}));
@@ -3688,6 +3623,8 @@ export default function App() {
   }, []);
 
   const [runningGamePath, setRunningGamePath] = useState<string | null>(null);
+  const runningGamePathRef = useRef<string | null>(null);
+  useEffect(() => { runningGamePathRef.current = runningGamePath; }, [runningGamePath]);
   const [platform, setPlatform] = useState<string>("windows");
   const [launchConfig, setLaunchConfig] = useState<LaunchConfig>(() => loadCache(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG));
   const [, setRecentGames] = useState<RecentGame[]>(() => loadCache(SK_RECENT, []));
@@ -3735,12 +3672,100 @@ export default function App() {
     setSelected(game);
   }, []);
 
+  const applyProfileStorageSnapshot = useCallback((snapshot: ProfileStorageSnapshot, nextProfileId?: string) => {
+    if (nextProfileId) {
+      setAppStorageProfile(nextProfileId);
+    }
+    setLibraryFolders(snapshot.libraryFolders);
+    setGames(snapshot.games);
+    setStats(snapshot.stats);
+    setMetadata(snapshot.metadata);
+    setHiddenGames(snapshot.hiddenGames);
+    setFavGames(snapshot.favGames);
+    setCustomizations(snapshot.customizations);
+    setNotes(snapshot.notes);
+    setCollections(snapshot.collections);
+    setLaunchConfig({ ...DEFAULT_LAUNCH_CONFIG, ...snapshot.launchConfig });
+    setRecentGames(snapshot.recentGames);
+    setCustomOrder(snapshot.customOrder);
+    setSessionLog(snapshot.sessionLog);
+    setWishlist(snapshot.wishlist);
+    setHistory(snapshot.history);
+    setAppSettings(snapshot.appSettings);
+    setViewMode(snapshot.viewMode);
+    setSidebarWidth(snapshot.sidebarWidth);
+    setActiveCollectionId(null);
+    setShowCollections(false);
+    setShowDevelopers(false);
+    setShowWishlist(false);
+    invoke("set_recent_games", { games: snapshot.recentGames }).catch(() => { });
+    if (selectedRef.current && !snapshot.games.some((game) => game.path === selectedRef.current?.path)) {
+      setSelected(null);
+    }
+  }, []);
+
+  const reloadActiveProfile = useCallback((profileId: string) => {
+    setAppStorageProfile(profileId);
+    const snapshot = readProfileStorageSnapshot();
+    applyProfileStorageSnapshot(snapshot, profileId);
+  }, [applyProfileStorageSnapshot]);
+
   const resolveGameTitle = useCallback((gamePath: string) =>
     customizationsRef.current[gamePath]?.displayName
     ?? metadataRef.current[gamePath]?.title
     ?? gamesRef.current.find((game) => game.path === gamePath)?.name
     ?? "Unknown game"
   , []);
+
+  const refreshDiscordSnapshot = useCallback(async () => {
+    try {
+      const snapshot = await invoke<DiscordSdkSnapshot>("discord_get_snapshot");
+      setDiscordSnapshot(snapshot);
+      return snapshot;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const syncDiscord = async () => {
+      if (!appSettings.discordEnabled) {
+        try { await invoke("discord_shutdown"); } catch { }
+        if (!cancelled) setDiscordSnapshot(null);
+        return;
+      }
+      try {
+        const snapshot = await invoke<DiscordSdkSnapshot>("discord_initialize");
+        if (!cancelled) setDiscordSnapshot(snapshot);
+      } catch (e) {
+        if (!cancelled) {
+          setDiscordSnapshot(null);
+          setInAppToasts(prev => [
+            {
+              id: `discord-init-${Date.now()}`,
+              type: "warning" as const,
+              title: "Discord integration unavailable",
+              message: String(e),
+              icon: "💬",
+            },
+            ...prev,
+          ].slice(0, 5));
+        }
+      }
+    };
+    void syncDiscord();
+    return () => { cancelled = true; };
+  }, [appSettings.discordEnabled]);
+
+  useEffect(() => {
+    if (!appSettings.discordEnabled) return;
+    void refreshDiscordSnapshot();
+    const timer = setInterval(() => {
+      void refreshDiscordSnapshot();
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [appSettings.discordEnabled, refreshDiscordSnapshot]);
 
   const ensureScreenshotOverlayWindow = useCallback(async () => {
     const existing = await WebviewWindow.getByLabel("screenshot-overlay");
@@ -3870,9 +3895,48 @@ export default function App() {
     });
   }, []);
 
+  const handleSaveLibraryProfile = useCallback(async (profile: {
+    id?: string;
+    displayName: string;
+    handle?: string;
+    tagline?: string;
+    avatarUrl?: string;
+    bannerUrl?: string;
+    accentColor?: string;
+  }) => {
+    const nextRegistry = await invoke<LibraryProfileRegistry>("save_library_profile", { profile });
+    setProfileRegistry(nextRegistry);
+  }, []);
+
+  const handleSwitchLibraryProfile = useCallback(async (profileId: string) => {
+    const nextRegistry = await invoke<LibraryProfileRegistry>("switch_library_profile", { profileId });
+    setProfileRegistry(nextRegistry);
+    reloadActiveProfile(nextRegistry.activeProfileId);
+    setInAppToasts(prev => [
+      {
+        id: `profile-switch-${Date.now()}`,
+        type: "info" as const,
+        title: "Profile switched",
+        message: `Active profile is now ${nextRegistry.profiles.find((p) => p.id === nextRegistry.activeProfileId)?.displayName ?? nextRegistry.activeProfileId}.`,
+        icon: "👤",
+      },
+      ...prev,
+    ].slice(0, 5));
+  }, [reloadActiveProfile]);
+
+  const handleDeleteLibraryProfile = useCallback(async (profileId: string) => {
+    const profile = profileRegistry.profiles.find((entry) => entry.id === profileId);
+    if (!profile) return;
+    if (!confirm(`Delete profile "${profile.displayName}"? Its existing library data will remain on disk, but the profile will be removed from the launcher selector.`)) return;
+    const nextRegistry = await invoke<LibraryProfileRegistry>("delete_library_profile", { profileId });
+    setProfileRegistry(nextRegistry);
+    reloadActiveProfile(nextRegistry.activeProfileId);
+  }, [profileRegistry, reloadActiveProfile]);
+
   // No auto-select: show HomeView when nothing is selected
 
   useEffect(() => {
+    let disposed = false;
     invoke<boolean>("f95_is_logged_in").then(setF95LoggedIn).catch(() => { });
     invoke<boolean>("dlsite_is_logged_in").then(setDlsiteLoggedIn).catch(() => { });
     invoke<boolean>("fakku_is_logged_in").then(setFakkuLoggedIn).catch(() => { });
@@ -3885,53 +3949,65 @@ export default function App() {
         appStorageSetItem("libmaly_last_seen_version", v);
       }
     }).catch(() => { });
-    const storedRecent = loadCache<RecentGame[]>(SK_RECENT, []);
-    if (storedRecent.length > 0) {
-      invoke("set_recent_games", { games: storedRecent }).catch(() => { });
-    }
-    const folders = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
-    const legacyPath = appStorageGetItem(SK_PATH);
-    const roots = folders.length > 0 ? folders : (legacyPath ? [{ path: legacyPath }] : []);
-    getMatches().then((matches: any) => {
-      const sub = matches?.subcommand;
-      if (sub?.name !== "launch") return;
-      const nameArg = sub?.matches?.args?.name?.value;
-      const value = typeof nameArg === "string" ? nameArg : Array.isArray(nameArg) ? nameArg[0] : null;
-      if (value && value.trim()) setPendingLaunchRequest({ mode: "name", value: value.trim() });
-    }).catch(() => { });
-    getCurrentDeepLinks().then((urls) => {
-      const arr = Array.isArray(urls) ? urls : [];
-      for (const rawUrl of arr) {
-        const req = parseDeepLinkUrl(rawUrl);
-        if (req) {
-          setPendingLaunchRequest(req);
-          break;
+
+    (async () => {
+      try {
+        const registry = await invoke<LibraryProfileRegistry>("get_library_profiles");
+        if (disposed) return;
+        setProfileRegistry(registry);
+        if (registry.activeProfileId && registry.activeProfileId !== getAppStorageProfile()) {
+          reloadActiveProfile(registry.activeProfileId);
         }
+      } catch { }
+
+      const storedRecent = loadCache<RecentGame[]>(SK_RECENT, []);
+      if (storedRecent.length > 0) {
+        invoke("set_recent_games", { games: storedRecent }).catch(() => { });
       }
-    }).catch(() => { });
-    invoke<RustLogEntry[]>("get_recent_logs", { limit: 300 }).then(setRustLogs).catch(() => { });
-    invoke<RecentFileOp[]>("get_recent_file_ops", { limit: 40 }).then(setRecentFileOps).catch(() => { });
-    const continueNormalStartup = () => {
-      if (roots.length > 0) {
-        runIncrementalSyncAll(roots).finally(() => setIsAppReady(true));
-      } else {
-        setIsAppReady(true);
-      }
-      runDeferredStartupTasks();
-    };
-    invoke<CrashReport | null>("get_last_crash_report").then((r) => {
-      if (r) {
-        setCrashReport(r);
-        setRecoveryMode(true);
-        setShowRecoveryPrompt(true);
-        setIsAppReady(true);
-        return;
-      }
-      continueNormalStartup();
-    }).catch(() => {
-      continueNormalStartup();
-    });
-    invoke<ScraperHealthDiagnostic[]>("get_scraper_health_snapshot").then(setScraperHealth).catch(() => { });
+      const folders = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
+      const legacyPath = appStorageGetItem(SK_PATH);
+      const roots = folders.length > 0 ? folders : (legacyPath ? [{ path: legacyPath }] : []);
+      getMatches().then((matches: any) => {
+        const sub = matches?.subcommand;
+        if (sub?.name !== "launch") return;
+        const nameArg = sub?.matches?.args?.name?.value;
+        const value = typeof nameArg === "string" ? nameArg : Array.isArray(nameArg) ? nameArg[0] : null;
+        if (value && value.trim()) setPendingLaunchRequest({ mode: "name", value: value.trim() });
+      }).catch(() => { });
+      getCurrentDeepLinks().then((urls) => {
+        const arr = Array.isArray(urls) ? urls : [];
+        for (const rawUrl of arr) {
+          const req = parseDeepLinkUrl(rawUrl);
+          if (req) {
+            setPendingLaunchRequest(req);
+            break;
+          }
+        }
+      }).catch(() => { });
+      invoke<RustLogEntry[]>("get_recent_logs", { limit: 300 }).then(setRustLogs).catch(() => { });
+      invoke<RecentFileOp[]>("get_recent_file_ops", { limit: 40 }).then(setRecentFileOps).catch(() => { });
+      const continueNormalStartup = () => {
+        if (roots.length > 0) {
+          runIncrementalSyncAll(roots).finally(() => setIsAppReady(true));
+        } else {
+          setIsAppReady(true);
+        }
+        runDeferredStartupTasks();
+      };
+      invoke<CrashReport | null>("get_last_crash_report").then((r) => {
+        if (r) {
+          setCrashReport(r);
+          setRecoveryMode(true);
+          setShowRecoveryPrompt(true);
+          setIsAppReady(true);
+          return;
+        }
+        continueNormalStartup();
+      }).catch(() => {
+        continueNormalStartup();
+      });
+      invoke<ScraperHealthDiagnostic[]>("get_scraper_health_snapshot").then(setScraperHealth).catch(() => { });
+    })();
 
     const unlistenFinished = listen("game-finished", (ev: any) => {
       const p = ev.payload as { path: string; duration_secs: number };
@@ -3943,6 +4019,19 @@ export default function App() {
         });
       }
       if (appSettingsRef.current.sessionToastEnabled) {
+        const title = customizationsRef.current[p.path]?.displayName ?? metadataRef.current[p.path]?.title ?? gamesRef.current.find(g => g.path === p.path)?.name ?? "Game";
+        // Show in-app notification toast instead of system notification
+        setInAppToasts(prev => [
+          {
+            id: `session-${Date.now()}`,
+            type: "session" as const,
+            title: "Session Ended",
+            message: `Played ${title} for ${formatTime(p.duration_secs)}`,
+            icon: "🎮",
+          },
+          ...prev,
+        ].slice(0, 5));
+        // Also send system notification if permission granted (optional fallback)
         isPermissionGranted().then(granted => {
           if (!granted) {
             return requestPermission()
@@ -3952,7 +4041,6 @@ export default function App() {
           return true;
         }).then(granted => {
           if (granted) {
-            const title = customizationsRef.current[p.path]?.displayName ?? metadataRef.current[p.path]?.title ?? gamesRef.current.find(g => g.path === p.path)?.name ?? "Game";
             sendNotification({ title: "Session Ended", body: `Played ${title} for ${formatTime(p.duration_secs)}` });
           }
         }).catch(() => { });
@@ -3964,6 +4052,10 @@ export default function App() {
     const unlistenStarted = listen<string>("game-started", (ev) => {
       setRunningGamePath(ev.payload);
       sessionStartRef.current = Date.now();
+    });
+    const unlistenProfileSwitched = listen<LibraryProfileRegistry>("library-profile-switched", (ev) => {
+      setProfileRegistry(ev.payload);
+      reloadActiveProfile(ev.payload.activeProfileId);
     });
     const unlistenShot = listen<{ game_exe: string; screenshot: Screenshot }>("screenshot-taken", (ev) => {
       const { game_exe, screenshot } = ev.payload;
@@ -3998,16 +4090,55 @@ export default function App() {
         return next.length > 500 ? next.slice(next.length - 500) : next;
       });
     });
+    const unlistenDiscordJoin = listen<string>("discord-activity-join", (ev) => {
+      const secret = ev.payload || "";
+      const rawName = secret.startsWith("name:") ? secret.slice(5) : secret;
+      const name = rawName.trim();
+      if (!name) return;
+      setInAppToasts(prev => [
+        {
+          id: `discord-join-${Date.now()}`,
+          type: "info" as const,
+          title: "Discord join request",
+          message: `Discord asked LIBMALY to open ${name}.`,
+          icon: "💬",
+        },
+        ...prev,
+      ].slice(0, 5));
+      const ranked = gamesRef.current
+        .map((g) => {
+          const display = (customizationsRef.current[g.path]?.displayName ?? metadataRef.current[g.path]?.title ?? g.name).toLowerCase();
+          const plain = g.name.toLowerCase();
+          const q = name.toLowerCase();
+          const score =
+            display === q || plain === q ? 0 :
+              display.startsWith(q) || plain.startsWith(q) ? 1 :
+                (display.includes(q) || plain.includes(q) ? 2 : 99);
+          return { g, score };
+        })
+        .filter((r) => r.score < 99)
+        .sort((a, b) => a.score - b.score || a.g.name.localeCompare(b.g.name));
+      if (ranked.length === 0) return;
+      const game = ranked[0].g;
+      openGameView(game);
+      setActiveMainTab("library");
+      if (!runningGamePathRef.current && confirm(`Launch "${name}" from Discord?`)) {
+        launchGame(game.path);
+      }
+    });
 
     return () => {
+      disposed = true;
       unlistenFinished.then((f) => f());
       unlistenStarted.then((f) => f());
+      unlistenProfileSwitched.then((f) => f());
       unlistenShot.then((f) => f());
       unlistenBoss.then((f) => f());
       unlistenDeepLink.then((f) => f());
       unlistenRustLog.then((f) => f());
+      unlistenDiscordJoin.then((f) => f());
     };
-  }, []);
+  }, [reloadActiveProfile]);
 
   useEffect(() => {
     if (!steamLaunchBridge) return;
@@ -4125,6 +4256,55 @@ export default function App() {
     [stats]
   );
   const totalPlaytimeLiveSecs = totalPlaytimeBaseSecs + (runningGamePath ? liveSessionExtraSec : 0);
+
+  useEffect(() => {
+    if (!appSettings.discordEnabled) return;
+    if (!runningGamePath) {
+      if (appSettings.discordShowIdlePresence) {
+        const idlePresence: DiscordPresenceInput = {
+          title: "LIBMALY",
+          details: "Browsing library",
+          state: "Idle",
+        };
+        invoke("discord_set_presence", { input: idlePresence })
+          .then(() => refreshDiscordSnapshot())
+          .catch(() => { });
+      } else {
+        invoke("discord_clear_presence").catch(() => { });
+        void refreshDiscordSnapshot();
+      }
+      return;
+    }
+    const title = resolveGameTitle(runningGamePath);
+    const gameMeta = metadataRef.current[runningGamePath];
+    const largeImage = customizationsRef.current[runningGamePath]?.coverUrl
+      ?? gameMeta?.cover_url
+      ?? undefined;
+    const largeUrl = gameMeta?.source_url?.startsWith("http")
+      ? gameMeta.source_url
+      : undefined;
+    const presence: DiscordPresenceInput = {
+      title,
+      details: "Playing via LIBMALY",
+      state: appSettings.discordShowElapsedTime !== false ? "Session in progress" : undefined,
+      startTimestampMs: appSettings.discordShowElapsedTime !== false ? sessionStartRef.current : undefined,
+      largeImage,
+      largeText: title,
+      largeUrl,
+      joinSecret: appSettings.discordAllowActivityJoin === false ? undefined : `name:${title}`,
+    };
+    invoke("discord_set_presence", { input: presence })
+      .then(() => refreshDiscordSnapshot())
+      .catch(() => { });
+  }, [
+    appSettings.discordEnabled,
+    appSettings.discordShowElapsedTime,
+    appSettings.discordShowIdlePresence,
+    appSettings.discordAllowActivityJoin,
+    runningGamePath,
+    refreshDiscordSnapshot,
+    resolveGameTitle,
+  ]);
 
   // Auto-screenshot timer
   useEffect(() => {
@@ -5530,6 +5710,27 @@ export default function App() {
     // Honour per-game executable override (keeps original `path` as the cache key)
     const actualPath = overridePath ?? gameCustom?.exeOverride ?? path;
     const args = overrideArgs !== undefined ? overrideArgs : (gameCustom?.launchArgs ?? null);
+
+    // Launch-time warning for likely broken video playback (Wine/Proton)
+    if (platform !== "windows" && (runner || prefix)) {
+      const effectivePrefix = prefix ?? gameCustom?.runnerOverride?.prefixPath ?? launchConfig.prefixPath;
+      if (effectivePrefix) {
+        try {
+          const prefixInfos = await invoke<PrefixInfo[]>("list_wine_prefixes").catch(() => []);
+          const matchingPrefix = prefixInfos.find(
+            (p) => normalizePathNoCase(p.path) === normalizePathNoCase(effectivePrefix) ||
+                   normalizePathNoCase(pathDirname(p.path)) === normalizePathNoCase(effectivePrefix)
+          );
+          if (matchingPrefix && matchingPrefix.media.likely_video_playback_issue) {
+            const warning = `⚠️ This prefix may have broken video playback.\n\n${matchingPrefix.media.summary}\n\nRecommended fixes: ${matchingPrefix.media.recommended_verbs?.join(", ") || "none"}\n\nLaunch anyway?`;
+            if (!confirm(warning)) return;
+          }
+        } catch {
+          // Ignore diagnostic check failures — don't block launch
+        }
+      }
+    }
+
     try {
       await invoke("launch_game", { path: actualPath, runner, prefix, args: args || null });
       // ── Track recent games (last 5, deduplicated) ────────────────────────
@@ -5776,6 +5977,21 @@ export default function App() {
     };
     const scraperHealthSnapshot = await invoke<ScraperHealthDiagnostic[]>("get_scraper_health_snapshot").catch(() => scraperHealth);
     setScraperHealth(scraperHealthSnapshot);
+
+    // Include Wine/Proton media compatibility findings
+    let wineMediaDiagnostics: { prefix: string; summary: string; likely_video_playback_issue: boolean; recommended_verbs: string[] }[] = [];
+    if (platform !== "windows") {
+      try {
+        const prefixInfos = await invoke<PrefixInfo[]>("list_wine_prefixes").catch(() => []);
+        wineMediaDiagnostics = prefixInfos.map(p => ({
+          prefix: p.path,
+          summary: p.media.summary,
+          likely_video_playback_issue: p.media.likely_video_playback_issue,
+          recommended_verbs: p.media.recommended_verbs || [],
+        }));
+      } catch { /* ignore */ }
+    }
+
     return {
       exportedAt: new Date().toISOString(),
       app: {
@@ -5789,6 +6005,7 @@ export default function App() {
       integrityReport,
       snapshotPreview,
       scraperHealth: scraperHealthSnapshot,
+      wineMediaDiagnostics,
       recentFileOps,
       logs: rustLogs.filter(levelMatches),
     };
@@ -6336,6 +6553,24 @@ export default function App() {
       : activeMainTab === "stats"
         ? "All-Time Stats"
         : "Library";
+  const sidebarMinimalMode = !!appSettings.sidebarMinimalMode;
+  const sidebarNavButtonClass = `flex items-center ${sidebarMinimalMode ? "gap-2 px-3 py-2" : "gap-2.5 px-4 py-3"} border-b border-t-0 border-l-0 border-r-0 w-full text-left transition-colors`;
+  const sidebarNavIconSize = sidebarMinimalMode ? 18 : 22;
+  const sidebarNavLabelClass = `${sidebarMinimalMode ? "text-xs" : "text-sm"} font-bold tracking-wide truncate`;
+  const sidebarSectionBoxClass = sidebarMinimalMode ? "px-2 py-1.5 border-b" : "px-3 py-2 border-b";
+  const sidebarFooterClass = sidebarMinimalMode ? "px-2 py-2 space-y-1 border-t" : "px-3 py-3 space-y-1.5 border-t";
+  const sidebarActionButtonClass = `w-full ${sidebarMinimalMode ? "py-1.5 text-[11px]" : "py-2 text-xs"} rounded font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60`;
+  const sidebarUtilityButtonClass = `flex-1 ${sidebarMinimalMode ? "py-1 text-[11px]" : "py-1.5 text-xs"} rounded flex items-center justify-center gap-1.5`;
+
+  useEffect(() => {
+    if (activeMainTab === "feed" && appSettings.sidebarShowNews === false) {
+      setActiveMainTab("library");
+      setSelected(null);
+    } else if (activeMainTab === "stats" && appSettings.sidebarShowStats === false) {
+      setActiveMainTab("library");
+      setSelected(null);
+    }
+  }, [activeMainTab, appSettings.sidebarShowNews, appSettings.sidebarShowStats]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -6383,12 +6618,52 @@ export default function App() {
           >
             →
           </button>
+          {appSettings.sidebarShowSettingsButton === false && (
+            <button
+              onClick={() => setShowSettings(true)}
+              className="w-6 h-6 rounded text-xs"
+              style={{ background: "transparent", color: "var(--color-text-muted)" }}
+              title={t('library.sidebar.settings')}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ margin: "0 auto" }}>
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l-.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </button>
+          )}
         </div>
         <div
           data-tauri-drag-region
           className="flex-1 flex items-center gap-2 px-2 overflow-hidden cursor-move"
           onDblClick={handleToggleMaximizeWindow}
         >
+          {activeLibraryProfile && (
+            <div
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded-full max-w-[220px]"
+              style={{
+                background: activeLibraryProfile.accentColor
+                  ? `color-mix(in srgb, ${activeLibraryProfile.accentColor} 18%, transparent)`
+                  : "var(--color-panel-3)",
+                border: `1px solid ${activeLibraryProfile.accentColor || "var(--color-border-soft)"}`,
+              }}
+              title={activeLibraryProfile.tagline || activeLibraryProfile.displayName}
+            >
+              <span
+                className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0 overflow-hidden"
+                style={{
+                  background: activeLibraryProfile.avatarUrl
+                    ? `center / cover no-repeat url(${activeLibraryProfile.avatarUrl})`
+                    : activeLibraryProfile.accentColor || "var(--color-accent)",
+                  color: "white",
+                }}
+              >
+                {!activeLibraryProfile.avatarUrl && activeLibraryProfile.displayName.slice(0, 1).toUpperCase()}
+              </span>
+              <span className="text-[10px] font-semibold truncate" style={{ color: "var(--color-text)" }}>
+                {activeLibraryProfile.displayName}
+              </span>
+            </div>
+          )}
           <span className="text-[11px] font-semibold truncate" style={{ color: "var(--color-text-soft)" }}>
             {topbarLocationTitle}
           </span>
@@ -6571,6 +6846,42 @@ export default function App() {
         </div>
       )}
 
+      {/* In-app notification toasts (custom notification layer) */}
+      {inAppToasts.length > 0 && (
+        <div className="fixed left-4 bottom-4 z-[9989] flex flex-col gap-2 pointer-events-none">
+          {inAppToasts.map((toast) => (
+            <div
+              key={toast.id}
+              className="pointer-events-auto flex items-start gap-3 rounded-xl p-3 text-left shadow-2xl"
+              style={{
+                width: 300,
+                background: "color-mix(in srgb, var(--color-panel) 92%, black 8%)",
+                border: "1px solid var(--color-border-strong)",
+                boxShadow: "0 12px 32px rgba(0,0,0,0.3)",
+                animation: "slideInLeft 0.25s ease-out",
+              }}
+            >
+              <span className="text-lg flex-shrink-0 mt-0.5">{toast.icon || "ℹ️"}</span>
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] uppercase tracking-[0.18em] font-bold" style={{ color: "var(--color-accent-soft)" }}>
+                  {toast.title}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: "var(--color-text-soft)" }}>
+                  {toast.message}
+                </div>
+              </div>
+              <button
+                className="w-6 h-6 rounded-full text-xs flex items-center justify-center flex-shrink-0"
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
+                onClick={() => setInAppToasts(prev => prev.filter(t => t.id !== toast.id))}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* ── Sidebar ── */}
       {!isKioskMode && (
         <aside className="flex flex-col flex-shrink-0 h-full relative" style={{ width: sidebarWidth, background: "var(--color-panel-2)", borderRight: "1px solid var(--color-bg-deep)" }}>
@@ -6582,49 +6893,54 @@ export default function App() {
           <button
             onClick={() => { setActiveMainTab("library"); setSelected(null); }}
             title="Library Home"
-            className="flex items-center gap-2.5 px-4 py-3 border-b border-t-0 border-l-0 border-r-0 w-full text-left transition-colors"
+            className={sidebarNavButtonClass}
             style={{ borderColor: "var(--color-bg-deep)", background: activeMainTab === "library" && selected === null ? "var(--color-bg)" : "transparent", cursor: "pointer" }}
             onMouseEnter={(e) => { if (activeMainTab !== "library" || selected !== null) e.currentTarget.style.background = "var(--color-bg)" }}
             onMouseLeave={(e) => { if (activeMainTab !== "library" || selected !== null) e.currentTarget.style.background = "transparent" }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+            <svg width={sidebarNavIconSize} height={sidebarNavIconSize} viewBox="0 0 24 24" fill="none"
               stroke={selected === null && activeMainTab === "library" ? "var(--color-accent)" : "var(--color-text-dim)"}
               strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
               <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h4" /><path d="M8 10v4" /><circle cx="17" cy="12" r="1" />
             </svg>
-            <span className="font-bold tracking-wide text-sm truncate"
+            <span className={sidebarNavLabelClass}
               style={{ color: selected === null && activeMainTab === "library" ? "var(--color-accent)" : "var(--color-text)" }}>{t('common.app_name')}</span>
           </button>
+          {appSettings.sidebarShowNews !== false && (
           <button
             onClick={() => { setActiveMainTab("feed"); setSelected(null); }}
             title="News Feed"
-            className="flex items-center gap-2.5 px-4 py-3 border-b border-t-0 border-l-0 border-r-0 w-full text-left transition-colors"
+            className={sidebarNavButtonClass}
             style={{ borderColor: "var(--color-bg-deep)", background: activeMainTab === "feed" && selected === null ? "var(--color-bg)" : "transparent", cursor: "pointer" }}
             onMouseEnter={(e) => { if (activeMainTab !== "feed" || selected !== null) e.currentTarget.style.background = "var(--color-bg)" }}
             onMouseLeave={(e) => { if (activeMainTab !== "feed" || selected !== null) e.currentTarget.style.background = "transparent" }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+            <svg width={sidebarNavIconSize} height={sidebarNavIconSize} viewBox="0 0 24 24" fill="none"
               stroke={activeMainTab === "feed" && selected === null ? "var(--color-accent)" : "var(--color-text-dim)"}
               strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
               <path d="M4 11a9 9 0 0 1 9 9" /><path d="M4 4a16 16 0 0 1 16 16" /><circle cx="5" cy="19" r="1" />
             </svg>
-            <span className="font-bold tracking-wide text-sm truncate"
+            <span className={sidebarNavLabelClass}
               style={{ color: activeMainTab === "feed" && selected === null ? "var(--color-accent)" : "var(--color-text)" }}>{t('library.sidebar.news')}</span>
           </button>
+          )}
+          {appSettings.sidebarShowStats !== false && (
           <button
             onClick={() => { setActiveMainTab("stats"); setSelected(null); }}
             title="All-Time Stats"
-            className="flex items-center gap-2.5 px-4 py-3 border-b border-t-0 border-l-0 border-r-0 w-full text-left transition-colors"
+            className={sidebarNavButtonClass}
             style={{ borderColor: "var(--color-bg-deep)", background: activeMainTab === "stats" && selected === null ? "var(--color-bg)" : "transparent", cursor: "pointer" }}
             onMouseEnter={(e) => { if (activeMainTab !== "stats" || selected !== null) e.currentTarget.style.background = "var(--color-bg)" }}
             onMouseLeave={(e) => { if (activeMainTab !== "stats" || selected !== null) e.currentTarget.style.background = "transparent" }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+            <svg width={sidebarNavIconSize} height={sidebarNavIconSize} viewBox="0 0 24 24" fill="none"
               stroke={activeMainTab === "stats" && selected === null ? "var(--color-accent)" : "var(--color-text-dim)"}
               strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
               <path d="M12 20V10" /><path d="M18 20V4" /><path d="M6 20v-4" />
             </svg>
-            <span className="font-bold tracking-wide text-sm truncate"
+            <span className={sidebarNavLabelClass}
               style={{ color: activeMainTab === "stats" && selected === null ? "var(--color-accent)" : "var(--color-text)" }}>{t('library.sidebar.stats')}</span>
           </button>
-          <div className="px-3 py-2 border-b" style={{ borderColor: "var(--color-bg-deep)" }}>
+          )}
+          {appSettings.sidebarShowSearchTools !== false && (
+          <div className={sidebarSectionBoxClass} style={{ borderColor: "var(--color-bg-deep)" }}>
             <div className="relative mb-2">
               <svg className="absolute left-2 top-1/2 -translate-y-1/2" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
@@ -6750,7 +7066,9 @@ export default function App() {
               </button>
             </div>
           </div>
+          )}
           {/* ── Collections ── */}
+          {appSettings.sidebarShowCollections !== false && (
           <div className="border-b" style={{ borderColor: "var(--color-bg-deep)" }}>
             <div
               className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[var(--color-text)]"
@@ -6855,7 +7173,9 @@ export default function App() {
               </>
             )}
           </div>
+          )}
           {/* ── By Developer ── */}
+          {appSettings.sidebarShowDevelopers !== false && (
           <div className="border-b" style={{ borderColor: "var(--color-bg-deep)" }}>
             <div
               className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[var(--color-text)]"
@@ -6899,7 +7219,9 @@ export default function App() {
               )
             )}
           </div>
+          )}
           {/* ── Wishlist ── */}
+          {appSettings.sidebarShowWishlist !== false && (
           <div className="border-b" style={{ borderColor: "var(--color-bg-deep)" }}>
             <div
               className="flex items-center px-3 pt-2 pb-1 gap-1 cursor-pointer select-none transition-colors hover:text-[var(--color-text)]"
@@ -6911,6 +7233,16 @@ export default function App() {
                 <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z" />
               </svg>
               <span className="text-[9px] uppercase tracking-widest font-bold flex-1" style={{ paddingTop: "1px" }}>{t('library.sidebar.wishlist')} ({wishlist.length})</span>
+              {wishlist.length > 0 && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleExportWishlistHTML(); }}
+                  className="text-[9px] px-1.5 py-0.5 rounded"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)" }}
+                  title="Export wishlist as sharable HTML page"
+                >
+                  📤
+                </button>
+              )}
             </div>
             {showWishlist && (
               <>
@@ -6942,6 +7274,7 @@ export default function App() {
               </>
             )}
           </div>
+          )}
           <div
             ref={sidebarListRefCb}
             className="flex-1 overflow-y-auto"
@@ -7114,7 +7447,7 @@ export default function App() {
               </div>
             )}
           </div>
-          <div className="px-3 py-3 space-y-1.5 border-t" style={{ borderColor: "var(--color-bg-deep)" }}>
+          <div className={sidebarFooterClass} style={{ borderColor: "var(--color-bg-deep)" }}>
             {syncState === "syncing" && (
               <div className="flex items-center gap-2 px-1 py-1">
                 <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "var(--color-accent)" }} />
@@ -7122,26 +7455,29 @@ export default function App() {
               </div>
             )}
 
-            <button
-              onClick={handleSurpriseLaunch}
-              disabled={surpriseCandidates.length === 0}
-              className="w-full py-2 rounded text-xs font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60"
-              style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-2)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
-              title={t('library.sidebar.surprise')}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 2l2.5 6.5L21 9l-5 4 1.5 6.5L12 16l-5.5 3.5L8 13 3 9l6.5-.5L12 2z" />
-              </svg>
-              {t('library.sidebar.surprise')}
-            </button>
+            {appSettings.sidebarShowSurpriseButton !== false && (
+              <button
+                onClick={handleSurpriseLaunch}
+                disabled={surpriseCandidates.length === 0}
+                className={sidebarActionButtonClass}
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-2)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
+                title={t('library.sidebar.surprise')}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2l2.5 6.5L21 9l-5 4 1.5 6.5L12 16l-5.5 3.5L8 13 3 9l6.5-.5L12 2z" />
+                </svg>
+                {t('library.sidebar.surprise')}
+              </button>
+            )}
 
             {/* ── Add dropdown ── */}
+            {appSettings.sidebarShowAddButton !== false && (
             <div ref={addMenuRef} className="relative">
               <button
                 onClick={() => setShowAddMenu((p) => !p)}
-                className="w-full py-2 rounded text-xs font-semibold flex items-center justify-center gap-1.5"
+                className={sidebarActionButtonClass}
                 style={{ background: showAddMenu ? "var(--color-accent-dark)" : "var(--color-border)", color: "var(--color-text)", border: "1px solid var(--color-border-card)" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-accent-dark)")}
                 onMouseLeave={(e) => { if (!showAddMenu) e.currentTarget.style.background = "var(--color-border)"; }}>
@@ -7186,11 +7522,12 @@ export default function App() {
                 </div>
               )}
             </div>
+            )}
 
             {/* Settings + app update */}
             <div className="flex gap-1.5">
-              <button onClick={() => setShowSettings(true)}
-                className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
+              {appSettings.sidebarShowSettingsButton !== false && <button onClick={() => setShowSettings(true)}
+                className={sidebarUtilityButtonClass}
                 style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px solid var(--color-panel-3)" }}
                 onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-text-muted)"; e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-dim)"; e.currentTarget.style.borderColor = "var(--color-panel-3)"; }}
@@ -7200,9 +7537,9 @@ export default function App() {
                   <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
                 </svg>
                 {t('library.sidebar.settings')}
-              </button>
-              <button onClick={() => setShowLogViewer(true)}
-                className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5"
+              </button>}
+              {appSettings.sidebarShowLogsButton !== false && <button onClick={() => setShowLogViewer(true)}
+                className={sidebarUtilityButtonClass}
                 style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px solid var(--color-panel-3)" }}
                 onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-text-muted)"; e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-dim)"; e.currentTarget.style.borderColor = "var(--color-panel-3)"; }}
@@ -7211,7 +7548,7 @@ export default function App() {
                   <path d="M4 6h16" /><path d="M4 12h16" /><path d="M4 18h16" />
                 </svg>
                 {t('library.sidebar.logs')}
-              </button>
+              </button>}
               {appUpdate && (
                 <button onClick={() => setShowAppUpdateModal(true)}
                   className="flex-1 py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1"
@@ -7233,7 +7570,7 @@ export default function App() {
         {selected === null && activeMainTab === "feed" ? (
           <FeedView appSettings={appSettings} wishlist={wishlist} defaultFeeds={DEFAULT_SETTINGS.rssFeeds} onToggleWishlist={handleToggleWishlist} />
         ) : selected === null && activeMainTab === "stats" ? (
-          <StatsView games={games} stats={stats} sessions={sessionLog} customizations={customizations} metadata={metadata} totalPlaytimeSecs={totalPlaytimeLiveSecs} />
+          <StatsView games={games} stats={stats} sessions={sessionLog} customizations={customizations} metadata={metadata} notes={notes} collections={collections} wishlist={wishlist} totalPlaytimeSecs={totalPlaytimeLiveSecs} />
         ) : viewMode === "grid" && !selected ? (
           <div className="flex-1 overflow-y-auto px-6 py-6" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
             <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
@@ -7337,6 +7674,39 @@ export default function App() {
             onClearMeta={handleClearMeta}
             onUpdate={() => setShowUpdateModal(true)}
             onBackupSaves={() => backupSaveFilesForPath(selected.path)}
+            onInstallMediaFixes={platform !== "windows" ? async () => {
+              if (platform === "windows") return;
+              const gc = customizations[selected.path];
+              const effectivePrefix = gc?.runnerOverride?.prefixPath ?? launchConfig.prefixPath;
+              if (!effectivePrefix) {
+                alert("No Wine/Proton prefix configured for this game.");
+                return;
+              }
+              try {
+                const prefixInfos = await invoke<PrefixInfo[]>("list_wine_prefixes").catch(() => []);
+                const matchingPrefix = prefixInfos.find(
+                  (p) => normalizePathNoCase(p.path) === normalizePathNoCase(effectivePrefix) ||
+                         normalizePathNoCase(pathDirname(p.path)) === normalizePathNoCase(effectivePrefix)
+                );
+                if (!matchingPrefix) {
+                  alert(`Prefix not found: ${effectivePrefix}`);
+                  return;
+                }
+                if (matchingPrefix.media.recommended_verbs.length === 0) {
+                  alert("No media fixes recommended for this prefix.");
+                  return;
+                }
+                const verbs = matchingPrefix.media.recommended_verbs;
+                if (!confirm(`Install media fixes for "${matchingPrefix.name}"?\n\nVerbs: ${verbs.join(", ")}\n\nThis may take a few minutes.`)) return;
+                await invoke("install_prefix_media_fixes", {
+                  prefix: matchingPrefix.path,
+                  verbs,
+                });
+                alert("Media fixes installed successfully!");
+              } catch (e) {
+                alert("Media fix install failed: " + e);
+              }
+            }: undefined}
             onToggleHide={toggleHide}
             onToggleFav={toggleFav}
             onOpenCustomize={() => setShowCustomizeModal(true)}
@@ -7390,7 +7760,6 @@ export default function App() {
           />
         )}
       </main>
-
       </div>
 
       {/* ── Modals ── */}
@@ -7424,6 +7793,13 @@ export default function App() {
             appSettings={appSettings}
             defaultSettings={DEFAULT_SETTINGS}
             onSaveSettings={(s) => { setAppSettings(s); saveCache(SK_SETTINGS, s); }}
+            libraryProfiles={profileRegistry.profiles}
+            activeLibraryProfileId={profileRegistry.activeProfileId}
+            onSwitchLibraryProfile={handleSwitchLibraryProfile}
+            onSaveLibraryProfile={handleSaveLibraryProfile}
+            onDeleteLibraryProfile={handleDeleteLibraryProfile}
+            discordSnapshot={discordSnapshot}
+            onOpenDiscordSettings={() => { invoke("discord_open_connected_games_settings").catch((e) => alert("Could not open Discord settings: " + e)); }}
             onOpenMigrationWizard={() => setShowMigrationWizard(true)}
             onRunIntegrityCheck={handleRunIntegrityCheck}
             onOpenRestoreSnapshots={() => {

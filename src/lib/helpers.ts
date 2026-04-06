@@ -15,6 +15,12 @@ export function pathDirname(path: string) {
   return norm.slice(0, idx);
 }
 
+export function pathBasename(path: string) {
+  const norm = path.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  const idx = norm.lastIndexOf("/");
+  return idx >= 0 ? norm.slice(idx + 1) : norm;
+}
+
 export function remapPathByRoot(path: string, oldRoot: string, newRoot: string): string | null {
   const src = normalizePathNoCase(path);
   const oldN = normalizePathNoCase(oldRoot);

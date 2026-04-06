@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useTranslation } from "react-i18next";
+import type { PerGameMediaPlaybackAssessment } from "../../lib/mediaPlaybackKnowledge";
 import { InGameGallery } from "../InGameGallery";
 import { NsfwOverlay } from "../common/NsfwOverlay";
 
@@ -500,8 +501,13 @@ export function GameDetail({
   onSaveCustomization,
   onOpenNotes,
   hasNotes,
+  onOpenAchievements,
+  achievementSummary,
+  achievementHasOpenGoals,
   onManageCollections,
   onInstallMediaFixes,
+  wineIntroVideoAssessment,
+  shaderCachePanel,
   sessions,
   onEditSessionNote,
   appSettings,
@@ -539,8 +545,24 @@ export function GameDetail({
   onSaveCustomization: (changes: Partial<GameCustomization>) => void;
   onOpenNotes: () => void;
   hasNotes: boolean;
+  onOpenAchievements: () => void;
+  /** e.g. "3/7" when the game has checklist rows */
+  achievementSummary: string | null;
+  /** true when some checklist rows exist and not all are done */
+  achievementHasOpenGoals: boolean;
   onManageCollections: () => void;
   onInstallMediaFixes?: () => void;
+  /** Combined prefix scan + engine/path heuristics (non-Windows + configured prefix only) */
+  wineIntroVideoAssessment?: PerGameMediaPlaybackAssessment | null;
+  /** DXVK / Steam Fossilize hints and portable cache import/export (non-Windows + Wine path) */
+  shaderCachePanel?: {
+    warmupLines: string[];
+    busy: boolean;
+    onRefresh: () => void;
+    onExport: () => void;
+    onImport: () => void;
+    onOpenGameFolder: () => void;
+  } | null;
   sessions: SessionEntry[];
   onEditSessionNote: (entry: SessionEntry) => void;
   appSettings: AppSettings;
@@ -690,6 +712,28 @@ export function GameDetail({
           </svg>
           {t('game.notes')}{hasNotes && <span className="w-1.5 h-1.5 rounded-full bg-current ml-0.5" />}
         </button>
+        <button
+          onClick={onOpenAchievements}
+          className="flex items-center gap-1.5 px-3 py-2 rounded text-sm"
+          style={{
+            background: achievementSummary ? "var(--color-panel-2)" : "var(--color-panel-3)",
+            color: achievementSummary ? "var(--color-accent-soft)" : "var(--color-text-muted)",
+            border: `1px solid ${achievementSummary ? "var(--color-accent)" : "var(--color-border-strong)"}`,
+          }}
+          title={t("game.achievements_tooltip")}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
+            <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
+            <path d="M4 22h16" />
+            <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+            <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+            <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+          </svg>
+          {t("game.achievements")}
+          {achievementSummary && <span className="text-[11px] font-mono opacity-90 ml-0.5">{achievementSummary}</span>}
+          {achievementHasOpenGoals && <span className="w-1.5 h-1.5 rounded-full bg-current ml-0.5" />}
+        </button>
         {meta && (
           <a href={meta.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "var(--color-panel-2)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -710,6 +754,101 @@ export function GameDetail({
         {meta && <button onClick={onClearMeta} className="px-3 py-2 rounded text-xs" style={{ background: "transparent", color: "var(--color-text-dim)" }}>✕ {t('game.unlink')}</button>}
         <SettingsMenu isHidden={isHidden} isFav={isFav} onDelete={onDelete} onToggleHide={onToggleHide} onToggleFav={onToggleFav} onCustomize={onOpenCustomize} onManageCollections={onManageCollections} />
       </div>
+
+      {wineIntroVideoAssessment && (
+        <div
+          className="px-8 py-2.5 text-xs border-b flex flex-wrap items-center gap-x-3 gap-y-1"
+          style={{
+            background: wineIntroVideoAssessment.effectiveRisk === "minimal"
+              ? "rgba(70, 120, 90, 0.14)"
+              : wineIntroVideoAssessment.effectiveRisk === "low"
+                ? "rgba(120, 110, 60, 0.14)"
+                : "rgba(140, 70, 40, 0.16)",
+            borderColor: "var(--color-border-soft)",
+            color: "var(--color-text-soft)",
+          }}
+        >
+          <span className="font-bold shrink-0" style={{ color: "var(--color-warning)" }}>{t("game.wine_intro_video_panel.title")}</span>
+          <span className="flex-1 min-w-[180px]">{wineIntroVideoAssessment.summary}</span>
+          {wineIntroVideoAssessment.context.matchedRules.length > 0 && (
+            <span className="text-[10px] opacity-85">
+              {t("game.wine_intro_video_panel.matched")}: {wineIntroVideoAssessment.context.matchedRules.map((r) => r.label).join(", ")}
+            </span>
+          )}
+          {onInstallMediaFixes && wineIntroVideoAssessment.suggestedVerbs.length > 0 && wineIntroVideoAssessment.effectiveRisk !== "minimal" && (
+            <button
+              type="button"
+              onClick={onInstallMediaFixes}
+              className="text-[10px] font-semibold px-2 py-0.5 rounded"
+              style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+            >
+              {t("game.wine_intro_video_panel.fix_cta")}
+            </button>
+          )}
+        </div>
+      )}
+
+      {shaderCachePanel && (
+        <div
+          className="px-8 py-2.5 text-xs border-b space-y-2"
+          style={{
+            background: "rgba(45, 75, 110, 0.18)",
+            borderColor: "var(--color-border-soft)",
+            color: "var(--color-text-soft)",
+          }}
+        >
+          <div className="flex flex-wrap items-center gap-2 gap-y-1">
+            <span className="font-bold shrink-0" style={{ color: "var(--color-accent-soft)" }}>{t("game.shader_cache_panel.title")}</span>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                disabled={shaderCachePanel.busy}
+                onClick={() => shaderCachePanel.onRefresh()}
+                className="text-[10px] font-semibold px-2 py-0.5 rounded disabled:opacity-45"
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-subtle)" }}
+              >
+                {shaderCachePanel.busy ? t("game.shader_cache_panel.busy") : t("game.shader_cache_panel.refresh")}
+              </button>
+              <button
+                type="button"
+                disabled={shaderCachePanel.busy}
+                onClick={() => shaderCachePanel.onExport()}
+                className="text-[10px] font-semibold px-2 py-0.5 rounded disabled:opacity-45"
+                style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+              >
+                {t("game.shader_cache_panel.export_zip")}
+              </button>
+              <button
+                type="button"
+                disabled={shaderCachePanel.busy}
+                onClick={() => shaderCachePanel.onImport()}
+                className="text-[10px] font-semibold px-2 py-0.5 rounded disabled:opacity-45"
+                style={{ background: "var(--color-panel-2)", color: "var(--color-accent-soft)", border: "1px solid var(--color-border)" }}
+              >
+                {t("game.shader_cache_panel.import_zip")}
+              </button>
+              <button
+                type="button"
+                disabled={shaderCachePanel.busy}
+                onClick={() => shaderCachePanel.onOpenGameFolder()}
+                className="text-[10px] font-semibold px-2 py-0.5 rounded disabled:opacity-45"
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-subtle)" }}
+              >
+                {t("game.shader_cache_panel.open_folder")}
+              </button>
+            </div>
+          </div>
+          {shaderCachePanel.warmupLines.length > 0 ? (
+            <ul className="list-disc pl-4 space-y-0.5 text-[11px] leading-snug opacity-95">
+              {shaderCachePanel.warmupLines.map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-[11px] leading-snug opacity-85 pl-0.5">{t("game.shader_cache_panel.empty_hint")}</p>
+          )}
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-8 py-5" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
         <div className="flex gap-6 max-w-5xl">

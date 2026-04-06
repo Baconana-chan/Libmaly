@@ -1,33 +1,60 @@
-# LIBMALY — Ideas & Roadmap
+## 🚀 Release & Distribution
+
+- [ ] **Release on itch.io** — create landing page, configure game categories, and set up Butler for automated build pushes.
+- [ ] **Release on Epic Games Store** — fulfill self-service publishing requirements and integrate basic EGS SDK features.
+- [ ] **Release on Steam** (Optional) — evaluate Steam's stance on library tools and prepare for Steamworks submission if viable.
 
 ---
 
 ## 🎨 UI / UX
 
-
-
-
+- [ ] **Custom CSS / User Styles** — allow power users to inject custom CSS to override any part of the UI
+- [ ] **Layout Presets Manager** — save and switch between global layout configurations (e.g. "Minimalist", "Data-heavy", "Console-mode")
+- [ ] **Advanced Backdrop FX** — dynamic blur and glassmorphism levels based on the current game's cover art colors
+- [ ] **Theme Marketplace/Gallery** — browse and install community-made JSON themes from a trusted relay
 ---
 
 ## 📊 Stats & Tracking
 
+- [ ] **Year-in-Review generator** — automated summary card of the year's gaming habits, favorite developers, and milestones
+- [ ] **Activity Heatmaps** — GitHub-style 365-day play activity grid in the Stats view
+- [ ] **Productivity Correlation** — optional "Time well spent" vs "Binge" detection based on session length and frequency
+---
+
+## 📸 Screenshots 
+
+- [ ] **Instant Replay (Short Clips)** — capture the last 15–30 seconds of gameplay as a GIF or MP4 (experimental Rust-side buffer)
+- [ ] **Screenshot Comparison Tool** — dual-pane view to compare visual differences between game versions or session moments
+
+---
+
+## 🌐 Sources & Extensibility
+
+- [ ] **Universal data-source engine** — allow adding custom metadata scrapers via JSON templates (URL patterns, CSS selectors, regex, or simple JS hooks)
+- [ ] **Multi-source metadata aggregation** — fetch and merge data from multiple sources for a single game (e.g. F95 version tags + VNDB media + DLsite descriptions)
+- [ ] **Local-only "Ghost" mode** — per-game or per-profile setting to disable all outbound metadata/update checks for high-privacy games
+- [ ] **Third-party store integration** — metadata providers for generic stores (IGDB, RAWG, MobyGames) to cover games not on F95/DLsite
+- [ ] **Provider-agnostic library sync** — add WebDAV, Nextcloud, and generic S3/Git backends for state/save sync beyond Google Drive/Dropbox
+
+---
 
 
 ---
 
-## 🌐 Metadata
+## 🕹️ Universal In-Game Overlay
 
-
-
+- [ ] **Full-screen Dashboard (Shift+Tab)** — immersive UI that pauses in-game input and provides a centralized navigation hub
+- [ ] **Overlay Workspace & Widgets** — drag-and-drop widget layout:
+  - [ ] **Clock & Session Timer** — keep track of time and playtime milestones
+  - [ ] **In-game Web Browser** — mini-WebView for guides, walkthroughs, or searching F95/DLsite mid-game
+  - [ ] **Markdown Note Editor** — view and edit game notes/achievements without Alt-Tabbing
+  - [ ] **System Monitor** — floating FPS counter and basic CPU/GPU telemetry
+- [ ] **Global Hotkey & Input Hooking** — reliable Rust-side keyboard hook for guaranteed overlay trigger even in administrative-level fullscreen games
+- [ ] **Context-aware metadata** — show the currently running game's version and "New Update Available" status directly in the overlay
+- [ ] **Interaction Layer** — toggle `setIgnoreCursorEvents` dynamically to allow interacting with the overlay while the game runs in the background
 
 ---
 
-## 🖼️ Screenshots
-
-- [x] **Screenshot overlay history** — quick recent-captures strip in the overlay to confirm/save/tag the last few screenshots without leaving the game
-
-
----
 
 ## 🎮 Controller & Remote Play
 
@@ -55,10 +82,9 @@
 
 ---
 
-## 🧰 Background Jobs
+## 🧰 Background Jobs (Completed)
 
-
-
+- [ ] **Database Vacuum/Optimize** — periodic background task to prune old logs and optimize local state storage
 ---
 
 ## 🛡️ Reliability & Recovery
@@ -71,51 +97,46 @@
 
 - [ ] **Google Drive / Dropbox auto-backup** — optional periodic upload of library JSON to a cloud folder
 - [ ] **Save-file cloud sync** — upload save zips to a configured folder (Google Drive, local NAS, etc.)
-- [x] **Multiple library profiles** — separate profiles for different PCs or users; switchable from the tray
-  - [x] Per-profile library/state/settings storage namespaces
-  - [x] Tray profile switching
-  - [x] Custom profile identity fields (`displayName`, `handle`, `tagline`, `avatarUrl`, `bannerUrl`, `accentColor`)
 - [ ] **Cloud sync conflict resolver** — 3-way merge for local/remote/base snapshots to avoid silent data loss
 
 ---
 
-## 🍷 Wine / Proton (Linux & macOS)
+## 🍷 Wine / Proton (Linux & macOS) (Completed)
 
-- [/] **Media playback diagnostics for Wine/Proton** — detect missing Media Foundation / Quartz / WMP-style components in a prefix and explain likely intro-video playback issues
-  - [x] Prefix-level media component detection for `mf` / `quartz` / `wmp` / `lavfilters`-style gaps
-  - [x] Human-readable summary + recommended fix verbs in Wine/Proton settings
-  - [ ] Per-game media diagnostics — combine prefix health with game executable / engine hints to estimate actual intro-video risk
-  - [x] Launch-time warning for likely broken video playback — warn before first launch when the selected prefix is missing required media components
-  - [x] Diagnostics export integration — include media compatibility findings in JSON diagnostics / support reports
-  - [ ] Known-issues knowledge base — map common engines / launchers to recommended media fixes and known bad combinations
-- [/] **One-click media compatibility fixes** — install recommended media playback components for a prefix via winetricks / compatibility helpers
-  - [x] One-click install of recommended media fix verbs for a prefix
-- [x] **Per-game apply flow** — install fixes directly from a game page using that game's effective prefix/runner
-  - [ ] Dry-run / preview step — show which verbs/components will be installed before applying
-  - [ ] Post-install verification — re-scan the prefix and show which components were actually fixed
-  - [x] Compatibility presets — offer safe presets like `Legacy WMV videos`, `RPG Maker intro fix`, `WMP-heavy game`, `Fallback filters only`
-  - [ ] Failure-specific guidance — when `winetricks` fails, surface actionable next steps instead of only raw stderr
-- [ ] **Shader pre-caching / DXVK cache management** — detect, import, export, and optionally share DXVK/Proton shader cache artifacts to reduce first-run stutter
-- [ ] **Per-game shader cache warmup hints** — show when a game is likely to benefit from shader cache prep and surface cache status before first launch
-- [ ] **Prefix compatibility presets** — optional quick presets for common Windows-game issues (video playback, fonts, DirectShow, xact, input quirks)
-
+- [x] All core diagnostic and compatibility features implemented (see Completed section)
 
 ---
 
-## 📥 Import & Interop
+## 📥 Import & Interop (Completed)
 
-- [x] **Steam launch bridge / playtime sync** — optionally launch imported Steam titles through Steam and pull updated playtime back into LIBMALY with best-effort session tracking
+- [x] All major launcher imports (Steam/GOG/Playnite) implemented (see Completed section)
+
+---
+
+## 🛒 Launcher & Store Integrations
+
+- [ ] **Unified Cloud Library Sync** — fetch complete ownership lists (including uninstalled titles) from major storefronts:
+  - [ ] **Enhanced Steam Integration** — list all library titles via Web API / ID hunting; trigger `steam://install/<id>` for uninstalled games.
+  - [ ] **Epic Games Store** — cloud-based library listing and Legendary-style launch integration.
+  - [ ] **itch.io Butler Integration** — browse, download, and auto-update itch.io purchases directly within Libmaly.
+  - [ ] **EA App / Ubisoft Connect / Rockstar** — protocol-based library discovery and "Launch from Store" support.
+  - [ ] **GameJolt & Battle.net** — experimental manifests reading for installed titles and cloud metadata sync.
+- [ ] **Cross-Store Ownership Grouping** — automatically merge multiple entries for the same game owned on different platforms into a single UI card with a "Launch via..." provider selector.
+- [ ] **Remote Install Flow** — trigger game installation in external launchers directly from the Libmaly detail page.
+- [ ] **OAuth & API Vault** — secure centralized manager for storefront tokens and cookies (integrated with Libmaly Profile persistence).
 
 ---
 
 ## 🛠️ Technical
 
-- [x] **i18n / l10n** — internationalisation framework; provide RU, JA, ZH translations
 - [ ] **Plugin system** — allow JS/WASM plugins to add metadata sources or UI panels
-- [ ] **REST API mode** — optional local HTTP server so external scripts can query/control the library
-- [x] **Custom notification layer migration** — replace most system notifications with themed in-app / in-overlay notifications while keeping OS notifications only as optional fallback
+- [ ] **REST/WebSocket API Mode** — open API for third-party developers:
+  - [ ] **Remote Control** — launch games, control volume, and monitor status from external apps
+  - [ ] **State Access** — read library metadata, stats, and notes for external dashboards/sidecar apps
+  - [ ] **Extension hooks** — allow external scripts to "push" notifications or widgets into the Libmaly overlay
+- [ ] **SDK / Reference implementation** — provide a boilerplate for third-party developers to build fan-made tools on top of Libmaly
 - [ ] **Data consistency tests** — integration scenarios for scan → launch → crash → recovery across Windows/Linux/macOS
-- [x] **Roadmap hygiene task** — keep README and TODO in sync for backup/sync feature status
+
 
 ### Internal Interfaces / Types (planned)
 
@@ -130,11 +151,21 @@
 
 ---
 
-## 🤝 Community / Social (long-term)
+## 📡 Social & Connectivity (Local-first)
 
-- [ ] **Achievement tracker** — manual checklist per game for tracking in-game routes or achievements
-- [x] **Public wishlist** — export a sharable static HTML page of your collection/wishlist
+- [ ] **Peer-to-Peer Activity "Pulse"** — local-network broadcast + optional encrypted relay to see what friends are playing without a central server
+- [ ] **Agnostic Social Backend** — user-configurable relay URL system:
+  - [ ] Support official **Libmaly Cloud** relay
+  - [ ] Support fan-made/self-hosted relay implementations without feature-gating
+- [ ] **Concurrent Social Providers** — architecture to link multiple social identities (e.g. Libmaly-Relay + Discord + Steam) without sources "extinguishing" or overriding each other
+- [ ] **Relay Feature Negotiation** — auto-detect relay capabilities and dynamically adjust UI (e.g. hide 'Chat' if the relay doesn't support it)
+- [ ] **Anonymized Global Trending** — optional opt-in to fetch/publish aggregate local-only stats ("Most played this week globally") without personal identity tracking
+- [ ] **Portable Social Identity** — export/import social profile keys (Display Name, Avatar, PGP/ED25519 keys) to stay independent of any specific relay or server
+- [ ] **Encrypted P2P Chat** — basic secure messaging for coordinating multiplayer or sharing game notes
+- [ ] **Decentralized sharing (Nostr/ActivityPub)** — publish reviews, ratings, and screenshots to decentralized social feeds directly from the UI
+- [ ] **Multi-protocol social linking** — bridge activity from Discord, Steam, and Libmaly-Relay into a single unified local feed
 - [ ] **Friend activity** — optional peer-to-peer "what are friends playing" via a relay server
+
 
 ---
 ---
@@ -156,6 +187,7 @@
 - [x] **Multiple executables per game** — pin 2–3 launch targets (e.g. game.exe + config.exe)
 - [x] **Launch arguments** — text field per game for command-line flags
 - [x] **Launch count** — track number of sessions; show "played 42 times"
+- [x] **Achievement tracker** — manual per-game checklist for routes, endings, or goals; auto-save; Ctrl+K search matches checklist text
 
 ### UI / UX
 - [x] **Sidebar width** — resizable via drag handle
@@ -163,7 +195,7 @@
 - [x] **Compact list mode** — denser rows with tiny thumbnail for large libraries
 - [x] **Minimal / customizable sidebar** — compact sidebar mode with per-section visibility toggles for News, Stats, filters, Collections, Developers, Wishlist, Surprise, Add, Settings, and Logs
 - [x] **Keyboard navigation** — arrow keys through game list, Space to launch
-- [x] **Global search** — Ctrl+K command palette; search by name, tag, developer, notes
+- [x] **Global search** — Ctrl+K command palette; search by name, tag, developer, notes, achievement checklist rows
 - [x] **Sidebar badge** — total hidden count next to "Hidden" filter chip
 - [x] **Animated cover placeholder** — shimmer skeleton while metadata is loading
 - [x] **Scroll-to-selected** — sidebar scrolls to keep selected game visible
@@ -222,6 +254,7 @@
 - [x] **Export gallery** — zip all screenshots for a game and save / share
 - [x] **Screenshot annotation** — simple draw / text overlay before saving
 - [x] **In-game screenshot confirmation toast** — show a Steam-style overlay toast when a screenshot is captured, with optional thumbnail/tag feedback instead of silent save
+- [x] **Screenshot overlay history** — quick recent-captures strip in the overlay to confirm/save/tag the last few screenshots without leaving the game
 
 ### Wine / Proton
 - [x] **Global Wine/Proton config** — set Wine binary and prefix globally; used for all non-Windows games
@@ -232,6 +265,25 @@
 - [x] **Winetricks integration** — run common verbs (vcrun2019, d3dx9, etc.) from a dropdown
 - [x] **Proton-GE support** — auto-detect Proton-GE builds alongside official Steam Proton
 - [x] **Lutris import** — read Lutris's game database to import already-configured Wine games
+- [x] **Per-game intro-video risk** — merge prefix media scan with engine/exe/path heuristics; banner on game page; smarter launch confirm; diagnostics export includes per-game rows + `mediaPlaybackKnowledgeBase`
+- [x] **Media fix preview & verify** — modal shows `winetricks -q` verb list before install; after success re-lists prefixes and diffs MF/Quartz/WMP/LAV/WMV markers; failures append heuristic hints; Rust merges stdout into error text
+- [x] **Media playback diagnostics for Wine/Proton** — detect missing Media Foundation / Quartz / WMP-style components in a prefix and explain likely intro-video playback issues
+  - [x] Prefix-level media component detection for `mf` / `quartz` / `wmp` / `lavfilters`-style gaps
+  - [x] Human-readable summary + recommended fix verbs in Wine/Proton settings
+  - [x] Per-game media diagnostics — combine prefix health with game executable / engine hints to estimate actual intro-video risk
+  - [x] Launch-time warning for likely broken video playback — warn before first launch when the selected prefix is missing required media components
+  - [x] Diagnostics export integration — include media compatibility findings in JSON diagnostics / support reports
+  - [x] Known-issues knowledge base — map common engines / launchers to recommended media fixes and known bad combinations
+- [x] **One-click media compatibility fixes** — install recommended media playback components for a prefix via winetricks / compatibility helpers
+  - [x] One-click install of recommended media fix verbs for a prefix
+- [x] **Per-game apply flow** — install fixes directly from a game page using that game's effective prefix/runner
+  - [x] Dry-run / preview step — show which verbs/components will be installed before applying
+  - [x] Post-install verification — re-scan the prefix and show which components were actually fixed
+  - [x] Compatibility presets — offer safe presets like `Legacy WMV videos`, `RPG Maker intro fix`, `WMP-heavy game`, `Fallback filters only`
+  - [x] Failure-specific guidance — when `winetricks` fails, surface actionable next steps instead of only raw stderr
+- [x] **Shader pre-caching / DXVK cache management** — detect, import, export, and optionally share DXVK/Proton shader cache artifacts to reduce first-run stutter
+- [x] **Per-game shader cache warmup hints** — show when a game is likely to benefit from shader cache prep and surface cache status before first launch
+- [x] **Prefix compatibility presets** — optional quick presets for common Windows-game issues (video playback, fonts, DirectShow, xact, input quirks)
 
 ### Performance & Stability
 - [x] **Virtual sidebar list** — windowed rendering for 1000+ game libraries
@@ -242,16 +294,21 @@
 - [x] **CLI interface** — `libmaly launch <name>` from a terminal
 - [x] **Import from Playnite / GOG Galaxy** — read existing launchers' databases and merge into library
 - [x] **Steam library import** — read installed Steam manifests, import detected games into LIBMALY, and attach Steam app IDs for launch integration
+- [x] **Steam launch bridge / playtime sync** — optionally launch imported Steam titles through Steam and pull updated playtime back into LIBMALY with best-effort session tracking
 
 ### Technical
 - [x] **Log viewer** — in-app console showing recent Rust-side errors/warnings for debugging
 - [x] **Crash reporter** — catch panics and offer to copy a report to clipboard
 - [x] **Tray icon on macOS** — verify/fix `NSStatusItem` behaviour once macOS build is stable
 - [x] **Portable mode** — store all data next to the exe instead of AppData (USB-stick installs)
+- [x] **i18n / l10n** — internationalisation framework; provide RU, JA, ZH translations
+- [x] **Custom notification layer migration** — replace most system notifications with themed in-app / in-overlay notifications while keeping OS notifications only as optional fallback
+- [x] **Roadmap hygiene task** — keep README and TODO in sync for backup/sync feature status
 
 ### Community / Social (long-term)
 - [x] **Review & rating** — personal 1–10 rating + short review stored locally; exportable
 - [x] **Profile identity customization** — local profile identity fields (`displayName`, `handle`, `tagline`, `avatarUrl`, `bannerUrl`, `accentColor`) as groundwork for future online/social features
+- [x] **Public wishlist** — export a sharable static HTML page of your collection/wishlist
 
 ### Sync & Backup
 - [x] **Cloud config sync** — export/import full library state (stats, metadata, notes, collections) as JSON
@@ -259,6 +316,10 @@
 - [x] **Save-file backup** — detect common save directories and zip them on demand or on exit
 - [x] **Backup retention policy** — rotate backups by daily/weekly/monthly rules and auto-prune old archives
 - [x] **One-click restore wizard** — restore state from backup with overwrite preview before apply
+- [x] **Multiple library profiles** — separate profiles for different PCs or users; switchable from the tray
+  - [x] Per-profile library/state/settings storage namespaces
+  - [x] Tray profile switching
+  - [x] Custom profile identity fields (`displayName`, `handle`, `tagline`, `avatarUrl`, `bannerUrl`, `accentColor`)
 
 ### Internal Interfaces / Types (planned)
 - [x] **`run_integrity_check` command** — app-level command for integrity scan and JSON/UI report output

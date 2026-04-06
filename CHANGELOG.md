@@ -4,13 +4,33 @@
 
 ### 📦 Package Management
 - **Added .rpm build support** — Red Hat Package Manager packages for Linux distributions (Fedora, CentOS, RHEL)
-- **Added .pacman build support** — Arch Linux packages for Arch-based distributions
 - **Updated build scripts** — added dedicated commands for different package formats:
   - `npm run tauri:build:rpm` - Build RPM packages
-  - `npm run tauri:build:pacman` - Build Arch Linux packages
   - `npm run tauri:build:appimage` - Build AppImage packages
   - `npm run tauri:build:linux` - Build Linux binaries
-- **Added Linux dependencies** — specified required system packages for RPM and Pacman builds
+- **Added Linux dependencies** — specified required system packages for RPM builds
+
+### 🏆 Achievement & Checklist Tracker
+- **Integrated per-game task lists** — added support for custom achievements and checklists (text + completion status) per game.
+- **Live progress tracking** — "Tracker" button on game cards now shows "completed / total" stats and a status dot for pending tasks.
+- **Dedicated Task Modal** — new interface for adding, editing, and deleting checklist items with auto-save capability.
+- **Deep Integration** — achievement data is fully supported in library profiles, snapshots, cloud sync, and the migration wizard.
+- **Global Search Support** — checklist items are now indexed and searchable via the `Ctrl+K` command palette.
+
+### 🍷 Wine / Proton Diagnostics & Fixes
+- **Proactive Media Diagnostics** — introduced engine-aware heuristics for RPG Maker, Unity, Ren'Py, and more to estimate video playback risk.
+- **Launch-time Protection** — added warnings before first launch if a game has high dependency on intro videos and the current prefix is missing required components.
+- **Intro Video Status Bar** — game pages now show an "Intro video (Wine)" assessment with clickable access to recommended fixes.
+- **Media Fix Preview (Dry-run)** — new modal shows exactly which winetricks commands will be run before applying fixes.
+- **Post-Install Verification** — the app now verifies and displays a diff of fixed media components after a winetricks run.
+- **Prefix Compatibility Presets** — added one-click quick presets for common issues including fonts, DirectShow, xact, and input quirks.
+- **Improved Error Handling** — winetricks failures now combine stdout/stderr and provide human-readable hints for 404s, permissions, and network issues.
+- **Extended Diagnostics Export** — included the `mediaPlaybackKnowledgeBase` and per-game risk assessment in support reports.
+
+### ⚡ Performance & Caching
+- **Shader pre-caching support** — detect, import, and export DXVK/Proton shader cache artifacts to reduce stutter during first-run gameplay.
+- **Cache warmup hints** — game pages now indicate if a game benefits from shader cache prep and show the current cache status.
+
 
 ## 1.6.0 - 2026-04-02
 

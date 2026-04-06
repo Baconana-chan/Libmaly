@@ -5,7 +5,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { register as registerGlobalShortcut, unregister as unregisterGlobalShortcut } from "@tauri-apps/plugin-global-shortcut";
@@ -15,6 +15,8 @@ import { enable as enableAutostart, disable as disableAutostart, isEnabled as is
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { marked } from "marked";
 import { CommandPalette } from "./components/CommandPalette";
+import { AchievementTrackerModal } from "./components/modals/AchievementTrackerModal";
+import { MediaInstallPreviewModal } from "./components/modals/MediaInstallPreviewModal";
 import { NsfwOverlay } from "./components/common/NsfwOverlay";
 import { GameDetail } from "./components/game/GameDetail";
 import { AppUpdateModal } from "./components/modals/AppUpdateModal";
@@ -29,7 +31,7 @@ import { mergeFolderGames, mergeFolderMtimes } from "./lib/scanner";
 import { appStorageGetItem, appStorageRemoveItem, appStorageSetItem, getAppStorageProfile, setAppStorageProfile } from "./lib/appStorage";
 import {
   SK_GAMES, SK_MTIMES, SK_PATH, SK_FOLDERS, SK_STATS, SK_META, SK_HIDDEN, SK_FAVS,
-  SK_CUSTOM, SK_NOTES, SK_COLLECTIONS, SK_LAUNCH, SK_RECENT, SK_ORDER, SK_SESSION_LOG,
+  SK_CUSTOM, SK_NOTES, SK_ACHIEVEMENTS, SK_COLLECTIONS, SK_LAUNCH, SK_RECENT, SK_ORDER, SK_SESSION_LOG,
   SK_WISHLIST, SK_HISTORY, SK_SETTINGS,
   JOB_INCREMENTAL_SYNC, JOB_FULL_SCAN, JOB_INTEGRITY_CHECK, JOB_BATCH_METADATA_REFRESH,
   JOB_AUTO_METADATA_REFRESH, JOB_UPDATE_CHECKER, JOB_AUTO_HEAL_PATHS, JOB_BACKUP_RETENTION,
@@ -37,8 +39,25 @@ import {
   COLLECTION_COLORS, SCREENSHOT_TOAST_TTL_MS, DEFAULT_SETTINGS, DEFAULT_LAUNCH_CONFIG,
   GENERIC_EXE_NAMES, RATING_CATEGORIES,
 } from "./lib/constants";
+import type { GameAchievementItem, GameAchievementsByPath } from "./lib/gameAchievements";
+import { normalizeAchievementsMap } from "./lib/gameAchievements";
 import {
-  normalizePathForMatch, normalizePathNoCase, pathDirname, remapPathByRoot, remapPathByPrefix,
+  assessGameMediaPlaybackContext,
+  buildLaunchWineMediaWarningMessage,
+  combinePrefixAndGameMedia,
+  ENGINE_MEDIA_KNOWLEDGE,
+  findMatchingWinePrefixEntry,
+  MEDIA_PLAYBACK_GOTCHAS,
+  resolveEffectiveWinePrefix,
+} from "./lib/mediaPlaybackKnowledge";
+import { formatWinetricksErrorWithHints } from "./lib/winetricksSupport";
+import {
+  buildShaderWarmupLines,
+  type ShaderCacheDiscovery,
+  WINE_COMPATIBILITY_PRESETS,
+} from "./lib/shaderCache";
+import {
+  normalizePathForMatch, normalizePathNoCase, pathDirname, pathBasename, remapPathByRoot, remapPathByPrefix,
   pathSegmentsRelativeToRoot, deriveGameName, parseDeepLinkUrl, resolveSeasonFromDate,
   detectMetadataSourceFromUrl, metadataFetchCommand, metadataSourceLabel,
   normalizeHexColor, shiftHexColor, formatScoreForScale,
@@ -616,6 +635,7 @@ interface CloudSyncPayloadV1 {
     favGames: Record<string, boolean>;
     customizations: Record<string, GameCustomization>;
     notes: Record<string, string>;
+    achievements: GameAchievementsByPath;
     collections: Collection[];
     launchConfig: LaunchConfig;
     sessionLog: SessionEntry[];
@@ -646,6 +666,14 @@ type SortMode = "name" | "lastPlayed" | "playtime" | "custom";
 type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku" | "unlinked" | "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play" | string;
 type LaunchRequest = { mode: "path" | "name"; value: string };
 
+function achievementTrackerUiState(items: GameAchievementItem[] | undefined): { summary: string | null; openGoals: boolean } {
+  const list = items ?? [];
+  const total = list.length;
+  if (total === 0) return { summary: null, openGoals: false };
+  const done = list.filter((i) => i.done).length;
+  return { summary: `${done}/${total}`, openGoals: done < total };
+}
+
 function loadCache<T>(key: string, fallback: T): T {
   try { const r = appStorageGetItem(key); return r ? JSON.parse(r) : fallback; }
   catch { return fallback; }
@@ -661,6 +689,7 @@ type ProfileStorageSnapshot = {
   favGames: Record<string, boolean>;
   customizations: Record<string, GameCustomization>;
   notes: Record<string, string>;
+  achievements: GameAchievementsByPath;
   collections: Collection[];
   launchConfig: LaunchConfig;
   recentGames: RecentGame[];
@@ -690,6 +719,7 @@ function readProfileStorageSnapshot(): ProfileStorageSnapshot {
     favGames: loadCache(SK_FAVS, {}),
     customizations: loadCache(SK_CUSTOM, {}),
     notes: loadCache(SK_NOTES, {}),
+    achievements: normalizeAchievementsMap(loadCache(SK_ACHIEVEMENTS, {})),
     collections: loadCache(SK_COLLECTIONS, []),
     launchConfig: loadCache(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG),
     recentGames: loadCache(SK_RECENT, []),
@@ -717,6 +747,7 @@ function buildSnapshotEntries(payload: {
   favGames: Record<string, boolean>;
   customizations: Record<string, GameCustomization>;
   notes: Record<string, string>;
+  achievements: GameAchievementsByPath;
   collections: Collection[];
   launchConfig: LaunchConfig;
   recentGames: RecentGame[];
@@ -737,6 +768,7 @@ function buildSnapshotEntries(payload: {
     [SK_FAVS]: JSON.stringify(payload.favGames),
     [SK_CUSTOM]: JSON.stringify(payload.customizations),
     [SK_NOTES]: JSON.stringify(payload.notes),
+    [SK_ACHIEVEMENTS]: JSON.stringify(payload.achievements),
     [SK_COLLECTIONS]: JSON.stringify(payload.collections),
     [SK_LAUNCH]: JSON.stringify(payload.launchConfig),
     [SK_RECENT]: JSON.stringify(payload.recentGames),
@@ -1912,10 +1944,17 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
 }
 
 // ─── Wine / Proton Settings Modal ──────────────────────────────────────────────
-function WineSettingsModal({ config, onSave, onClose }: {
+function WineSettingsModal({ config, onSave, onClose, platform = "windows", onPermissionFailure }: {
   config: LaunchConfig;
   onSave: (c: LaunchConfig) => void;
   onClose: () => void;
+  platform?: string;
+  onPermissionFailure?: (
+    operation: string,
+    targetPath: string | null,
+    error: unknown,
+    fallbackTitle?: string,
+  ) => Promise<void>;
 }) {
   const [cfg, setCfg] = useState<LaunchConfig>(config);
   const [detected, setDetected] = useState<{ name: string; path: string; kind: RunnerKind; flavor?: string }[]>([]);
@@ -1925,8 +1964,26 @@ function WineSettingsModal({ config, onSave, onClose }: {
   const [prefixError, setPrefixError] = useState("");
   const [newPrefixPath, setNewPrefixPath] = useState("");
   const [toolBusy, setToolBusy] = useState<string | null>(null);
+  const [mediaInstallPreview, setMediaInstallPreview] = useState<null | { prefix: PrefixInfo; verbs: string[]; sourceLabel: string }>(null);
   const [selectedVerb, setSelectedVerb] = useState("vcrun2019");
   const winetricksVerbs = ["vcrun2019", "d3dx9", "dotnet48", "corefonts", "xact", "xinput"];
+  const [shaderToolExe, setShaderToolExe] = useState("");
+  const [shaderToolSteamId, setShaderToolSteamId] = useState("");
+  const [shaderToolDiscovery, setShaderToolDiscovery] = useState<ShaderCacheDiscovery | null>(null);
+  const [shaderToolBusy, setShaderToolBusy] = useState(false);
+
+  const mediaPlaybackPresets: { label: string; verbs: string[] }[] = [
+    { label: "Legacy WMV", verbs: ["wmp9", "wmv9vcm", "qasf"] },
+    { label: "RPG Maker", verbs: ["directshow", "quartz", "lavfilters"] },
+    { label: "WMP Heavy", verbs: ["wmp11", "mf", "qasf", "lavfilters"] },
+    { label: "Fallback Only", verbs: ["directshow", "quartz"] },
+  ];
+
+  const openMediaInstallPreview = (prefix: PrefixInfo, verbs: string[], sourceLabel: string) => {
+    const v = verbs.filter((x) => x.trim());
+    if (!v.length) return;
+    setMediaInstallPreview({ prefix, verbs: v, sourceLabel });
+  };
 
   useEffect(() => {
     setDetecting(true);
@@ -1990,26 +2047,15 @@ function WineSettingsModal({ config, onSave, onClose }: {
       });
       await refreshPrefixes();
     } catch (e) {
-      alert("DXVK/VKD3D install failed: " + e);
+      alert(formatWinetricksErrorWithHints(String(e)));
     } finally {
       setToolBusy(null);
     }
   };
 
-  const installMediaFixes = async (prefix: PrefixInfo) => {
+  const installMediaFixes = (prefix: PrefixInfo) => {
     if ((prefix.media.recommended_verbs?.length || 0) === 0) return;
-    setToolBusy(`media:${prefix.path}`);
-    try {
-      await invoke("install_prefix_media_fixes", {
-        prefix: prefix.path,
-        verbs: prefix.media.recommended_verbs,
-      });
-      await refreshPrefixes();
-    } catch (e) {
-      alert("Media compatibility fix install failed: " + e);
-    } finally {
-      setToolBusy(null);
-    }
+    openMediaInstallPreview(prefix, prefix.media.recommended_verbs, "Recommended (detected missing components)");
   };
 
   const runVerb = async (prefix: PrefixInfo) => {
@@ -2019,15 +2065,113 @@ function WineSettingsModal({ config, onSave, onClose }: {
       alert(`Winetricks finished: ${selectedVerb}`);
       await refreshPrefixes();
     } catch (e) {
-      alert("Winetricks failed: " + e);
+      alert(formatWinetricksErrorWithHints(String(e)));
     } finally {
       setToolBusy(null);
+    }
+  };
+
+  const pickShaderToolExe = async () => {
+    const sel = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Executable", extensions: ["exe"] }],
+    }).catch(() => null);
+    if (sel && typeof sel === "string") setShaderToolExe(sel);
+  };
+
+  const discoverShaderToolCaches = async () => {
+    const exe = shaderToolExe.trim();
+    if (!exe) {
+      alert("Choose the game's .exe path first.");
+      return;
+    }
+    setShaderToolBusy(true);
+    try {
+      const sid = shaderToolSteamId.trim() || null;
+      const d = await invoke<ShaderCacheDiscovery>("discover_shader_cache_artifacts", {
+        gameExePath: exe,
+        steamAppId: sid,
+      });
+      setShaderToolDiscovery(d);
+    } catch (e) {
+      if (onPermissionFailure) await onPermissionFailure("discover shader cache files", exe.trim() || null, e, "Shader cache discovery failed");
+      else alert("Shader cache discovery failed: " + e);
+    } finally {
+      setShaderToolBusy(false);
+    }
+  };
+
+  const exportShaderToolBundle = async () => {
+    const exe = shaderToolExe.trim();
+    if (!exe) {
+      alert("Choose the game's .exe path first.");
+      return;
+    }
+    setShaderToolBusy(true);
+    try {
+      const sid = shaderToolSteamId.trim() || null;
+      const base = exe.replace(/\\/g, "/").split("/").pop()?.replace(/\.[^.]+$/, "") || "game";
+      const safe = base.replace(/[^\w\-]+/g, "_").slice(0, 80);
+      const out = await save({
+        defaultPath: `libmaly-shader-cache-${safe}.zip`,
+        filters: [{ name: "ZIP", extensions: ["zip"] }],
+      }).catch(() => null);
+      if (!out || typeof out !== "string") return;
+      const res = await invoke<{
+        zip_path: string;
+        dxvk_files_packed: number;
+        steam_files_packed: number;
+      }>("export_shader_cache_bundle", {
+        gameExePath: exe,
+        steamAppId: sid,
+        outputZipPath: out,
+      });
+      alert(
+        `Shader cache bundle saved:\n${res.zip_path}\n\nDXVK entries: ${res.dxvk_files_packed}\nSteam cache files: ${res.steam_files_packed}`,
+      );
+    } catch (e) {
+      if (onPermissionFailure) await onPermissionFailure("export the shader cache bundle", null, e, "Shader cache export failed");
+      else alert("Shader cache export failed: " + e);
+    } finally {
+      setShaderToolBusy(false);
+    }
+  };
+
+  const importShaderToolBundle = async () => {
+    const exe = shaderToolExe.trim();
+    if (!exe) {
+      alert("Choose the game's .exe path first.");
+      return;
+    }
+    setShaderToolBusy(true);
+    try {
+      const sid = shaderToolSteamId.trim() || null;
+      const zip = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "ZIP", extensions: ["zip"] }],
+      }).catch(() => null);
+      if (!zip || typeof zip !== "string") return;
+      const msg = await invoke<string>("import_shader_cache_bundle", {
+        gameExePath: exe,
+        steamAppId: sid,
+        zipPath: zip,
+      });
+      alert(msg);
+      await discoverShaderToolCaches();
+    } catch (e) {
+      if (onPermissionFailure) await onPermissionFailure("import the shader cache bundle", null, e, "Shader cache import failed");
+      else alert("Shader cache import failed: " + e);
+    } finally {
+      setShaderToolBusy(false);
     }
   };
 
   const upd = (patch: Partial<LaunchConfig>) => setCfg((p) => ({ ...p, ...patch }));
 
   return (
+    <>
     <div className="fixed inset-0 flex items-center justify-center z-50"
       style={{ background: "rgba(0,0,0,0.8)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -2239,93 +2383,163 @@ function WineSettingsModal({ config, onSave, onClose }: {
                         </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 mt-2">
-                      <button
-                        onClick={() => installGraphics(pfx)}
-                        disabled={toolBusy === `gfx:${pfx.path}` || (pfx.has_dxvk && pfx.has_vkd3d)}
-                        className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
-                        style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)" }}
-                      >
-                        Install DXVK/VKD3D
-                      </button>
-                      <button
-                        onClick={() => installMediaFixes(pfx)}
-                        disabled={toolBusy === `media:${pfx.path}` || pfx.media.recommended_verbs.length === 0}
-                        className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
-                        style={{ background: "var(--color-panel-3)", color: "var(--color-warning)" }}
-                        title="Install recommended media/video playback fixes via winetricks"
-                      >
-                        Install media fixes
-                      </button>
-
-                      {/* Compatibility presets */}
-                      <div className="flex items-center gap-1.5 mt-1.5 pt-1.5" style={{ borderTop: "1px solid var(--color-border-subtle)" }}>
-                        <span className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>Presets:</span>
-                        {[
-                          { label: "Legacy WMV", verbs: ["wmp9", "wmv9vcm", "qasf"] },
-                          { label: "RPG Maker", verbs: ["directshow", "quartz", "lavfilters"] },
-                          { label: "WMP Heavy", verbs: ["wmp11", "mf", "qasf", "lavfilters"] },
-                          { label: "Fallback Only", verbs: ["directshow", "quartz"] },
-                        ].map((preset) => (
+                    <div className="mt-2 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          onClick={() => installGraphics(pfx)}
+                          disabled={toolBusy === `gfx:${pfx.path}` || (pfx.has_dxvk && pfx.has_vkd3d)}
+                          className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
+                          style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)" }}
+                        >
+                          Install DXVK/VKD3D
+                        </button>
+                        <button
+                          onClick={() => installMediaFixes(pfx)}
+                          disabled={!!mediaInstallPreview || pfx.media.recommended_verbs.length === 0}
+                          className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
+                          style={{ background: "var(--color-panel-3)", color: "var(--color-warning)" }}
+                          title="Install recommended media/video playback fixes via winetricks"
+                        >
+                          Install media fixes
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1" style={{ borderTop: "1px solid var(--color-border-subtle)" }}>
+                        <span className="text-[9px] shrink-0" style={{ color: "var(--color-text-dim)" }}>Media presets:</span>
+                        {mediaPlaybackPresets.map((preset) => (
                           <button
                             key={preset.label}
-                            onClick={async () => {
-                              if (!confirm(`Install "${preset.label}" preset?\nVerbs: ${preset.verbs.join(", ")}\n\nThis may take a few minutes.`)) return;
-                              setToolBusy(`preset:${preset.label}:${pfx.path}`);
-                              try {
-                                await invoke("install_prefix_media_fixes", {
-                                  prefix: pfx.path,
-                                  verbs: preset.verbs,
-                                });
-                                await refreshPrefixes();
-                                alert(`"${preset.label}" preset installed.`);
-                              } catch (e) {
-                                alert(`Preset install failed: ${e}`);
-                              } finally {
-                                setToolBusy(null);
-                              }
-                            }}
-                            disabled={toolBusy !== null}
+                            onClick={() => openMediaInstallPreview(pfx, preset.verbs, `Media preset: ${preset.label}`)}
+                            disabled={!!mediaInstallPreview}
                             className="px-1.5 py-0.5 rounded text-[9px] disabled:opacity-40"
                             style={{ background: "var(--color-bg-code)", color: "var(--color-accent-soft)", border: "1px solid var(--color-border-subtle)" }}
-                            title={`Install: ${preset.verbs.join(", ")}`}
+                            title={`Preview / install: ${preset.verbs.join(", ")}`}
                           >
                             {preset.label}
                           </button>
                         ))}
                       </div>
-
-                      <select
-                        value={selectedVerb}
-                        onChange={(e) => setSelectedVerb((e.target as HTMLSelectElement).value)}
-                        className="px-2 py-1 rounded text-[10px] outline-none"
-                        style={{ background: "var(--color-panel-alt)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
-                      >
-                        {winetricksVerbs.map((v) => (
-                          <option key={v} value={v}>{v}</option>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[9px] shrink-0" style={{ color: "var(--color-text-dim)" }}>Compatibility:</span>
+                        {WINE_COMPATIBILITY_PRESETS.map((preset) => (
+                          <button
+                            key={preset.label}
+                            onClick={() => openMediaInstallPreview(pfx, preset.verbs, `${preset.title}`)}
+                            disabled={!!mediaInstallPreview}
+                            className="px-1.5 py-0.5 rounded text-[9px] disabled:opacity-40"
+                            style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-subtle)" }}
+                            title={`${preset.title} — ${preset.verbs.join(", ")}`}
+                          >
+                            {preset.label}
+                          </button>
                         ))}
-                      </select>
-                      <button
-                        onClick={() => runVerb(pfx)}
-                        disabled={toolBusy === `verb:${pfx.path}`}
-                        className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
-                        style={{ background: "var(--color-panel-3)", color: "var(--color-accent)" }}
-                      >
-                        Run Winetricks
-                      </button>
-                      <button
-                        onClick={() => deletePrefix(pfx.path)}
-                        disabled={toolBusy === `del:${pfx.path}`}
-                        className="ml-auto px-2 py-1 rounded text-[10px] disabled:opacity-40"
-                        style={{ background: "#3a2020", color: "var(--color-danger-soft)" }}
-                      >
-                        Delete
-                      </button>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          value={selectedVerb}
+                          onChange={(e) => setSelectedVerb((e.target as HTMLSelectElement).value)}
+                          className="px-2 py-1 rounded text-[10px] outline-none"
+                          style={{ background: "var(--color-panel-alt)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                        >
+                          {winetricksVerbs.map((v) => (
+                            <option key={v} value={v}>{v}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => runVerb(pfx)}
+                          disabled={toolBusy === `verb:${pfx.path}`}
+                          className="px-2.5 py-1 rounded text-[10px] disabled:opacity-40"
+                          style={{ background: "var(--color-panel-3)", color: "var(--color-accent)" }}
+                        >
+                          Run Winetricks
+                        </button>
+                        <button
+                          onClick={() => deletePrefix(pfx.path)}
+                          disabled={toolBusy === `del:${pfx.path}`}
+                          className="ml-auto px-2 py-1 rounded text-[10px] disabled:opacity-40"
+                          style={{ background: "#3a2020", color: "var(--color-danger-soft)" }}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
               </div>
             </div>
+
+            {platform !== "windows" && (
+              <div className="rounded-lg p-3 space-y-2.5" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+                <p className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>Shader cache (DXVK / Steam)</p>
+                <p className="text-[10px] leading-relaxed" style={{ color: "var(--color-text-dim)" }}>
+                  Point at a Windows game executable. Optional Steam App ID adds Fossilize paths to discover and to the portable ZIP.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={shaderToolExe}
+                    onInput={(e) => setShaderToolExe((e.target as HTMLInputElement).value)}
+                    placeholder="Path to game.exe"
+                    className="flex-1 px-2 py-1.5 rounded text-[10px] font-mono outline-none"
+                    style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-panel-3)" }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void pickShaderToolExe()}
+                    className="px-2.5 py-1.5 rounded text-[10px] shrink-0"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+                  >
+                    Browse…
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={shaderToolSteamId}
+                  onInput={(e) => setShaderToolSteamId((e.target as HTMLInputElement).value)}
+                  placeholder="Steam App ID (optional)"
+                  className="w-full px-2 py-1.5 rounded text-[10px] font-mono outline-none"
+                  style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-panel-3)" }}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void discoverShaderToolCaches()}
+                    disabled={shaderToolBusy}
+                    className="px-2.5 py-1 rounded text-[10px] disabled:opacity-45"
+                    style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                  >
+                    {shaderToolBusy ? "Working…" : "Discover"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void exportShaderToolBundle()}
+                    disabled={shaderToolBusy}
+                    className="px-2.5 py-1 rounded text-[10px] disabled:opacity-45"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)" }}
+                  >
+                    Export ZIP
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void importShaderToolBundle()}
+                    disabled={shaderToolBusy}
+                    className="px-2.5 py-1 rounded text-[10px] disabled:opacity-45"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}
+                  >
+                    Import ZIP
+                  </button>
+                </div>
+                {shaderToolDiscovery && (
+                  <ul className="text-[10px] space-y-0.5 pl-3.5 list-disc" style={{ color: "var(--color-text-muted)" }}>
+                    {buildShaderWarmupLines({
+                      wineActive: true,
+                      discovery: shaderToolDiscovery,
+                    }).map((line, i) => (
+                      <li key={i}>{line}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </>)}
         </div>
 
@@ -2340,6 +2554,19 @@ function WineSettingsModal({ config, onSave, onClose }: {
         </div>
       </div>
     </div>
+    {mediaInstallPreview !== null && (
+      <MediaInstallPreviewModal
+        isOpen
+        onClose={() => setMediaInstallPreview(null)}
+        prefixName={mediaInstallPreview.prefix.name}
+        prefixPath={mediaInstallPreview.prefix.path}
+        verbs={mediaInstallPreview.verbs}
+        sourceLabel={mediaInstallPreview.sourceLabel}
+        beforeMedia={mediaInstallPreview.prefix.media}
+        onFinished={refreshPrefixes}
+      />
+    )}
+    </>
   );
 }
 
@@ -3123,6 +3350,7 @@ export default function App() {
         favGames,
         customizations,
         notes,
+        achievements,
         collections,
         launchConfig,
         sessionLog,
@@ -3208,6 +3436,11 @@ export default function App() {
     if (data.notes && typeof data.notes === "object") {
       setNotes(data.notes);
       saveCache(SK_NOTES, data.notes);
+    }
+    if (data.achievements && typeof data.achievements === "object") {
+      const nextAch = normalizeAchievementsMap(data.achievements);
+      setAchievements(nextAch);
+      saveCache(SK_ACHIEVEMENTS, nextAch);
     }
     if (Array.isArray(data.collections)) {
       setCollections(data.collections);
@@ -3361,6 +3594,9 @@ export default function App() {
   const [favGames, setFavGames] = useState<Record<string, boolean>>(() => loadCache(SK_FAVS, {}));
   const [customizations, setCustomizations] = useState<Record<string, GameCustomization>>(() => loadCache(SK_CUSTOM, {}));
   const [notes, setNotes] = useState<Record<string, string>>(() => loadCache(SK_NOTES, {}));
+  const [achievements, setAchievements] = useState<GameAchievementsByPath>(() =>
+    normalizeAchievementsMap(loadCache(SK_ACHIEVEMENTS, {}))
+  );
   const [collections, setCollections] = useState<Collection[]>(() => loadCache(SK_COLLECTIONS, []));
   const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null);
   const [showManageCollections, setShowManageCollections] = useState(false);
@@ -3371,6 +3607,7 @@ export default function App() {
   const [renamingCollectionName, setRenamingCollectionName] = useState("");
   const [showCustomizeModal, setShowCustomizeModal] = useState(false);
   const [showNotesModal, setShowNotesModal] = useState(false);
+  const [showAchievementTrackerModal, setShowAchievementTrackerModal] = useState(false);
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [showFilters, setShowFilters] = useState(false);
   const [showCollections, setShowCollections] = useState(false);
@@ -3659,6 +3896,89 @@ export default function App() {
 
   /** Game version history */
   const [history, setHistory] = useState<GameHistoryMap>(() => loadCache(SK_HISTORY, {}));
+
+  const effectiveWinePrefixForSelected = useMemo(() => {
+    if (!selected || platform === "windows") return null;
+    const gc = customizations[selected.path];
+    return resolveEffectiveWinePrefix(platform, {
+      runnerOverrideEnabled: gc?.runnerOverrideEnabled,
+      runnerOverride: gc?.runnerOverride,
+      globalLaunchEnabled: launchConfig.enabled,
+      globalPrefixPath: launchConfig.prefixPath,
+    });
+  }, [selected, platform, customizations, launchConfig]);
+
+  const [winePrefixRowForSelected, setWinePrefixRowForSelected] = useState<PrefixInfo | null>(null);
+  useEffect(() => {
+    if (!effectiveWinePrefixForSelected) {
+      setWinePrefixRowForSelected(null);
+      return;
+    }
+    let cancelled = false;
+    invoke<PrefixInfo[]>("list_wine_prefixes")
+      .then((list) => {
+        if (cancelled) return;
+        setWinePrefixRowForSelected(findMatchingWinePrefixEntry(list, effectiveWinePrefixForSelected) ?? null);
+      })
+      .catch(() => setWinePrefixRowForSelected(null));
+    return () => { cancelled = true; };
+  }, [effectiveWinePrefixForSelected]);
+
+  const selectedWineMediaAssessment = useMemo(() => {
+    if (!selected || platform === "windows" || !effectiveWinePrefixForSelected) return null;
+    const actualExe = customizations[selected.path]?.exeOverride || selected.path;
+    const ctx = assessGameMediaPlaybackContext({
+      engine: metadata[selected.path]?.engine,
+      gamePath: pathDirname(actualExe),
+      launchExePath: actualExe,
+    });
+    return combinePrefixAndGameMedia(winePrefixRowForSelected?.media, ctx);
+  }, [selected, platform, effectiveWinePrefixForSelected, winePrefixRowForSelected, metadata, customizations]);
+
+  const refreshWinePrefixRowForSelected = useCallback(async () => {
+    if (!effectiveWinePrefixForSelected) return;
+    const list = await invoke<PrefixInfo[]>("list_wine_prefixes").catch(() => []);
+    setWinePrefixRowForSelected(findMatchingWinePrefixEntry(list, effectiveWinePrefixForSelected) ?? null);
+  }, [effectiveWinePrefixForSelected]);
+
+  const [gameMediaInstallPreview, setGameMediaInstallPreview] = useState<null | {
+    prefixPath: string;
+    prefixName: string;
+    verbs: string[];
+    sourceLabel: string;
+    beforeMedia: PrefixInfo["media"];
+  }>(null);
+
+  const [shaderCacheDiscovery, setShaderCacheDiscovery] = useState<ShaderCacheDiscovery | null>(null);
+  const [shaderCacheActionBusy, setShaderCacheActionBusy] = useState(false);
+
+  const refetchShaderDiscovery = useCallback(async () => {
+    if (!selected || platform === "windows") {
+      setShaderCacheDiscovery(null);
+      return;
+    }
+    const gc = customizations[selected.path];
+    if (!(gc?.runnerOverrideEnabled || launchConfig.enabled)) {
+      setShaderCacheDiscovery(null);
+      return;
+    }
+    const exe = gc?.exeOverride || selected.path;
+    const sid = gc?.steamAppId?.trim() || null;
+    try {
+      const d = await invoke<ShaderCacheDiscovery>("discover_shader_cache_artifacts", {
+        gameExePath: exe,
+        steamAppId: sid,
+      });
+      setShaderCacheDiscovery(d);
+    } catch {
+      setShaderCacheDiscovery(null);
+    }
+  }, [selected, platform, customizations, launchConfig.enabled]);
+
+  useEffect(() => {
+    void refetchShaderDiscovery();
+  }, [refetchShaderDiscovery]);
+
   const [steamLaunchBridge, setSteamLaunchBridge] = useState<SteamLaunchBridge | null>(null);
   /** Pending metadata update requiring confirmation */
   const [pendingMetaUpdate, setPendingMetaUpdate] = useState<{
@@ -3684,6 +4004,7 @@ export default function App() {
     setFavGames(snapshot.favGames);
     setCustomizations(snapshot.customizations);
     setNotes(snapshot.notes);
+    setAchievements(snapshot.achievements);
     setCollections(snapshot.collections);
     setLaunchConfig({ ...DEFAULT_LAUNCH_CONFIG, ...snapshot.launchConfig });
     setRecentGames(snapshot.recentGames);
@@ -5107,6 +5428,7 @@ export default function App() {
     const nextHidden = remapRecord(hiddenGames);
     const nextFavs = remapRecord(favGames);
     const nextNotes = remapRecord(notes);
+    const nextAchievements = remapRecord(achievements);
     const nextHistory = remapRecord(history);
     const nextCollections = collections.map((c) => ({
       ...c,
@@ -5143,6 +5465,7 @@ export default function App() {
     setHiddenGames(nextHidden); saveCache(SK_HIDDEN, nextHidden);
     setFavGames(nextFavs); saveCache(SK_FAVS, nextFavs);
     setNotes(nextNotes); saveCache(SK_NOTES, nextNotes);
+    setAchievements(nextAchievements); saveCache(SK_ACHIEVEMENTS, nextAchievements);
     setHistory(nextHistory); saveCache(SK_HISTORY, nextHistory);
     setCollections(nextCollections); saveCache(SK_COLLECTIONS, nextCollections);
     setSessionLog(nextSessionLog); saveCache(SK_SESSION_LOG, nextSessionLog);
@@ -5216,6 +5539,7 @@ export default function App() {
     const nextHidden = remapRecord(hiddenGames);
     const nextFavs = remapRecord(favGames);
     const nextNotes = remapRecord(notes);
+    const nextAchievements = remapRecord(achievements);
     const nextHistory = remapRecord(history);
     const nextCollections = collections.map((c) => ({
       ...c,
@@ -5250,6 +5574,7 @@ export default function App() {
     setHiddenGames(nextHidden); saveCache(SK_HIDDEN, nextHidden);
     setFavGames(nextFavs); saveCache(SK_FAVS, nextFavs);
     setNotes(nextNotes); saveCache(SK_NOTES, nextNotes);
+    setAchievements(nextAchievements); saveCache(SK_ACHIEVEMENTS, nextAchievements);
     setHistory(nextHistory); saveCache(SK_HISTORY, nextHistory);
     setCollections(nextCollections); saveCache(SK_COLLECTIONS, nextCollections);
     setSessionLog(nextSessionLog); saveCache(SK_SESSION_LOG, nextSessionLog);
@@ -5445,6 +5770,7 @@ export default function App() {
           favGames,
           customizations,
           notes,
+          achievements,
           collections,
           launchConfig,
           recentGames: loadCache<RecentGame[]>(SK_RECENT, []),
@@ -5470,6 +5796,7 @@ export default function App() {
     favGames,
     customizations,
     notes,
+    achievements,
     collections,
     launchConfig,
     recentGames: loadCache<RecentGame[]>(SK_RECENT, []),
@@ -5574,6 +5901,7 @@ export default function App() {
     const nextFavs = getParsed<Record<string, boolean>>(SK_FAVS, {});
     const nextCustom = getParsed<Record<string, GameCustomization>>(SK_CUSTOM, {});
     const nextNotes = getParsed<Record<string, string>>(SK_NOTES, {});
+    const nextAchievements = normalizeAchievementsMap(getParsed<Record<string, unknown>>(SK_ACHIEVEMENTS, {}));
     const nextCollections = getParsed<Collection[]>(SK_COLLECTIONS, []);
     const nextLaunch = { ...DEFAULT_LAUNCH_CONFIG, ...getParsed<LaunchConfig>(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG) };
     const nextRecent = getParsed<RecentGame[]>(SK_RECENT, []);
@@ -5595,6 +5923,7 @@ export default function App() {
     setFavGames(nextFavs);
     setCustomizations(nextCustom);
     setNotes(nextNotes);
+    setAchievements(nextAchievements);
     setCollections(nextCollections);
     setLaunchConfig(nextLaunch);
     setRecentGames(nextRecent);
@@ -5711,19 +6040,23 @@ export default function App() {
     const actualPath = overridePath ?? gameCustom?.exeOverride ?? path;
     const args = overrideArgs !== undefined ? overrideArgs : (gameCustom?.launchArgs ?? null);
 
-    // Launch-time warning for likely broken video playback (Wine/Proton)
+    // Launch-time warning: prefix media health + per-game engine/path heuristics
     if (platform !== "windows" && (runner || prefix)) {
-      const effectivePrefix = prefix ?? gameCustom?.runnerOverride?.prefixPath ?? launchConfig.prefixPath;
+      const effectivePrefix = (prefix ?? gameCustom?.runnerOverride?.prefixPath ?? launchConfig.prefixPath)?.trim() || null;
       if (effectivePrefix) {
         try {
           const prefixInfos = await invoke<PrefixInfo[]>("list_wine_prefixes").catch(() => []);
-          const matchingPrefix = prefixInfos.find(
-            (p) => normalizePathNoCase(p.path) === normalizePathNoCase(effectivePrefix) ||
-                   normalizePathNoCase(pathDirname(p.path)) === normalizePathNoCase(effectivePrefix)
-          );
-          if (matchingPrefix && matchingPrefix.media.likely_video_playback_issue) {
-            const warning = `⚠️ This prefix may have broken video playback.\n\n${matchingPrefix.media.summary}\n\nRecommended fixes: ${matchingPrefix.media.recommended_verbs?.join(", ") || "none"}\n\nLaunch anyway?`;
-            if (!confirm(warning)) return;
+          const matchingPrefix = findMatchingWinePrefixEntry(prefixInfos, effectivePrefix);
+          if (matchingPrefix?.media.likely_video_playback_issue) {
+            const ctx = assessGameMediaPlaybackContext({
+              engine: metadata[path]?.engine,
+              gamePath: pathDirname(actualPath),
+              launchExePath: actualPath,
+            });
+            const assessment = combinePrefixAndGameMedia(matchingPrefix.media, ctx);
+            if (assessment.showLaunchWarning) {
+              if (!confirm(buildLaunchWineMediaWarningMessage(assessment))) return;
+            }
           }
         } catch {
           // Ignore diagnostic check failures — don't block launch
@@ -5766,6 +6099,78 @@ export default function App() {
     }
     try { await invoke("kill_game"); }
     catch (e) { alert("Failed to stop game: " + e); }
+  };
+
+  const handleGameShaderCacheExport = async () => {
+    if (!selected || platform === "windows") return;
+    setShaderCacheActionBusy(true);
+    try {
+      const gc = customizations[selected.path];
+      const exe = gc?.exeOverride || selected.path;
+      const sid = gc?.steamAppId?.trim() || null;
+      const safe = selected.name.replace(/[^\w\-]+/g, "_").slice(0, 80) || "game";
+      const out = await save({
+        defaultPath: `libmaly-shader-cache-${safe}.zip`,
+        filters: [{ name: "ZIP", extensions: ["zip"] }],
+      }).catch(() => null);
+      if (!out || typeof out !== "string") return;
+      const res = await invoke<{
+        zip_path: string;
+        dxvk_files_packed: number;
+        steam_files_packed: number;
+      }>("export_shader_cache_bundle", {
+        gameExePath: exe,
+        steamAppId: sid,
+        outputZipPath: out,
+      });
+      alert(
+        `Shader cache bundle saved:\n${res.zip_path}\n\nDXVK entries: ${res.dxvk_files_packed}\nSteam cache files: ${res.steam_files_packed}\n\nYou can copy this zip to another PC and import it for the same game build.`,
+      );
+      await refetchShaderDiscovery();
+    } catch (e) {
+      await showPermissionDiagnostic("export the shader cache bundle", null, e, "Shader cache export failed");
+    } finally {
+      setShaderCacheActionBusy(false);
+    }
+  };
+
+  const handleGameShaderCacheImport = async () => {
+    if (!selected || platform === "windows") return;
+    setShaderCacheActionBusy(true);
+    try {
+      const gc = customizations[selected.path];
+      const exe = gc?.exeOverride || selected.path;
+      const sid = gc?.steamAppId?.trim() || null;
+      const zip = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "ZIP", extensions: ["zip"] }],
+      }).catch(() => null);
+      if (!zip || typeof zip !== "string") return;
+      const msg = await invoke<string>("import_shader_cache_bundle", {
+        gameExePath: exe,
+        steamAppId: sid,
+        zipPath: zip,
+      });
+      alert(msg);
+      await refetchShaderDiscovery();
+    } catch (e) {
+      await showPermissionDiagnostic("import the shader cache bundle", null, e, "Shader cache import failed");
+    } finally {
+      setShaderCacheActionBusy(false);
+    }
+  };
+
+  const handleOpenGameInstallFolder = async () => {
+    if (!selected) return;
+    const exe = customizations[selected.path]?.exeOverride || selected.path;
+    const dir = pathDirname(exe);
+    if (!dir) return;
+    try {
+      await openPath(dir);
+    } catch (e) {
+      alert("Could not open folder: " + e);
+    }
   };
 
   useEffect(() => {
@@ -5980,6 +6385,7 @@ export default function App() {
 
     // Include Wine/Proton media compatibility findings
     let wineMediaDiagnostics: { prefix: string; summary: string; likely_video_playback_issue: boolean; recommended_verbs: string[] }[] = [];
+    let perGameWineVideoPlayback: Record<string, unknown>[] = [];
     if (platform !== "windows") {
       try {
         const prefixInfos = await invoke<PrefixInfo[]>("list_wine_prefixes").catch(() => []);
@@ -5989,6 +6395,47 @@ export default function App() {
           likely_video_playback_issue: p.media.likely_video_playback_issue,
           recommended_verbs: p.media.recommended_verbs || [],
         }));
+        perGameWineVideoPlayback = games.map((g) => {
+          const eff = resolveEffectiveWinePrefix(platform, {
+            runnerOverrideEnabled: customizations[g.path]?.runnerOverrideEnabled,
+            runnerOverride: customizations[g.path]?.runnerOverride,
+            globalLaunchEnabled: launchConfig.enabled,
+            globalPrefixPath: launchConfig.prefixPath,
+          });
+          const actualExe = customizations[g.path]?.exeOverride || g.path;
+          const title = customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name;
+          if (!eff) {
+            return {
+              path: g.path,
+              title,
+              engine: metadata[g.path]?.engine ?? null,
+              exeBasename: pathBasename(actualExe),
+              effectivePrefix: null,
+              note: "no_wine_prefix_configured_for_game",
+            };
+          }
+          const row = findMatchingWinePrefixEntry(prefixInfos, eff);
+          const ctx = assessGameMediaPlaybackContext({
+            engine: metadata[g.path]?.engine,
+            gamePath: pathDirname(actualExe),
+            launchExePath: actualExe,
+          });
+          const combined = combinePrefixAndGameMedia(row?.media, ctx);
+          return {
+            path: g.path,
+            title,
+            engine: metadata[g.path]?.engine ?? null,
+            exeBasename: pathBasename(actualExe),
+            effectivePrefix: eff,
+            prefixKind: row?.kind ?? null,
+            prefixFoundInScan: Boolean(row),
+            effectiveIntroRisk: combined.effectiveRisk,
+            launchWouldWarn: combined.showLaunchWarning,
+            summary: combined.summary,
+            matchedKnowledgeRuleIds: ctx.matchedRules.map((r) => r.id),
+            suggestedVerbs: combined.suggestedVerbs,
+          };
+        });
       } catch { /* ignore */ }
     }
 
@@ -6006,6 +6453,17 @@ export default function App() {
       snapshotPreview,
       scraperHealth: scraperHealthSnapshot,
       wineMediaDiagnostics,
+      mediaPlaybackKnowledgeBase: {
+        version: 1,
+        rules: ENGINE_MEDIA_KNOWLEDGE.map((r) => ({
+          id: r.id,
+          label: r.label,
+          introReliance: r.introReliance,
+          extraVerbs: r.extraVerbs ?? [],
+        })),
+        gotchas: MEDIA_PLAYBACK_GOTCHAS,
+      },
+      perGameWineVideoPlayback,
       recentFileOps,
       logs: rustLogs.filter(levelMatches),
     };
@@ -6141,6 +6599,15 @@ export default function App() {
     if (!selected) return;
     const next = { ...notes, [selected.path]: text };
     setNotes(next); saveCache(SK_NOTES, next);
+  };
+
+  const handleSaveAchievements = (items: GameAchievementItem[]) => {
+    if (!selected) return;
+    const next = { ...achievements };
+    if (items.length === 0) delete next[selected.path];
+    else next[selected.path] = items;
+    setAchievements(next);
+    saveCache(SK_ACHIEVEMENTS, next);
   };
 
   const handleCreateCollection = (name: string, color: string): Collection => {
@@ -7644,7 +8111,27 @@ export default function App() {
               onStop={killGame}
             />
           )
-        ) : (
+        ) : (() => {
+          const achUi = achievementTrackerUiState(achievements[selected.path]);
+          const wineLaunchActive =
+            platform !== "windows" &&
+            !!(launchConfig.enabled || customizations[selected.path]?.runnerOverrideEnabled);
+          const shaderCachePanel = wineLaunchActive
+            ? {
+                warmupLines: buildShaderWarmupLines({
+                  wineActive: true,
+                  prefixHasDxvk: winePrefixRowForSelected?.has_dxvk,
+                  discovery: shaderCacheDiscovery,
+                  engine: metadata[selected.path]?.engine,
+                }),
+                busy: shaderCacheActionBusy,
+                onRefresh: () => { void refetchShaderDiscovery(); },
+                onExport: handleGameShaderCacheExport,
+                onImport: handleGameShaderCacheImport,
+                onOpenGameFolder: handleOpenGameInstallFolder,
+              }
+            : null;
+          return (
           <GameDetail
             game={selected}
             stat={stats[selected.path] || { totalTime: 0, lastPlayed: 0, lastSession: 0 }}
@@ -7674,38 +8161,33 @@ export default function App() {
             onClearMeta={handleClearMeta}
             onUpdate={() => setShowUpdateModal(true)}
             onBackupSaves={() => backupSaveFilesForPath(selected.path)}
+            wineIntroVideoAssessment={selectedWineMediaAssessment}
+            shaderCachePanel={shaderCachePanel}
             onInstallMediaFixes={platform !== "windows" ? async () => {
               if (platform === "windows") return;
               const gc = customizations[selected.path];
-              const effectivePrefix = gc?.runnerOverride?.prefixPath ?? launchConfig.prefixPath;
+              const effectivePrefix = (gc?.runnerOverride?.prefixPath ?? launchConfig.prefixPath)?.trim();
               if (!effectivePrefix) {
                 alert("No Wine/Proton prefix configured for this game.");
                 return;
               }
-              try {
-                const prefixInfos = await invoke<PrefixInfo[]>("list_wine_prefixes").catch(() => []);
-                const matchingPrefix = prefixInfos.find(
-                  (p) => normalizePathNoCase(p.path) === normalizePathNoCase(effectivePrefix) ||
-                         normalizePathNoCase(pathDirname(p.path)) === normalizePathNoCase(effectivePrefix)
-                );
-                if (!matchingPrefix) {
-                  alert(`Prefix not found: ${effectivePrefix}`);
-                  return;
-                }
-                if (matchingPrefix.media.recommended_verbs.length === 0) {
-                  alert("No media fixes recommended for this prefix.");
-                  return;
-                }
-                const verbs = matchingPrefix.media.recommended_verbs;
-                if (!confirm(`Install media fixes for "${matchingPrefix.name}"?\n\nVerbs: ${verbs.join(", ")}\n\nThis may take a few minutes.`)) return;
-                await invoke("install_prefix_media_fixes", {
-                  prefix: matchingPrefix.path,
-                  verbs,
-                });
-                alert("Media fixes installed successfully!");
-              } catch (e) {
-                alert("Media fix install failed: " + e);
+              const prefixInfos = await invoke<PrefixInfo[]>("list_wine_prefixes").catch(() => []);
+              const matchingPrefix = findMatchingWinePrefixEntry(prefixInfos, effectivePrefix);
+              if (!matchingPrefix) {
+                alert(`Prefix not found in scan: ${effectivePrefix}`);
+                return;
               }
+              if (matchingPrefix.media.recommended_verbs.length === 0) {
+                alert("No media fixes recommended for this prefix.");
+                return;
+              }
+              setGameMediaInstallPreview({
+                prefixPath: matchingPrefix.path,
+                prefixName: matchingPrefix.name,
+                verbs: [...matchingPrefix.media.recommended_verbs],
+                sourceLabel: "Recommended (this game's prefix)",
+                beforeMedia: { ...matchingPrefix.media },
+              });
             }: undefined}
             onToggleHide={toggleHide}
             onToggleFav={toggleFav}
@@ -7720,6 +8202,9 @@ export default function App() {
             }}
             onOpenNotes={() => setShowNotesModal(true)}
             hasNotes={!!(notes[selected.path]?.trim())}
+            onOpenAchievements={() => setShowAchievementTrackerModal(true)}
+            achievementSummary={achUi.summary}
+            achievementHasOpenGoals={achUi.openGoals}
             onManageCollections={() => setShowManageCollections(true)}
             appSettings={appSettings}
             revealedNsfw={revealedNsfw}
@@ -7758,7 +8243,8 @@ export default function App() {
               });
             }}
           />
-        )}
+          );
+        })()}
       </main>
       </div>
 
@@ -7862,6 +8348,8 @@ export default function App() {
         showWineSettings && (
           <WineSettingsModal
             config={launchConfig}
+            platform={platform}
+            onPermissionFailure={showPermissionDiagnostic}
             onSave={(c) => { setLaunchConfig(c); saveCache(SK_LAUNCH, c); }}
             onClose={() => setShowWineSettings(false)}
           />
@@ -7895,6 +8383,31 @@ export default function App() {
             initialNote={notes[selected.path] ?? ""}
             onSave={handleSaveNote}
             onClose={() => setShowNotesModal(false)}
+          />
+        )
+      }
+      {
+        showAchievementTrackerModal && selected && (
+          <AchievementTrackerModal
+            key={selected.path}
+            displayTitle={customizations[selected.path]?.displayName ?? metadata[selected.path]?.title ?? selected.name}
+            initialItems={achievements[selected.path] ?? []}
+            onSave={handleSaveAchievements}
+            onClose={() => setShowAchievementTrackerModal(false)}
+          />
+        )
+      }
+      {
+        gameMediaInstallPreview !== null && (
+          <MediaInstallPreviewModal
+            isOpen
+            onClose={() => setGameMediaInstallPreview(null)}
+            prefixName={gameMediaInstallPreview.prefixName}
+            prefixPath={gameMediaInstallPreview.prefixPath}
+            verbs={gameMediaInstallPreview.verbs}
+            sourceLabel={gameMediaInstallPreview.sourceLabel}
+            beforeMedia={gameMediaInstallPreview.beforeMedia}
+            onFinished={refreshWinePrefixRowForSelected}
           />
         )
       }
@@ -8144,6 +8657,7 @@ export default function App() {
         games={games}
         metadata={metadata}
         notes={notes}
+        achievementsByPath={achievements}
         onSelect={openGameView}
         onBack={goBack}
         onForward={goForward}

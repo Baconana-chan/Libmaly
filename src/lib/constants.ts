@@ -9,6 +9,7 @@ export const SK_HIDDEN = "hidden-games-v1";
 export const SK_FAVS = "fav-games-v1";
 export const SK_CUSTOM = "game-custom-v1";
 export const SK_NOTES = "game-notes-v1";
+export const SK_ACHIEVEMENTS = "game-achievements-v1";
 export const SK_COLLECTIONS = "collections-v1";
 export const SK_LAUNCH = "launch-config-v1";
 export const SK_RECENT = "recent-games-v1";

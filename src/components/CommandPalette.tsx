@@ -18,6 +18,7 @@ export function CommandPalette({
   games,
   metadata,
   notes,
+  achievementsByPath,
   onSelect,
   onBack,
   onForward,
@@ -29,6 +30,7 @@ export function CommandPalette({
   games: GameLite[];
   metadata: Record<string, MetaLite>;
   notes: Record<string, string>;
+  achievementsByPath: Record<string, { label: string }[]>;
   onSelect: (g: GameLite) => void;
   onBack: () => void;
   onForward: () => void;
@@ -57,10 +59,12 @@ export function CommandPalette({
           if (meta.tags?.some((t) => t.toLowerCase().includes(q))) return true;
         }
         if (notes[g.path]?.toLowerCase().includes(q)) return true;
+        const ach = achievementsByPath[g.path];
+        if (ach?.some((row) => row.label.toLowerCase().includes(q))) return true;
         return false;
       })
       .slice(0, 15);
-  }, [games, metadata, notes, query]);
+  }, [games, metadata, notes, achievementsByPath, query]);
 
   if (!isOpen) return null;
 
@@ -116,7 +120,7 @@ export function CommandPalette({
             type="text"
             className="flex-1 bg-transparent px-3 text-[15px] outline-none"
             style={{ color: "var(--color-white)" }}
-            placeholder="Search games, tags, developers, notes... (Ctrl+K)"
+            placeholder="Search games, tags, developers, notes, checklist… (Ctrl+K)"
             value={query}
             onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
             onKeyDown={(e) => {

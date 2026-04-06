@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -1246,6 +1246,7 @@ fn snapshot_entry_label(key: &str) -> String {
         "fav-games-v1" => "Favorites".to_string(),
         "game-custom-v4" => "Customizations".to_string(),
         "game-notes-v1" => "Notes".to_string(),
+        "game-achievements-v1" => "Achievement tracker".to_string(),
         "collections-v1" => "Collections".to_string(),
         "launch-config-v1" => "Launch settings".to_string(),
         "recent-games-v1" => "Recent games".to_string(),
@@ -2339,10 +2340,21 @@ fn run_winetricks_for_prefix(prefix: &str, verbs: &[String]) -> Result<String, S
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
-            "winetricks failed".to_string()
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let mut msg = String::new();
+        if !stderr.is_empty() {
+            msg.push_str(&stderr);
+        }
+        if !stdout.is_empty() {
+            if !msg.is_empty() {
+                msg.push_str("\n--- stdout ---\n");
+            }
+            msg.push_str(&stdout);
+        }
+        Err(if msg.is_empty() {
+            "winetricks failed (no output)".to_string()
         } else {
-            stderr
+            msg
         })
     }
 }
@@ -2408,6 +2420,357 @@ fn install_prefix_media_fixes(prefix: String, verbs: Option<Vec<String>>) -> Res
             return Err("No media fixes are recommended for this prefix".to_string());
         }
         run_winetricks_for_prefix(&prefix, &selected)
+    }
+}
+
+// ─── DXVK / Steam shader cache (Linux & macOS) ────────────────────────────────
+
+#[derive(Serialize, Clone)]
+pub struct ShaderCacheArtifact {
+    pub path: String,
+    pub size: u64,
+    pub kind: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ShaderCacheDiscovery {
+    pub game_exe_path: String,
+    pub game_dir: String,
+    pub dxvk_caches: Vec<ShaderCacheArtifact>,
+    pub steam_app_id: Option<String>,
+    pub steam_shader_cache_path: Option<String>,
+    pub steam_shader_cache_bytes: u64,
+    pub steam_shader_cache_files: u64,
+    pub hints: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ShaderCacheExportResult {
+    pub zip_path: String,
+    pub dxvk_files_packed: u64,
+    pub steam_files_packed: u64,
+}
+
+#[cfg(not(windows))]
+fn steam_shadercache_roots() -> Vec<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    vec![
+        PathBuf::from(format!("{home}/.local/share/Steam/steamapps/shadercache")),
+        PathBuf::from(format!("{home}/.steam/steam/steamapps/shadercache")),
+        PathBuf::from(format!(
+            "{home}/Library/Application Support/Steam/steamapps/shadercache"
+        )),
+    ]
+}
+
+#[cfg(not(windows))]
+fn resolve_steam_shadercache_dir(app_id: &str) -> Option<PathBuf> {
+    let id = app_id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    for root in steam_shadercache_roots() {
+        let p = root.join(id);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn dir_tree_stats(path: &Path) -> (u64, u64) {
+    let mut bytes = 0u64;
+    let mut files = 0u64;
+    if !path.is_dir() {
+        return (0, 0);
+    }
+    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            files += 1;
+            if let Ok(m) = entry.metadata() {
+                bytes += m.len();
+            }
+        }
+    }
+    (bytes, files)
+}
+
+#[cfg(not(windows))]
+fn collect_dxvk_caches(game_exe: &Path) -> Result<Vec<ShaderCacheArtifact>, String> {
+    let mut out = Vec::new();
+    let dir = game_exe
+        .parent()
+        .ok_or_else(|| "Game path has no parent directory".to_string())?;
+    let dir = dir.to_path_buf();
+    if !dir.is_dir() {
+        return Err("Game directory does not exist".to_string());
+    }
+    let rd = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    for e in rd.filter_map(|e| e.ok()) {
+        let p = e.path();
+        if p.extension()
+            .map(|x| x.eq_ignore_ascii_case("dxvk-cache"))
+            .unwrap_or(false)
+        {
+            let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
+            out.push(ShaderCacheArtifact {
+                path: p.to_string_lossy().to_string(),
+                size: meta.len(),
+                kind: "dxvk-state-cache".to_string(),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+#[cfg(not(windows))]
+fn discover_shader_cache_artifacts_impl(
+    game_exe_path: String,
+    steam_app_id: Option<String>,
+) -> Result<ShaderCacheDiscovery, String> {
+    let game_exe = PathBuf::from(&game_exe_path);
+    if !game_exe.is_file() {
+        return Err("Game executable path is not a file".to_string());
+    }
+    let game_dir = game_exe
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let dxvk_caches = collect_dxvk_caches(&game_exe)?;
+    let mut hints = Vec::<String>::new();
+    if dxvk_caches.is_empty() {
+        hints.push(
+            "No .dxvk-cache next to this exe yet — it appears after the first DXVK run.".to_string(),
+        );
+    }
+    let sid = steam_app_id
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let steam_path = sid
+        .as_ref()
+        .and_then(|id| resolve_steam_shadercache_dir(id));
+    let (steam_bytes, steam_files) = steam_path
+        .as_ref()
+        .map(|p| dir_tree_stats(p))
+        .unwrap_or((0, 0));
+    if sid.is_some() && steam_path.is_none() {
+        hints.push(
+            "Steam App ID is set but no Fossilize/Vulkan cache folder was found under common Steam shadercache paths.".to_string(),
+        );
+    }
+    if steam_bytes > 0 {
+        hints.push(
+            "Steam shader cache reduces Vulkan pipeline stutter; copy it together with DXVK caches when moving machines.".to_string(),
+        );
+    }
+    Ok(ShaderCacheDiscovery {
+        game_exe_path,
+        game_dir,
+        dxvk_caches,
+        steam_app_id: sid,
+        steam_shader_cache_path: steam_path.map(|p| p.to_string_lossy().to_string()),
+        steam_shader_cache_bytes: steam_bytes,
+        steam_shader_cache_files: steam_files,
+        hints,
+    })
+}
+
+#[tauri::command]
+fn discover_shader_cache_artifacts(
+    game_exe_path: String,
+    steam_app_id: Option<String>,
+) -> Result<ShaderCacheDiscovery, String> {
+    #[cfg(windows)]
+    {
+        let _ = steam_app_id;
+        let game_dir = PathBuf::from(&game_exe_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Ok(ShaderCacheDiscovery {
+            game_exe_path,
+            game_dir,
+            dxvk_caches: vec![],
+            steam_app_id: None,
+            steam_shader_cache_path: None,
+            steam_shader_cache_bytes: 0,
+            steam_shader_cache_files: 0,
+            hints: vec!["DXVK / Steam shader cache tools target Linux/macOS Wine and Proton.".to_string()],
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        discover_shader_cache_artifacts_impl(game_exe_path, steam_app_id)
+    }
+}
+
+#[tauri::command]
+fn export_shader_cache_bundle(
+    game_exe_path: String,
+    steam_app_id: Option<String>,
+    output_zip_path: String,
+) -> Result<ShaderCacheExportResult, String> {
+    #[cfg(windows)]
+    {
+        let _ = (game_exe_path, steam_app_id, output_zip_path);
+        Err("Shader cache export is for Linux/macOS Wine setups.".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let game_exe = PathBuf::from(&game_exe_path);
+        if !game_exe.is_file() {
+            return Err("Game executable path is not a file".to_string());
+        }
+        let dxvk = collect_dxvk_caches(&game_exe)?;
+        let sid = steam_app_id
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let steam_dir = sid.as_ref().and_then(|id| resolve_steam_shadercache_dir(id));
+        if dxvk.is_empty() && steam_dir.is_none() {
+            return Err("Nothing to export: no .dxvk-cache beside the exe and no Steam shadercache folder.".to_string());
+        }
+        let zip_path = PathBuf::from(&output_zip_path);
+        if let Some(parent) = zip_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let file = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let mut dxvk_packed = 0u64;
+        let mut steam_packed = 0u64;
+        for art in &dxvk {
+            let fname = Path::new(&art.path)
+                .file_name()
+                .ok_or_else(|| "Invalid dxvk cache path".to_string())?;
+            let zip_name = format!("dxvk/{}", fname.to_string_lossy());
+            zip.start_file(&zip_name, options)
+                .map_err(|e| e.to_string())?;
+            let mut src = std::fs::File::open(&art.path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut src, &mut zip).map_err(|e| e.to_string())?;
+            dxvk_packed += 1;
+        }
+        if let (Some(id), Some(sdir)) = (sid.as_ref(), steam_dir.as_ref()) {
+            for entry in WalkDir::new(sdir).into_iter().filter_map(|e| e.ok()) {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let rel = entry
+                    .path()
+                    .strip_prefix(sdir)
+                    .map_err(|e| e.to_string())?;
+                let zip_name = format!(
+                    "steam/{}/{}",
+                    id,
+                    rel.to_string_lossy().replace('\\', "/")
+                );
+                zip.start_file(&zip_name, options)
+                    .map_err(|e| e.to_string())?;
+                let mut src = std::fs::File::open(entry.path()).map_err(|e| e.to_string())?;
+                std::io::copy(&mut src, &mut zip).map_err(|e| e.to_string())?;
+                steam_packed += 1;
+            }
+        }
+        zip.finish().map_err(|e| e.to_string())?;
+        Ok(ShaderCacheExportResult {
+            zip_path: zip_path.to_string_lossy().to_string(),
+            dxvk_files_packed: dxvk_packed,
+            steam_files_packed: steam_packed,
+        })
+    }
+}
+
+#[tauri::command]
+fn import_shader_cache_bundle(
+    game_exe_path: String,
+    steam_app_id: Option<String>,
+    zip_path: String,
+) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let _ = (game_exe_path, steam_app_id, zip_path);
+        Err("Shader cache import is for Linux/macOS Wine setups.".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let game_exe = PathBuf::from(&game_exe_path);
+        if !game_exe.is_file() {
+            return Err("Game executable path is not a file".to_string());
+        }
+        let game_dir = game_exe
+            .parent()
+            .ok_or_else(|| "Game path has no parent directory".to_string())?;
+        let f = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
+        let sid_param = steam_app_id
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let mut dxvk_out = 0u64;
+        let mut steam_out = 0u64;
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+            let raw = entry.name().to_string();
+            if raw.ends_with('/') {
+                continue;
+            }
+            if let Some(rest) = raw.strip_prefix("dxvk/") {
+                if rest.is_empty() || rest.contains("..") {
+                    continue;
+                }
+                let dest = game_dir.join(rest);
+                if let Some(p) = dest.parent() {
+                    std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+                }
+                let mut out_f = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+                std::io::copy(&mut entry, &mut out_f).map_err(|e| e.to_string())?;
+                dxvk_out += 1;
+                continue;
+            }
+            if let Some(rest) = raw.strip_prefix("steam/") {
+                if rest.contains("..") {
+                    continue;
+                }
+                let mut parts = rest.splitn(2, '/');
+                let zip_app = parts.next().unwrap_or("");
+                let sub = parts.next().unwrap_or("");
+                if zip_app.is_empty() {
+                    continue;
+                }
+                let target_id = sid_param.as_deref().unwrap_or(zip_app);
+                let base = resolve_steam_shadercache_dir(target_id).or_else(|| {
+                    let roots = steam_shadercache_roots();
+                    roots.first().map(|r| r.join(target_id))
+                });
+                let Some(base) = base else {
+                    continue;
+                };
+                std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+                if sub.is_empty() {
+                    continue;
+                }
+                let dest = base.join(sub);
+                if let Some(p) = dest.parent() {
+                    std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+                }
+                let mut out_f = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+                std::io::copy(&mut entry, &mut out_f).map_err(|e| e.to_string())?;
+                steam_out += 1;
+            }
+        }
+        if dxvk_out == 0 && steam_out == 0 {
+            return Err(
+                "Zip contained no dxvk/ or steam/ entries compatible with this import.".to_string(),
+            );
+        }
+        Ok(format!(
+            "Imported {} DXVK cache file(s) and {} Steam shader cache file(s).",
+            dxvk_out, steam_out
+        ))
     }
 }
 
@@ -4519,6 +4882,9 @@ pub fn run() {
             run_winetricks,
             install_dxvk_vkd3d,
             install_prefix_media_fixes,
+            discover_shader_cache_artifacts,
+            export_shader_cache_bundle,
+            import_shader_cache_bundle,
             import_lutris_games,
             import_playnite_games,
             import_gog_galaxy_games,

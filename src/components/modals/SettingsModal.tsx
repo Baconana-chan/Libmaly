@@ -306,7 +306,9 @@ function SettingsModal({
   onRescanAll, onWineSettings, onSteamImport, onSteamLibraryImport, onLutrisImport, onPlayniteImport, onGogImport, onAppUpdate, onOpenWhatsNew, onSaveSettings, onOpenMigrationWizard, onClose,
   onRunIntegrityCheck, onOpenRestoreSnapshots, onExportCSV, onExportHTML, onExportCloudState, onImportCloudState, onBatchMetadataRefresh, batchRefreshStatus, integrityCheckStatus,
   backgroundJobs, syncStatusText, isIntegrityCheckBusy, isBatchMetadataRefreshBusy, onAutoHealPaths, autoHealPathsStatus, isAutoHealPathsBusy,
-  onApplyBackupRetentionPolicy, backupRetentionStatus, isBackupRetentionBusy, discordSnapshot, onOpenDiscordSettings
+  onApplyBackupRetentionPolicy, backupRetentionStatus, isBackupRetentionBusy,
+  onRunDbVacuum, dbVacuumStatus, isDbVacuumBusy,
+  discordSnapshot, onOpenDiscordSettings
   , libraryProfiles, activeLibraryProfileId, onSwitchLibraryProfile, onSaveLibraryProfile, onDeleteLibraryProfile
 }: {
   f95LoggedIn: boolean; dlsiteLoggedIn: boolean; fakkuLoggedIn: boolean; libraryFolders: { path: string }[]; syncState: string;
@@ -335,6 +337,9 @@ function SettingsModal({
   onApplyBackupRetentionPolicy: () => void;
   backupRetentionStatus: string | null;
   isBackupRetentionBusy: boolean;
+  onRunDbVacuum: () => void;
+  dbVacuumStatus: string | null;
+  isDbVacuumBusy: boolean;
   discordSnapshot: DiscordSdkSnapshotLike | null;
   onOpenDiscordSettings: () => void;
   libraryProfiles: LibraryProfileLike[];
@@ -1027,6 +1032,17 @@ function SettingsModal({
                     className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
                     style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
                     {backupRetentionStatus || t('settings.system.apply_backup')}
+                  </button>
+                  <button onClick={onRunDbVacuum} disabled={isDbVacuumBusy}
+                    id="settings-optimize-storage-btn"
+                    className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                    title="Prune old logs, trim the file-ops journal, and remove any orphaned temp files from the app data folder">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+                      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                    </svg>
+                    {dbVacuumStatus || "Optimize Storage"}
                   </button>
                 </div>
               </section>

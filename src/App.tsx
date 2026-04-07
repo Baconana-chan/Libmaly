@@ -34,7 +34,7 @@ import {
   SK_CUSTOM, SK_NOTES, SK_ACHIEVEMENTS, SK_COLLECTIONS, SK_LAUNCH, SK_RECENT, SK_ORDER, SK_SESSION_LOG,
   SK_WISHLIST, SK_HISTORY, SK_SETTINGS,
   JOB_INCREMENTAL_SYNC, JOB_FULL_SCAN, JOB_INTEGRITY_CHECK, JOB_BATCH_METADATA_REFRESH,
-  JOB_AUTO_METADATA_REFRESH, JOB_UPDATE_CHECKER, JOB_AUTO_HEAL_PATHS, JOB_BACKUP_RETENTION,
+  JOB_AUTO_METADATA_REFRESH, JOB_UPDATE_CHECKER, JOB_AUTO_HEAL_PATHS, JOB_BACKUP_RETENTION, JOB_DB_VACUUM,
   DEFAULT_METADATA_QUEUE_CONCURRENCY, DEFAULT_METADATA_QUEUE_MAX_ATTEMPTS, DEFAULT_METADATA_QUEUE_BACKOFF_MS,
   COLLECTION_COLORS, SCREENSHOT_TOAST_TTL_MS, DEFAULT_SETTINGS, DEFAULT_LAUNCH_CONFIG,
   GENERIC_EXE_NAMES, RATING_CATEGORIES,
@@ -382,6 +382,14 @@ interface SaveBackupResult {
   zip_path: string;
   files: number;
   directories: string[];
+}
+
+interface VacuumReport {
+  tempFilesRemoved: number;
+  tempBytesFreed: number;
+  logEntriesPruned: number;
+  journalEntriesPruned: number;
+  durationMs: number;
 }
 
 type LogLevelFilter = "all" | "error" | "warn" | "info";
@@ -4189,6 +4197,23 @@ export default function App() {
       .catch(() => { });
   }, []);
 
+  // ── Periodic vacuum: runs once 30s after startup, then every 24 hours ────
+  useEffect(() => {
+    // Short initial delay so startup scan/metadata tasks finish first.
+    const initialTimer = window.setTimeout(() => {
+      runDbVacuum(true).catch(() => {});
+    }, 30_000);
+    // Repeat every 24 hours to keep the local state trim.
+    const periodicTimer = window.setInterval(() => {
+      runDbVacuum(true).catch(() => {});
+    }, 24 * 60 * 60 * 1000);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(periodicTimer);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     invoke<string>("get_platform")
       .then((detectedPlatform) => {
@@ -5284,10 +5309,13 @@ export default function App() {
   const autoHealPathsStatus = backgroundJobButtonLabel(autoHealPathsJob, t("settings.scanner.auto_heal"));
   const backupRetentionJob = backgroundJobs[JOB_BACKUP_RETENTION] ?? null;
   const backupRetentionStatus = backgroundJobButtonLabel(backupRetentionJob, t("settings.system.apply_backup"));
+  const dbVacuumJob = backgroundJobs[JOB_DB_VACUUM] ?? null;
+  const dbVacuumStatus = backgroundJobButtonLabel(dbVacuumJob, "Optimize Storage");
   const isIntegrityCheckBusy = integrityCheckJob ? isBackgroundJobBusy(integrityCheckJob.status) : false;
   const isBatchMetadataRefreshBusy = batchMetadataRefreshJob ? isBackgroundJobBusy(batchMetadataRefreshJob.status) : false;
   const isAutoHealPathsBusy = autoHealPathsJob ? isBackgroundJobBusy(autoHealPathsJob.status) : false;
   const isBackupRetentionBusy = backupRetentionJob ? isBackgroundJobBusy(backupRetentionJob.status) : false;
+  const isDbVacuumBusy = dbVacuumJob ? isBackgroundJobBusy(dbVacuumJob.status) : false;
 
   // ── Scanning ────────────────────────────────────────────────────────────────
   const runIncrementalSyncAll = async (folders: LibraryFolder[]) => {
@@ -5695,6 +5723,39 @@ export default function App() {
       });
       if (!silent) {
         alert("Backup retention failed: " + e);
+      }
+      return null;
+    }
+  };
+
+  const runDbVacuum = async (silent = false) => {
+    if (isDbVacuumBusy) return null;
+    upsertBackgroundJob(JOB_DB_VACUUM, {
+      label: "Storage Vacuum",
+      status: "running",
+      detail: "Pruning in-memory logs, journal, and orphaned temp files...",
+    });
+    try {
+      const result = await invoke<VacuumReport>("run_db_vacuum");
+      clearBackgroundJob(JOB_DB_VACUUM);
+      if (!silent) {
+        const freed = result.tempBytesFreed > 0
+          ? `\nTemp files freed: ${result.tempBytesFreed} bytes (${result.tempFilesRemoved} file(s))`
+          : "";
+        const pruned = (result.logEntriesPruned + result.journalEntriesPruned) > 0
+          ? `\nLog/journal entries pruned: ${result.logEntriesPruned + result.journalEntriesPruned}`
+          : "";
+        alert(`Storage optimized in ${result.durationMs}ms.${freed}${pruned || (freed ? "" : "\nNothing to prune — storage is already clean.")}`);
+      }
+      return result;
+    } catch (e) {
+      upsertBackgroundJob(JOB_DB_VACUUM, {
+        label: "Storage Vacuum",
+        status: "permanent_failed",
+        detail: `Vacuum failed: ${String(e)}`,
+      });
+      if (!silent) {
+        alert("Storage vacuum failed: " + e);
       }
       return null;
     }
@@ -8312,6 +8373,9 @@ export default function App() {
             onApplyBackupRetentionPolicy={() => { applyBackupRetentionPolicy(false).catch(() => { }); }}
             backupRetentionStatus={backupRetentionStatus}
             isBackupRetentionBusy={isBackupRetentionBusy}
+            onRunDbVacuum={() => { runDbVacuum(false).catch(() => { }); }}
+            dbVacuumStatus={dbVacuumStatus}
+            isDbVacuumBusy={isDbVacuumBusy}
           />
         )
       }

@@ -1,13 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
 type StorageBootstrap = {
-  portable: boolean;
+  unified: boolean;
   entries: Record<string, string>;
 };
 
 let initialized = false;
-let portableMode = false;
-const portableEntries = new Map<string, string>();
+let unifiedMode = false;
+const unifiedEntries = new Map<string, string>();
 let flushTimer: number | null = null;
 let activeProfileId = "default";
 
@@ -28,14 +28,14 @@ function shouldUseLegacyFallback(key: string) {
   return activeProfileId === "default" && !GLOBAL_STORAGE_KEYS.has(key);
 }
 
-function schedulePortableFlush() {
-  if (!portableMode || !hasTauri()) return;
+function scheduleUnifiedFlush() {
+  if (!unifiedMode || !hasTauri()) return;
   if (flushTimer !== null) {
     window.clearTimeout(flushTimer);
   }
   flushTimer = window.setTimeout(() => {
     flushTimer = null;
-    const entries = Object.fromEntries(portableEntries.entries());
+    const entries = Object.fromEntries(unifiedEntries.entries());
     invoke("persist_storage_snapshot", { entries }).catch(() => {});
   }, 200);
 }
@@ -47,26 +47,26 @@ export async function initAppStorage() {
 
   try {
     const bootstrap = await invoke<StorageBootstrap>("get_storage_bootstrap");
-    if (!bootstrap?.portable) return;
-    portableMode = true;
+    if (!bootstrap?.unified) return;
+    unifiedMode = true;
     for (const [k, v] of Object.entries(bootstrap.entries || {})) {
-      portableEntries.set(k, v);
+      unifiedEntries.set(k, v);
     }
 
-    // First portable run migration: copy current localStorage into portable file.
-    if (portableEntries.size === 0) {
+    // First run migration: copy current localStorage into unified state store.
+    if (unifiedEntries.size === 0) {
       try {
         for (let i = 0; i < localStorage.length; i++) {
           const key = localStorage.key(i);
           if (!key) continue;
           const val = localStorage.getItem(key);
-          if (val !== null) portableEntries.set(key, val);
+          if (val !== null) unifiedEntries.set(key, val);
         }
       } catch {}
-      schedulePortableFlush();
+      scheduleUnifiedFlush();
     }
   } catch {
-    portableMode = false;
+    unifiedMode = false;
   }
 }
 
@@ -81,11 +81,11 @@ export function getAppStorageProfile() {
 
 export function appStorageGetItem(key: string): string | null {
   const scopedKey = profileStorageKey(key);
-  if (portableMode) {
-    const value = portableEntries.get(scopedKey);
+  if (unifiedMode) {
+    const value = unifiedEntries.get(scopedKey);
     if (value !== undefined) return value;
     if (shouldUseLegacyFallback(key)) {
-      return portableEntries.get(key) ?? null;
+      return unifiedEntries.get(key) ?? null;
     }
     return null;
   }
@@ -103,9 +103,9 @@ export function appStorageGetItem(key: string): string | null {
 
 export function appStorageSetItem(key: string, value: string) {
   const scopedKey = profileStorageKey(key);
-  if (portableMode) {
-    portableEntries.set(scopedKey, value);
-    schedulePortableFlush();
+  if (unifiedMode) {
+    unifiedEntries.set(scopedKey, value);
+    scheduleUnifiedFlush();
     return;
   }
   try {
@@ -115,12 +115,12 @@ export function appStorageSetItem(key: string, value: string) {
 
 export function appStorageRemoveItem(key: string) {
   const scopedKey = profileStorageKey(key);
-  if (portableMode) {
-    portableEntries.delete(scopedKey);
+  if (unifiedMode) {
+    unifiedEntries.delete(scopedKey);
     if (shouldUseLegacyFallback(key)) {
-      portableEntries.delete(key);
+      unifiedEntries.delete(key);
     }
-    schedulePortableFlush();
+    scheduleUnifiedFlush();
     return;
   }
   try {

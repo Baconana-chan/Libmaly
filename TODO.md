@@ -2,7 +2,6 @@
 
 - [ ] **Release on itch.io** — create landing page, configure game categories, and set up Butler for automated build pushes.
 - [ ] **Release on Epic Games Store** — fulfill self-service publishing requirements and integrate basic EGS SDK features.
-- [ ] **Release on Steam** (Optional) — evaluate Steam's stance on library tools and prepare for Steamworks submission if viable.
 
 ---
 
@@ -84,12 +83,12 @@
 
 ## 🧰 Background Jobs (Completed)
 
-- [ ] **Database Vacuum/Optimize** — periodic background task to prune old logs and optimize local state storage
+- [x] **Database Vacuum/Optimize** — periodic background task to prune old logs and optimize local state storage
 ---
 
 ## 🛡️ Reliability & Recovery
 
-- [ ] **Unified storage with schema migrations** — move to a versioned state store with forward migrations and rollback on migration failure
+- [x] **Unified storage with schema migrations** — move to a versioned state store with forward migrations and rollback on migration failure
 
 ---
 

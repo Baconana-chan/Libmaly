@@ -1,0 +1,84 @@
+# 🗺️ Libmaly Ordered Roadmap (Planned)
+
+This roadmap organizes remaining tasks from easiest ("Quick Wins") to most difficult ("Epic Projects"). Tasks are grouped to show dependencies, where implementing one feature simplifies the work for the next.
+
+---
+
+## 🟢 Phase 1: Quick Wins & Polish (Low Complexity)
+*Tasks that primarily involve UI additions or using existing data.*
+
+### 📊 Stats & Visuals
+- [ ] **Activity Heatmaps** — GitHub-style 365-day play activity grid in the Stats view.
+- [ ] **Year-in-Review generator** — Automated summary card of the year's habits.
+- [ ] **Productivity Correlation** — Optional "Time well spent" vs "Binge" detection.
+- [ ] **Advanced Backdrop FX** — Dynamic blur/glassmorphism based on cover art colors.
+
+### ⚙️ UI & Core
+- [ ] **Local-only "Ghost" mode** — Disable outbound checks for high-privacy games (per-game/profile).
+- [ ] **Custom CSS / User Styles** — Allow power users to inject custom CSS overrides.
+- [ ] **Data consistency tests** — Integration scenarios for scan/launch/crash/recovery.
+
+> [!TIP]
+> **Priority:** Implement **Ghost Mode** early to handle privacy-conscious users before expanding storefront connectors.
+
+---
+
+## 🟡 Phase 2: Enhanced Reliability & Sync (Medium Complexity)
+*Building on top of the established versioned state store.*
+
+### ☁️ Cloud & Backup
+- [ ] **Provider-agnostic library sync** — Add WebDAV, Nextcloud, S3/Git backends for state sync.
+- [ ] **Google Drive / Dropbox auto-backup** — Optional periodic upload of library state.
+- [ ] **Save-file cloud sync** — Upload save zips to configured cloud folders.
+- [ ] **Cloud sync conflict resolver** — UI and logic for 3-way merge (Local/Remote/Base).
+
+### 🛠️ Technical Foundations
+- [ ] **OAuth & API Vault** — Secure centralized manager for storefront tokens/cookies.
+- [ ] **REST/WebSocket API Mode** — Internal API for state access and remote control (foundation for SDK).
+- [ ] **SDK / Reference implementation** — Boilerplate for third-party tools.
+
+> [!IMPORTANT]
+> **Path Dependency:** The **OAuth & API Vault** should be implemented *before* any cloud providers or storefront syncs to ensure secure credential handling.
+
+---
+
+## 🟠 Phase 3: Storefront & Social (High Complexity)
+*Requires complex network interactions and external integrations.*
+
+### 🛒 Storefront Integrations
+- [ ] **Enhanced Steam Integration** — List uninstalled titles via Web API / ID hunting.
+- [ ] **Epic Games Store** — Cloud library listing and Legendary-style integration.
+- [ ] **itch.io Butler Integration** — Direct purchase management and auto-updates.
+- [ ] **Cross-Store Ownership Grouping** — Merge multiple entries for the same game into one card.
+
+### 📡 Connectivity (Social/P2P)
+- [ ] **Peer-to-Peer Activity "Pulse"** — Local-network broadcast of active games.
+- [ ] **Encrypted P2P Chat** — Secure messaging for coordinating multiplayer.
+- [ ] **Multi-protocol social linking** — Bridge activity from Discord, Steam, and Libmaly-Relay.
+
+---
+
+## 🔴 Phase 4: The Overlay & Streaming (Very High Complexity)
+*Deep system integration, input hooking, and performance-heavy features.*
+
+### 🕹️ Immersive Overlay
+- [ ] **Global Hotkey & Input Hooking** — Reliable Rust keyboard hooks for trigger.
+- [ ] **Clock & Session Timer Widget** — Simple first widget for the overlay.
+- [ ] **Full-screen Dashboard (Shift+Tab)** — High-level navigation hub.
+- [ ] **Overlay Workspace & Widgets** (System Monitor, Web Browser, Note Editor).
+
+### 🎮 Controller & Remote Play
+- [ ] **Controller profile schema** — Bindings, curves, and macro definitions.
+- [ ] **Virtual input backend** — Rust abstraction for input injection.
+- [ ] **Universal controller translation layer** — Virtual XInput/SDL pad for games.
+- [ ] **Remote Play Host & Guest Flow** — Video/Audio streaming and input relay.
+
+> [!TIP]
+> **Priority:** Implement **Global Hotkey & Input Hooking** and the **Controller Profile Schema** first; these are the anchors for all other overlay and controller features.
+
+---
+
+## 🚀 Strategy & Distribution (Ongoing)
+- [ ] **Release on itch.io** — Launch page + Butler automation.
+- [ ] **Release on Epic Games Store** — Self-publishing + SDK integration.
+- [ ] **Release on Steam** — Evaluate stance and prepare submission.

@@ -28,8 +28,15 @@
 - **Extended Diagnostics Export** — included the `mediaPlaybackKnowledgeBase` and per-game risk assessment in support reports.
 
 ### ⚡ Performance & Caching
+- **Database Vacuum/Optimize** — added a periodic maintenance task that prunes old in-memory logs, trims the file-ops journal, and automatically removes orphaned temp files from failed atomic writes.
+- **Manual Storage Optimization** — users can now trigger a full vacuum from the Settings -> System panel to reclaim disk space and trim background overhead.
 - **Shader pre-caching support** — detect, import, and export DXVK/Proton shader cache artifacts to reduce stutter during first-run gameplay.
 - **Cache warmup hints** — game pages now indicate if a game benefits from shader cache prep and show the current cache status.
+
+### 🛠️ Technical
+- **Unified versioned state store** — migrated local storage from unstable browser `localStorage` to a unified, versioned JSON state store managed by the Rust backend.
+- **State Schema Migrations** — added a robust migration engine for the state store with forward migration support, version tracking, and automatic `.bak` rollbacks on failure.
+- **Unconditionally Unified Storage** — all library and settings data is now saved to the same consistent JSON structure regardless of "portable" mode, ensuring extreme reliability against WebView cache wipes.
 
 
 ## 1.6.0 - 2026-04-02

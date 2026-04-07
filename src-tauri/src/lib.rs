@@ -134,6 +134,21 @@ struct BackupRetentionApplyResult {
     save_backups_kept: usize,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct VacuumReport {
+    /// Number of orphaned temp files removed from the app data directory.
+    temp_files_removed: usize,
+    /// Bytes reclaimed from orphaned temp files.
+    temp_bytes_freed: u64,
+    /// Log entries pruned from the in-memory ring-buffer.
+    log_entries_pruned: usize,
+    /// File-ops journal entries pruned from the persisted journal.
+    journal_entries_pruned: usize,
+    /// Total milliseconds the vacuum took.
+    duration_ms: u64,
+}
+
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct IntegrityLibraryFolderInput {
@@ -1206,6 +1221,122 @@ fn prune_dir_with_retention(dir: &Path, policy: &BackupRetentionPolicy) -> (usiz
         }
     }
     (deleted, kept)
+}
+
+// ── Database / storage vacuum ──────────────────────────────────────────────
+
+/// Maximum number of log entries to keep in the in-memory buffer after a vacuum.
+const VACUUM_LOG_KEEP: usize = 200;
+/// Maximum number of recent-file-ops entries to keep after a vacuum.
+const VACUUM_FILE_OPS_KEEP: usize = 20;
+/// Age threshold (in milliseconds) for considering a tmp file "orphaned".
+/// Files younger than this are skipped so we don't race with an in-flight write.
+const VACUUM_TMP_MIN_AGE_MS: u64 = 60_000; // 1 minute
+
+/// Prune the in-memory Rust log ring-buffer down to `VACUUM_LOG_KEEP` entries.
+/// Returns the number of entries pruned.
+fn vacuum_log_buffer() -> usize {
+    let mut buf = rust_log_buffer().lock().unwrap();
+    let len = buf.len();
+    if len <= VACUUM_LOG_KEEP {
+        return 0;
+    }
+    let remove = len - VACUUM_LOG_KEEP;
+    buf.drain(0..remove);
+    remove
+}
+
+/// Trim the recent_file_ops journal on disk down to `VACUUM_FILE_OPS_KEEP` entries.
+/// Returns the number of entries removed.
+fn vacuum_file_ops_journal() -> usize {
+    let path = recent_file_ops_path();
+    let mut ops: Vec<RecentFileOp> = if path.exists() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    } else {
+        return 0;
+    };
+    let len = ops.len();
+    if len <= VACUUM_FILE_OPS_KEEP {
+        return 0;
+    }
+    let remove = len - VACUUM_FILE_OPS_KEEP;
+    ops.drain(0..remove);
+    if let Ok(raw) = serde_json::to_string_pretty(&ops) {
+        // Use a direct write here (not atomic_write_string) to avoid recursive
+        // journal appending inside the vacuum itself.
+        let _ = std::fs::write(&path, raw.as_bytes());
+    }
+    remove
+}
+
+/// Remove orphaned `.libmaly-tmp-*` files from the app data root.
+/// Only removes files older than `VACUUM_TMP_MIN_AGE_MS` milliseconds.
+/// Returns (files_removed, bytes_freed).
+fn vacuum_orphaned_tmp_files() -> (usize, u64) {
+    let root = app_data_root();
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return (0, 0);
+    };
+    let now = now_ms();
+    let mut removed = 0usize;
+    let mut bytes = 0u64;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !name.starts_with('.') || !name.contains(".libmaly-tmp-") {
+            continue;
+        }
+        // Check age
+        let age_ms = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| now.saturating_sub(d.as_millis() as u64))
+            .unwrap_or(u64::MAX);
+        if age_ms < VACUUM_TMP_MIN_AGE_MS {
+            continue;
+        }
+        let file_size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
+        if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+            bytes += file_size;
+        }
+    }
+    (removed, bytes)
+}
+
+#[tauri::command]
+fn run_db_vacuum() -> VacuumReport {
+    let start = now_ms();
+    let log_pruned = vacuum_log_buffer();
+    let journal_pruned = vacuum_file_ops_journal();
+    let (temp_removed, temp_bytes) = vacuum_orphaned_tmp_files();
+    let duration = now_ms().saturating_sub(start);
+    push_rust_log(
+        None,
+        "info",
+        format!(
+            "vacuum: pruned {} log entries, {} journal entries, removed {} tmp files ({} bytes) in {}ms",
+            log_pruned, journal_pruned, temp_removed, temp_bytes, duration
+        ),
+    );
+    VacuumReport {
+        temp_files_removed: temp_removed,
+        temp_bytes_freed: temp_bytes,
+        log_entries_pruned: log_pruned,
+        journal_entries_pruned: journal_pruned,
+        duration_ms: duration,
+    }
 }
 
 fn read_snapshot_file(path: &Path) -> Result<SnapshotContents, String> {
@@ -4805,48 +4936,97 @@ fn clear_last_crash_report(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Serialize)]
-struct StorageBootstrap {
-    portable: bool,
+#[derive(Serialize, Deserialize, Clone)]
+struct StateStore {
+    schema_version: u32,
     entries: HashMap<String, String>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageBootstrap {
+    unified: bool,
+    entries: HashMap<String, String>,
+}
+
+const CURRENT_SCHEMA_VERSION: u32 = 1;
+const STATE_STORAGE_FILE: &str = "state.json";
 const PORTABLE_STORAGE_FILE: &str = "portable_storage.json";
+
+fn migrate_state_store(mut store: StateStore) -> Result<StateStore, String> {
+    // Forward migrations
+    if store.schema_version == 0 {
+        // v0 -> v1 migration
+        push_rust_log(None, "info", "Migrating state store from v0 to v1");
+        store.schema_version = 1;
+    }
+    
+    if store.schema_version != CURRENT_SCHEMA_VERSION {
+        return Err(format!("Schema migration stopped at unsupported version {}", store.schema_version));
+    }
+    Ok(store)
+}
 
 #[tauri::command]
 fn get_storage_bootstrap() -> Result<StorageBootstrap, String> {
-    if !is_portable_mode() {
-        return Ok(StorageBootstrap {
-            portable: false,
-            entries: HashMap::new(),
-        });
+    let dir = app_data_root();
+    let state_path = dir.join(STATE_STORAGE_FILE);
+    let legacy_portable_path = dir.join(PORTABLE_STORAGE_FILE);
+
+    let mut initial_store = if state_path.exists() {
+        let raw = std::fs::read_to_string(&state_path).map_err(|e| e.to_string())?;
+        serde_json::from_str::<StateStore>(&raw).unwrap_or_else(|_| {
+            let entries: HashMap<String, String> = serde_json::from_str(&raw).unwrap_or_default();
+            StateStore { schema_version: 0, entries }
+        })
+    } else if legacy_portable_path.exists() {
+        let raw = std::fs::read_to_string(&legacy_portable_path).map_err(|e| e.to_string())?;
+        let entries: HashMap<String, String> = serde_json::from_str(&raw).unwrap_or_default();
+        StateStore { schema_version: 0, entries }
+    } else {
+        StateStore { schema_version: CURRENT_SCHEMA_VERSION, entries: HashMap::new() }
+    };
+
+    if initial_store.schema_version < CURRENT_SCHEMA_VERSION {
+        // Ensure rollback potential by backing up existing file if present
+        if state_path.exists() {
+            let bak_path = dir.join(format!("{}.bak", STATE_STORAGE_FILE));
+            let _ = std::fs::copy(&state_path, &bak_path);
+        }
+
+        match migrate_state_store(initial_store.clone()) {
+            Ok(migrated) => {
+                let raw = serde_json::to_string(&migrated).map_err(|e| e.to_string())?;
+                if let Err(e) = atomic_write_string(&state_path, &raw, "schema_migration") {
+                    push_rust_log(None, "error", format!("Failed to save migrated state: {}", e));
+                    return Err(e);
+                }
+                initial_store = migrated;
+            }
+            Err(e) => {
+                return Err(format!("Storage migration failed (rolled back / aborting): {}", e));
+            }
+        }
     }
 
-    let path = app_data_root().join(PORTABLE_STORAGE_FILE);
-    if !path.exists() {
-        return Ok(StorageBootstrap {
-            portable: true,
-            entries: HashMap::new(),
-        });
-    }
-
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let entries: HashMap<String, String> = serde_json::from_str(&raw).unwrap_or_default();
     Ok(StorageBootstrap {
-        portable: true,
-        entries,
+        unified: true,
+        entries: initial_store.entries,
     })
 }
 
 #[tauri::command]
 fn persist_storage_snapshot(entries: HashMap<String, String>) -> Result<(), String> {
-    if !is_portable_mode() {
-        return Ok(());
-    }
     let dir = app_data_root();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(PORTABLE_STORAGE_FILE);
-    let raw = serde_json::to_string(&entries).map_err(|e| e.to_string())?;
+    let path = dir.join(STATE_STORAGE_FILE);
+    
+    let store = StateStore {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        entries,
+    };
+    
+    let raw = serde_json::to_string(&store).map_err(|e| e.to_string())?;
     atomic_write_string(&path, &raw, "persist_storage_snapshot")
 }
 
@@ -4869,6 +5049,7 @@ pub fn run() {
             load_library_profile_registry(),
         )))
         .invoke_handler(tauri::generate_handler![
+            run_db_vacuum,
             scan_games,
             scan_games_incremental,
             list_executables_in_folder,

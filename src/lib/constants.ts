@@ -29,6 +29,7 @@ export const JOB_AUTO_METADATA_REFRESH = "auto-metadata-refresh";
 export const JOB_UPDATE_CHECKER = "update-checker";
 export const JOB_AUTO_HEAL_PATHS = "auto-heal-paths";
 export const JOB_BACKUP_RETENTION = "backup-retention";
+export const JOB_DB_VACUUM = "db-vacuum";
 export const DEFAULT_METADATA_QUEUE_CONCURRENCY = 2;
 export const DEFAULT_METADATA_QUEUE_MAX_ATTEMPTS = 3;
 export const DEFAULT_METADATA_QUEUE_BACKOFF_MS = 1500;

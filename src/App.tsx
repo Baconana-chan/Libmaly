@@ -30,7 +30,7 @@ import { StatsView } from "./components/views/StatsView";
 import { mergeFolderGames, mergeFolderMtimes } from "./lib/scanner";
 import { appStorageGetItem, appStorageRemoveItem, appStorageSetItem, getAppStorageProfile, setAppStorageProfile } from "./lib/appStorage";
 import {
-  SK_GAMES, SK_MTIMES, SK_PATH, SK_FOLDERS, SK_STATS, SK_META, SK_HIDDEN, SK_FAVS,
+  SK_GAMES, SK_MTIMES, SK_PATH, SK_FOLDERS, SK_STATS, SK_META, SK_HIDDEN, SK_FAVS, SK_GHOST,
   SK_CUSTOM, SK_NOTES, SK_ACHIEVEMENTS, SK_COLLECTIONS, SK_LAUNCH, SK_RECENT, SK_ORDER, SK_SESSION_LOG,
   SK_WISHLIST, SK_HISTORY, SK_SETTINGS,
   JOB_INCREMENTAL_SYNC, JOB_FULL_SCAN, JOB_INTEGRITY_CHECK, JOB_BATCH_METADATA_REFRESH,
@@ -725,6 +725,7 @@ function readProfileStorageSnapshot(): ProfileStorageSnapshot {
     metadata: loadCache(SK_META, {}),
     hiddenGames: loadCache(SK_HIDDEN, {}),
     favGames: loadCache(SK_FAVS, {}),
+    ghostGames: loadCache(SK_GHOST, {}),
     customizations: loadCache(SK_CUSTOM, {}),
     notes: loadCache(SK_NOTES, {}),
     achievements: normalizeAchievementsMap(loadCache(SK_ACHIEVEMENTS, {})),
@@ -774,6 +775,7 @@ function buildSnapshotEntries(payload: {
     [SK_META]: JSON.stringify(payload.metadata),
     [SK_HIDDEN]: JSON.stringify(payload.hiddenGames),
     [SK_FAVS]: JSON.stringify(payload.favGames),
+    [SK_GHOST]: JSON.stringify(payload.ghostGames),
     [SK_CUSTOM]: JSON.stringify(payload.customizations),
     [SK_NOTES]: JSON.stringify(payload.notes),
     [SK_ACHIEVEMENTS]: JSON.stringify(payload.achievements),
@@ -1059,12 +1061,14 @@ function MetadataDiffModal({ oldMeta, newMeta, onConfirm, onClose }: {
 }
 
 // ─── Link Page Modal ──────────────────────────────────────────────────────────
-function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Login }: {
+function LinkPageModal({ gameName, gamePath, onClose, onFetched, f95LoggedIn, onOpenF95Login, ghostGames }: {
   gameName: string;
+  gamePath: string;
   onClose: () => void;
   onFetched: (meta: GameMetadata) => void;
   f95LoggedIn: boolean;
   onOpenF95Login: () => void;
+  ghostGames: Record<string, boolean>;
 }) {
   const { t } = useTranslation();
   const [url, setUrl] = useState("");
@@ -1093,6 +1097,10 @@ function LinkPageModal({ gameName, onClose, onFetched, f95LoggedIn, onOpenF95Log
 
   const doFetch = async (targetUrl = url) => {
     if (!targetUrl) return;
+    if (ghostGames[gamePath]) {
+      setError("Ghost mode is enabled for this game - no network requests allowed.");
+      return;
+    }
     const targetSrc = detectMetadataSourceFromUrl(targetUrl);
     if (!targetSrc) { setError("Paste a valid F95zone, DLsite, VNDB, MangaGamer, Johren or FAKKU URL."); return; }
     setLoading(true); setError("");
@@ -3600,6 +3608,7 @@ export default function App() {
   const [discordSnapshot, setDiscordSnapshot] = useState<DiscordSdkSnapshot | null>(null);
   const [hiddenGames, setHiddenGames] = useState<Record<string, boolean>>(() => loadCache(SK_HIDDEN, {}));
   const [favGames, setFavGames] = useState<Record<string, boolean>>(() => loadCache(SK_FAVS, {}));
+  const [ghostGames, setGhostGames] = useState<Record<string, boolean>>(() => loadCache(SK_GHOST, {}));
   const [customizations, setCustomizations] = useState<Record<string, GameCustomization>>(() => loadCache(SK_CUSTOM, {}));
   const [notes, setNotes] = useState<Record<string, string>>(() => loadCache(SK_NOTES, {}));
   const [achievements, setAchievements] = useState<GameAchievementsByPath>(() =>
@@ -4605,6 +4614,11 @@ export default function App() {
 
   useEffect(() => {
     if (!appSettings.discordEnabled) return;
+    // Ghost mode: don't send any presence for ghost games
+    if (runningGamePath && ghostGames[runningGamePath]) {
+      invoke("discord_clear_presence").catch(() => { });
+      return;
+    }
     if (!runningGamePath) {
       if (appSettings.discordShowIdlePresence) {
         const idlePresence: DiscordPresenceInput = {
@@ -4713,7 +4727,7 @@ export default function App() {
     const checkUpdates = async () => {
       const items = games
         .map((g) => ({ path: g.path, metadata: metadataRef.current[g.path] }))
-        .filter((entry): entry is MetadataQueueItem => !!entry.metadata?.source_url);
+        .filter((entry): entry is MetadataQueueItem => !!entry.metadata?.source_url && !ghostGames[entry.path]);
       await runMetadataQueueJob({
         jobId: JOB_UPDATE_CHECKER,
         label: "Update Checker",
@@ -5186,7 +5200,8 @@ export default function App() {
     }
   };
 
-  const fetchMetadataForPath = async (currentMeta: GameMetadata) => {
+  const fetchMetadataForPath = async (currentMeta: GameMetadata, gamePath: string) => {
+    if (ghostGames[gamePath]) return null; // Ghost mode: no network requests
     const cmd = metadataFetchCommand(currentMeta.source);
     if (!cmd || !currentMeta.source_url) return null;
     const result = await invoke<GameMetadata | null>(cmd, { url: currentMeta.source_url });
@@ -5230,7 +5245,7 @@ export default function App() {
       getItemLabel: (item) => item.path,
       actionLabel: mode === "update-check" ? "Checking" : "Updating",
       successLabel: mode === "update-check" ? "Checked" : "Updated",
-      runItem: (item) => fetchMetadataForPath(item.metadata),
+      runItem: (item) => fetchMetadataForPath(item.metadata, item.path),
       onItemSuccess: (item, nextMeta) => {
         if (nextMeta) {
           onItemSuccess?.(item.path, nextMeta);
@@ -6335,7 +6350,7 @@ export default function App() {
   const handleBatchMetadataRefresh = async () => {
     if (batchMetadataRefreshJob && isBackgroundJobBusy(batchMetadataRefreshJob.status)) return;
     const items = Object.keys(metadata)
-      .filter((p) => metadata[p]?.source_url)
+      .filter((p) => metadata[p]?.source_url && !ghostGames[p])
       .map((path) => ({ path, metadata: metadata[path] }));
     if (items.length === 0) return;
     try {
@@ -6594,6 +6609,7 @@ export default function App() {
       const items = Object.keys(metadataRef.current).filter(p => {
         const m = metadataRef.current[p];
         if (!m.source_url) return false;
+        if (ghostGames[p]) return false; // Skip ghost mode games
         if (!m.fetchedAt) return true;
         return now - m.fetchedAt > expiryAge;
       }).map((path) => ({ path, metadata: metadataRef.current[path] }));
@@ -6632,6 +6648,13 @@ export default function App() {
     const next = { ...favGames };
     if (next[selected.path]) delete next[selected.path]; else next[selected.path] = true;
     setFavGames(next); saveCache(SK_FAVS, next);
+  };
+
+  const toggleGhost = () => {
+    if (!selected) return;
+    const next = { ...ghostGames };
+    if (next[selected.path]) delete next[selected.path]; else next[selected.path] = true;
+    setGhostGames(next); saveCache(SK_GHOST, next);
   };
 
   const handleSaveCustomization = (c: GameCustomization) => {
@@ -8202,6 +8225,7 @@ export default function App() {
             screenshots={screenshots[selected.path] ?? []}
             isHidden={!!hiddenGames[selected.path]}
             isFav={!!favGames[selected.path]}
+            isGhost={!!ghostGames[selected.path]}
             onPlay={(...args) => launchGame(selected.path, ...args)}
             onStop={killGame}
             isRunning={runningGamePath === selected.path}
@@ -8250,8 +8274,9 @@ export default function App() {
                 beforeMedia: { ...matchingPrefix.media },
               });
             }: undefined}
-            onToggleHide={toggleHide}
-            onToggleFav={toggleFav}
+           onToggleHide={toggleHide}
+           onToggleFav={toggleFav}
+           onToggleGhost={toggleGhost}
             onOpenCustomize={() => setShowCustomizeModal(true)}
             onSaveCustomization={(changes) => {
               const nc = { ...(customizations[selected.path] || {}), ...changes };
@@ -8313,6 +8338,18 @@ export default function App() {
       {
         showSettings && (
           <SettingsModal
+            games={games}
+            ghostGames={ghostGames}
+            onToggleGhost={(path) => {
+              const next = { ...ghostGames };
+              if (next[path]) delete next[path]; else next[path] = true;
+              setGhostGames(next); saveCache(SK_GHOST, next);
+            }}
+            onToggleAllGhost={(enabled) => {
+              const next: Record<string, boolean> = {};
+              if (enabled) games.forEach(g => next[g.path] = true);
+              setGhostGames(next); saveCache(SK_GHOST, next);
+            }}
             f95LoggedIn={f95LoggedIn}
             dlsiteLoggedIn={dlsiteLoggedIn}
             fakkuLoggedIn={fakkuLoggedIn}
@@ -8573,6 +8610,8 @@ export default function App() {
         showLinkModal && selected && (
           <LinkPageModal
             gameName={selected.name}
+            gamePath={selected.path}
+            ghostGames={ghostGames}
             onClose={() => setShowLinkModal(false)}
             onFetched={handleMetaFetched}
             f95LoggedIn={f95LoggedIn}

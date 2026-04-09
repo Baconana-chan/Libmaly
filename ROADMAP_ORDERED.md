@@ -14,7 +14,7 @@ This roadmap organizes remaining tasks from easiest ("Quick Wins") to most diffi
 - [x] **Advanced Backdrop FX** — Dynamic blur/glassmorphism based on cover art colors.
 
 ### ⚙️ UI & Core
-- [ ] **Local-only "Ghost" mode** — Disable outbound checks for high-privacy games (per-game/profile).
+- [x] **Local-only "Ghost" mode** — Disable outbound checks for high-privacy games (per-game/profile).
 - [ ] **Custom CSS / User Styles** — Allow power users to inject custom CSS overrides.
 - [ ] **Data consistency tests** — Integration scenarios for scan/launch/crash/recovery.
 

@@ -7,6 +7,7 @@ export const SK_STATS = "game-stats";
 export const SK_META = "game-metadata";
 export const SK_HIDDEN = "hidden-games-v1";
 export const SK_FAVS = "fav-games-v1";
+export const SK_GHOST = "ghost-games-v1";
 export const SK_CUSTOM = "game-custom-v1";
 export const SK_NOTES = "game-notes-v1";
 export const SK_ACHIEVEMENTS = "game-achievements-v1";

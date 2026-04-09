@@ -299,6 +299,7 @@ function MigrationWizardModal({
 
 // ─── Settings Modal ────────────────────────────────────────────────────────────
 function SettingsModal({
+  games, ghostGames, onToggleGhost, onToggleAllGhost,
   f95LoggedIn, dlsiteLoggedIn, fakkuLoggedIn, libraryFolders, syncState, platform, launchConfig,
   appUpdate, appSettings,
   defaultSettings,
@@ -311,6 +312,10 @@ function SettingsModal({
   discordSnapshot, onOpenDiscordSettings
   , libraryProfiles, activeLibraryProfileId, onSwitchLibraryProfile, onSaveLibraryProfile, onDeleteLibraryProfile
 }: {
+  games: Game[];
+  ghostGames: Record<string, boolean>;
+  onToggleGhost: (path: string) => void;
+  onToggleAllGhost: (enabled: boolean) => void;
   f95LoggedIn: boolean; dlsiteLoggedIn: boolean; fakkuLoggedIn: boolean; libraryFolders: { path: string }[]; syncState: string;
   platform: string; launchConfig: { enabled: boolean; runner: string };
   appUpdate: { version: string } | null; appSettings: AppSettingsLike;
@@ -349,7 +354,7 @@ function SettingsModal({
   onDeleteLibraryProfile: (profileId: string) => Promise<void> | void;
 }) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "wine">("general");
+  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "wine">("general");
   const [customLangs, setCustomLangs] = useState<Record<string, { name: string; translation: Record<string, unknown> }>>({});
   const [langImporting, setLangImporting] = useState(false);
   const discordStatusSummary = !discordSnapshot
@@ -454,6 +459,7 @@ function SettingsModal({
     { id: "scanner", label: t('settings.tabs.scanner') },
     { id: "import", label: t('settings.tabs.import') },
     { id: "rss", label: t('settings.tabs.rss') },
+    { id: "ghost", label: "👻 Ghost Mode" },
     ...(platform !== "windows" ? [{ id: "wine" as const, label: t('settings.tabs.wine') }] : []),
   ];
   const jobTone = (status: BackgroundJobStatus) => {
@@ -1679,6 +1685,61 @@ function SettingsModal({
                   </button>
                 </div>
               </div>
+            </section>
+          )}
+
+          {tab === "ghost" && (
+            <section className="space-y-4">
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Ghost Mode (Local Only)</h3>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                Games marked as Ghost will never perform any network requests: no metadata refreshes, no update checks, no Discord RPC. All data stays local only.
+              </p>
+
+              <div className="flex gap-2">
+                <button onClick={() => onToggleAllGhost(true)}
+                  className="flex-1 py-2 rounded-lg text-sm font-medium"
+                  style={{
+                    background: "var(--color-accent-dark)",
+                    color: "var(--color-white)",
+                    border: "1px solid var(--color-accent)",
+                  }}>
+                  🔒 Enable Ghost Mode for ALL games
+                </button>
+                <button onClick={() => onToggleAllGhost(false)}
+                  className="flex-1 py-2 rounded-lg text-sm font-medium"
+                  style={{
+                    background: "var(--color-panel-3)",
+                    color: "var(--color-text)",
+                    border: "1px solid var(--color-border)",
+                  }}>
+                  🔓 Disable Ghost Mode for ALL games
+                </button>
+              </div>
+
+              <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+                {games.length === 0 ? (
+                  <p className="text-xs text-center py-4" style={{ color: "var(--color-text-dim)" }}>No games in library yet.</p>
+                ) : (
+                  games.map(game => (
+                    <div key={game.path} className="flex items-center justify-between px-3 py-2 rounded" style={{ background: "var(--color-panel-3)" }}>
+                      <span className="text-xs truncate flex-1" style={{ color: "var(--color-text)" }}>{game.name}</span>
+                      <button onClick={() => onToggleGhost(game.path)}
+                        className="px-2 py-1 rounded text-[10px] font-semibold"
+                        style={{
+                          background: ghostGames[game.path] ? "rgba(100, 150, 255, 0.2)" : "var(--color-panel-2)",
+                          color: ghostGames[game.path] ? "var(--color-accent-soft)" : "var(--color-text-muted)",
+                          border: `1px solid ${ghostGames[game.path] ? "var(--color-accent-soft)" : "var(--color-border)"}`,
+                        }}>
+                        {ghostGames[game.path] ? "👻 Ghost" : "Normal"}
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
+                {Object.keys(ghostGames).length} / {games.length} games in Ghost mode
+              </p>
             </section>
           )}
 

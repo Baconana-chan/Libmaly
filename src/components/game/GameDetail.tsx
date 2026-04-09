@@ -230,17 +230,21 @@ function MenuEntry({ icon, label, color, onClick }: { icon: string; label: strin
 function SettingsMenu({
   isHidden,
   isFav,
+  isGhost,
   onDelete,
   onToggleHide,
   onToggleFav,
+  onToggleGhost,
   onCustomize,
   onManageCollections,
 }: {
   isHidden: boolean;
   isFav: boolean;
+  isGhost: boolean;
   onDelete: () => void;
   onToggleHide: () => void;
   onToggleFav: () => void;
+  onToggleGhost: () => void;
   onCustomize: () => void;
   onManageCollections: () => void;
 }) {
@@ -284,6 +288,7 @@ function SettingsMenu({
         <div className="absolute right-0 top-full mt-1 z-30 rounded-lg py-1 shadow-2xl" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)", minWidth: "180px" }}>
           <MenuEntry icon="⭐" label={isFav ? t('game.menu.fav_remove') : t('game.menu.fav_add')} color={isFav ? "var(--color-warning)" : undefined} onClick={() => { setOpen(false); onToggleFav(); }} />
           <MenuEntry icon={isHidden ? "👁" : "🙈"} label={isHidden ? t('game.menu.unhide') : t('game.menu.hide')} onClick={() => { setOpen(false); onToggleHide(); }} />
+          <MenuEntry icon={isGhost ? "👻" : "🔒"} label={isGhost ? t('game.menu.ghost_disable') : t('game.menu.ghost_enable')} color={isGhost ? "var(--color-accent)" : undefined} onClick={() => { setOpen(false); onToggleGhost(); }} />
           <MenuEntry icon="🎨" label={t('game.menu.customize')} onClick={() => { setOpen(false); onCustomize(); }} />
           <MenuEntry icon="📁" label={t('game.menu.collections')} onClick={() => { setOpen(false); onManageCollections(); }} />
           <div style={{ borderTop: "1px solid var(--color-panel-3)", margin: "3px 0" }} />
@@ -480,6 +485,7 @@ export function GameDetail({
   screenshots,
   isHidden,
   isFav,
+  isGhost,
   onPlay,
   onStop,
   isRunning,
@@ -497,6 +503,7 @@ export function GameDetail({
   onUpdateScreenshotTags,
   onToggleHide,
   onToggleFav,
+  onToggleGhost,
   onOpenCustomize,
   onSaveCustomization,
   onOpenNotes,
@@ -675,6 +682,11 @@ export function GameDetail({
                     {t('game.hidden')}
                   </span>
                 )}
+                {isGhost && (
+                  <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-semibold" style={{ background: "rgba(100, 150, 255, 0.2)", color: "var(--color-accent-soft)", border: "1px solid var(--color-accent-soft)" }}>
+                    👻 {t('game.ghost_mode')}
+                  </span>
+                )}
               </div>
               <h1 className="text-3xl font-bold" style={{ color: "var(--color-white)", textShadow: "0 2px 8px rgba(0,0,0,.9)" }}>{displayTitle}</h1>
               {meta?.version && <span className="text-sm mt-0.5 block" style={{ color: "var(--color-accent-soft)" }}>{meta.version}</span>}
@@ -797,7 +809,7 @@ export function GameDetail({
         )}
         <div className="flex-1" />
         {meta && <button onClick={onClearMeta} className="px-3 py-2 rounded text-xs" style={{ background: "transparent", color: "var(--color-text-dim)" }}>✕ {t('game.unlink')}</button>}
-        <SettingsMenu isHidden={isHidden} isFav={isFav} onDelete={onDelete} onToggleHide={onToggleHide} onToggleFav={onToggleFav} onCustomize={onOpenCustomize} onManageCollections={onManageCollections} />
+        <SettingsMenu isHidden={isHidden} isFav={isFav} isGhost={isGhost} onDelete={onDelete} onToggleHide={onToggleHide} onToggleFav={onToggleFav} onToggleGhost={onToggleGhost} onCustomize={onOpenCustomize} onManageCollections={onManageCollections} />
       </div>
 
       {wineIntroVideoAssessment && (

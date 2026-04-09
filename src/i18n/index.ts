@@ -57,7 +57,6 @@ const resources: Resource = {
         "no_meta": "No metadata discovered."
       },
       "stats_view": {
-        "playing": "Playing",
         "title": "Library Stats",
         "playing": "Playing",
         "total_time": "Total Playtime",
@@ -490,6 +489,7 @@ const resources: Resource = {
         "play": "Play",
         "via": "via {{runner}}",
         "hidden": "Hidden",
+        "ghost_mode": "Ghost mode",
         "settings": "Game settings",
         "home": {
           "stats": {
@@ -569,6 +569,8 @@ const resources: Resource = {
           "fav_remove": "Remove from Favorites",
           "hide": "Hide Game",
           "unhide": "Unhide Game",
+          "ghost_enable": "Enable Ghost mode",
+          "ghost_disable": "Disable Ghost mode",
           "customize": "Customise…",
           "collections": "Collections…",
           "uninstall": "Uninstall"
@@ -1143,6 +1145,7 @@ const resources: Resource = {
         "play": "Играть",
         "via": "через {{runner}}",
         "hidden": "Скрыто",
+        "ghost_mode": "Ghost режим",
         "settings": "Настройки игры",
         "home": {
           "stats": {

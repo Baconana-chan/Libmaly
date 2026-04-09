@@ -1,7 +1,8 @@
-import { useMemo } from "preact/hooks";
+import { useState, useMemo } from "preact/hooks";
 import { useTranslation } from "react-i18next";
 import { formatTime } from "../../lib/helpers";
 import { RATING_CATEGORIES } from "../../lib/constants";
+import { YearInReviewModal } from "../modals/YearInReviewModal";
 
 interface GameLike {
   name: string;
@@ -107,7 +108,7 @@ function MiniBar({ label, value, max, color }: { label: string; value: number; m
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 function StatusBadge({ status, count, t }: { status: string; count: number; t: (key: string) => string }) {
   const statusKey = status.toLowerCase().replace(/\s+/g, '_');
-  const label = t(`stats_view.${statusKey}`) || status;
+  const label = t(`library.status_options.${statusKey}`) || status;
   const colors: Record<string, { bg: string; text: string }> = {
     "Playing": { bg: "var(--color-accent-deep)", text: "var(--color-accent)" },
     "Completed": { bg: "var(--color-success-bg)", text: "var(--color-success)" },
@@ -128,11 +129,11 @@ function HourBar({ hour, value, max, showLabel }: { hour: number; value: number;
   const pct = max > 0 ? Math.round((value / max) * 100) : 0;
   const label = `${hour.toString().padStart(2, "0")}:00`;
   return (
-    <div className="flex flex-col items-center gap-0.5">
-      <div className="w-4 h-16 rounded-full overflow-hidden flex items-end" style={{ background: "var(--color-bg-deep)" }}>
+    <div className="flex flex-col items-center gap-0.5 flex-1 relative h-[70px]">
+      <div className="w-full max-w-[14px] h-14 rounded-full overflow-hidden flex items-end absolute top-0" style={{ background: "var(--color-bg-deep)" }}>
         <div className="w-full rounded-full transition-all" style={{ height: `${pct}%`, background: pct > 60 ? "var(--color-warning)" : pct > 30 ? "var(--color-accent)" : "var(--color-accent-deep)" }} />
       </div>
-      {showLabel && <span className="text-[8px]" style={{ color: "var(--color-text-dim)" }}>{label}</span>}
+      {showLabel && <span className="text-[8px] whitespace-nowrap absolute bottom-0" style={{ color: "var(--color-text-dim)" }}>{label}</span>}
     </div>
   );
 }
@@ -167,13 +168,24 @@ function Sparkline({ data, width = 300, height = 60, color = "var(--color-accent
 }
 
 // ─── Heatmap Cell ─────────────────────────────────────────────────────────────
-function HeatmapCell({ value, max }: { value: number; max: number }) {
+function HeatmapCell({ value, max, title }: { value: number; max: number; title?: string }) {
   const intensity = max > 0 ? value / max : 0;
   const bg = intensity === 0 ? "var(--color-bg-deep)" :
     intensity < 0.25 ? "var(--color-accent-deep)" :
       intensity < 0.5 ? "var(--color-accent-muted)" :
         intensity < 0.75 ? "var(--color-accent-soft)" : "var(--color-accent)";
-  return <div className="w-3.5 h-3.5 rounded-sm" style={{ background: bg }} />;
+  return (
+    <div className="w-3.5 h-3.5 rounded-sm relative group" style={{ background: bg }}>
+      {title && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-[100] pointer-events-none">
+          <div className="bg-[#1b1f24] text-[#e6edf3] text-xs px-3 py-2 rounded shadow-xl whitespace-nowrap border border-white/10 font-medium">
+            {title}
+          </div>
+          <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-4 border-transparent border-t-[#1b1f24]" />
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Radar Chart ──────────────────────────────────────────────────────────────
@@ -318,6 +330,7 @@ export function StatsView({
   totalPlaytimeSecs,
 }: StatsViewProps) {
   const { t } = useTranslation();
+  const [showYearInReview, setShowYearInReview] = useState(false);
 
   // ── Core metrics ──────────────────────────────────────────────────────────
   const hours = Math.floor(totalPlaytimeSecs / 3600);
@@ -521,29 +534,95 @@ export function StatsView({
 
   // ── Complex metrics ───────────────────────────────────────────────────────
 
-  // Activity heatmap (last 90 days)
-  const heatmapData = useMemo(() => {
-    const days: Record<string, number> = {};
+  // Activity Heatmap (365 days)
+  const { heatmapData, maxHeatValue, monthLabels: heatmapMonthLabels } = useMemo(() => {
+    const daysMap: Record<string, { duration: number, count: number }> = {};
     for (const s of sessions) {
       const d = new Date(s.startedAt);
       const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-      days[key] = (days[key] || 0) + s.duration;
+      if (!daysMap[key]) daysMap[key] = { duration: 0, count: 0 };
+      daysMap[key].duration += s.duration;
+      daysMap[key].count += 1;
     }
-    const result: number[][] = [];
+    
+    const result: { duration: number; count: number; date: Date }[][] = [];
+    const mLabels: { label: string; index: number }[] = [];
     const now = new Date();
-    for (let week = 51; week >= 0; week--) {
-      const weekData: number[] = [];
+    let currentMonth = -1;
+    
+    for (let week = 52; week >= 0; week--) {
+      const weekData: { duration: number; count: number; date: Date }[] = [];
+      let weekStartMonth = -1;
+      
       for (let day = 0; day < 7; day++) {
         const d = new Date(now);
         d.setDate(d.getDate() - (week * 7 + (6 - day)));
+        if (day === 0) weekStartMonth = d.getMonth();
         const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-        weekData.push(days[key] || 0);
+        weekData.push({ 
+          duration: daysMap[key]?.duration || 0, 
+          count: daysMap[key]?.count || 0,
+          date: d 
+        });
       }
+      
+      if (weekStartMonth !== currentMonth && weekStartMonth !== -1) {
+        mLabels.push({ label: monthNames[weekStartMonth], index: 52 - week });
+        currentMonth = weekStartMonth;
+      }
+      
       result.push(weekData);
     }
-    return result;
+    return { 
+      heatmapData: result, 
+      maxHeatValue: Math.max(1, ...result.flat().map(d => d.duration)),
+      monthLabels: mLabels 
+    };
+  }, [sessions, monthNames]);
+
+  // Productivity Correlation
+  const productivity = useMemo(() => {
+    const now = Date.now();
+    const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+    const recentSessions = sessions.filter(s => s.startedAt > thirtyDaysAgo);
+    
+    let bingeTime = 0;
+    let wellSpentTime = 0;
+    const dailyTimes: Record<string, number> = {};
+    
+    for (const s of recentSessions) {
+      const d = new Date(s.startedAt);
+      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      dailyTimes[key] = (dailyTimes[key] || 0) + s.duration;
+      
+      if (s.duration > 4 * 3600) {
+        bingeTime += s.duration;
+      } else if (s.duration >= 1800 && s.duration <= 2.5 * 3600) {
+        wellSpentTime += s.duration;
+      }
+    }
+    
+    for (const time of Object.values(dailyTimes)) {
+      if (time > 6 * 3600) {
+         bingeTime += time * 0.3; // Weight daily binges
+      }
+    }
+    
+    const totalAnalyzed = bingeTime + wellSpentTime || 1;
+    const wellSpentPct = Math.round((wellSpentTime / totalAnalyzed) * 100);
+    
+    let label = "Balanced Play";
+    let color = "var(--color-accent)";
+    if (wellSpentPct > 70) {
+      label = "Time Well Spent";
+      color = "var(--color-success)";
+    } else if (wellSpentPct < 30 && bingeTime > wellSpentTime) {
+      label = "Binge-Heavy";
+      color = "var(--color-danger)";
+    }
+    
+    return { wellSpentPct, label, color, totalRecent: recentSessions.length, hasData: recentSessions.length > 0 };
   }, [sessions]);
-  const maxHeatValue = Math.max(1, ...heatmapData.flat());
 
   // Average category ratings
   const avgCategoryRatings = useMemo(() => {
@@ -608,11 +687,22 @@ export function StatsView({
       <div className="max-w-5xl mx-auto space-y-6">
 
         {/* Header */}
-        <div className="flex items-center gap-3 mb-2">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 20V10" /><path d="M18 20V4" /><path d="M6 20v-4" />
-          </svg>
-          <h2 className="text-lg font-bold" style={{ color: "var(--color-white)" }}>{t('stats_view.title')}</h2>
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-3">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20V10" /><path d="M18 20V4" /><path d="M6 20v-4" />
+            </svg>
+            <h2 className="text-lg font-bold" style={{ color: "var(--color-white)" }}>{t('stats_view.title')}</h2>
+          </div>
+          
+          <button
+            onClick={() => setShowYearInReview(true)}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold transition-transform hover:scale-105"
+            style={{ background: "var(--color-warning-bg)", color: "var(--color-warning)", border: "1px solid var(--color-warning)" }}
+          >
+            <span>🎉</span>
+            {new Date().getFullYear()} Year in Review
+          </button>
         </div>
 
         {/* ── Core Stats Grid ─────────────────────────────────────────────── */}
@@ -796,19 +886,43 @@ export function StatsView({
         {/* ── Complex Visualizations ──────────────────────────────────────── */}
 
         {/* Activity Heatmap */}
-        {heatmapData.some(w => w.some(d => d > 0)) && (
+        {heatmapData.some(w => w.some(d => d.duration > 0)) && (
           <div className="rounded-xl p-5" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
             <SectionHeader icon="🗓️" title={t('stats_view.activity_heatmap')} />
-            <div className="flex gap-0.5 overflow-x-auto pb-2">
-              {heatmapData.map((week, wi) => (
-                <div key={wi} className="flex flex-col gap-0.5">
-                  {week.map((day, di) => (
-                    <HeatmapCell key={di} value={day} max={maxHeatValue} />
+            <div className="flex flex-col overflow-x-auto pb-2 relative">
+              <div className="flex ml-6 mb-1" style={{ height: "12px" }}>
+                {heatmapMonthLabels.map(m => (
+                  <span key={m.index} className="absolute text-[10px]" style={{ left: `${24 + m.index * 16}px`, color: "var(--color-text-muted)" }}>
+                    {m.label}
+                  </span>
+                ))}
+              </div>
+              <div className="flex">
+                <div className="flex flex-col gap-[3px] mr-2 justify-between py-1 text-[9px]" style={{ color: "var(--color-text-dim)", width: "16px" }}>
+                  <span></span>
+                  <span>Mon</span>
+                  <span></span>
+                  <span>Wed</span>
+                  <span></span>
+                  <span>Fri</span>
+                  <span></span>
+                </div>
+                <div className="flex gap-[2px]">
+                  {heatmapData.map((week, wi) => (
+                    <div key={wi} className="flex flex-col gap-[2px]">
+                      {week.map((day, di) => {
+                        const title = day.count > 0
+                          ? `${day.count} session${day.count === 1 ? '' : 's'} on ${monthNames[day.date.getMonth()]} ${day.date.getDate()}, ${day.date.getFullYear()}`
+                          : `No activity on ${monthNames[day.date.getMonth()]} ${day.date.getDate()}, ${day.date.getFullYear()}`;
+                        return (                          <HeatmapCell key={di} value={day.duration} max={maxHeatValue} title={title} />
+                        );
+                      })}
+                    </div>
                   ))}
                 </div>
-              ))}
+              </div>
             </div>
-            <div className="flex items-center gap-1 mt-2 justify-end">
+            <div className="flex items-center gap-1 mt-3 justify-end">
               <span className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>{t('stats_view.less')}</span>
               <div className="w-3 h-3 rounded-sm" style={{ background: "var(--color-bg-deep)" }} />
               <div className="w-3 h-3 rounded-sm" style={{ background: "var(--color-accent-deep)" }} />
@@ -816,6 +930,33 @@ export function StatsView({
               <div className="w-3 h-3 rounded-sm" style={{ background: "var(--color-accent-soft)" }} />
               <div className="w-3 h-3 rounded-sm" style={{ background: "var(--color-accent)" }} />
               <span className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>{t('stats_view.more')}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Productivity Correlation */}
+        {productivity.hasData && (
+          <div className="rounded-xl p-5" style={{ background: "var(--color-panel)", border: `1px solid ${productivity.color}40` }}>
+            <SectionHeader icon="⚖️" title="Session Habits (Last 30 Days)" />
+            <div className="flex items-center gap-6">
+              <div className="flex-1">
+                <div className="flex justify-between items-end mb-2">
+                  <span className="text-xl font-bold" style={{ color: productivity.color }}>{productivity.label}</span>
+                  <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>{productivity.wellSpentPct}% balanced play</span>
+                </div>
+                <div className="w-full h-3 rounded-full overflow-hidden flex" style={{ background: "var(--color-bg-deep)" }}>
+                  <div className="h-full transition-all" style={{ width: `${productivity.wellSpentPct}%`, background: "var(--color-success)" }} />
+                  <div className="h-full transition-all" style={{ width: `${100 - productivity.wellSpentPct}%`, background: "var(--color-danger)" }} />
+                </div>
+                <div className="flex justify-between mt-2 text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                  <span>Time Well Spent (30m-2.5h)</span>
+                  <span>Binge Sessions ({'>'}4h)</span>
+                </div>
+              </div>
+              <div className="flex-shrink-0 text-center w-24">
+                <span className="text-3xl font-black block" style={{ color: "var(--color-text)" }}>{productivity.totalRecent}</span>
+                <span className="text-[10px] uppercase tracking-wider" style={{ color: "var(--color-text-muted)" }}>Recent<br/>Sessions</span>
+              </div>
             </div>
           </div>
         )}
@@ -877,7 +1018,7 @@ export function StatsView({
         {/* ── Streak & Activity ───────────────────────────────────────────── */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Streak */}
-          <div className="rounded-xl p-5" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
+          <div className="rounded-xl p-5 flex flex-col justify-between" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
             <SectionHeader icon="🔥" title={t('stats_view.current_streak')} />
             <div className="flex items-end gap-3">
               <span className="text-4xl font-black" style={{ color: streak > 0 ? "var(--color-warning)" : "var(--color-text-dim)" }}>
@@ -887,15 +1028,15 @@ export function StatsView({
                 {streak === 1 ? t('stats_view.day') : t('stats_view.days_unit')} {t('stats_view.in_a_row')}
               </span>
             </div>
-            {streak === 0 && sessions.length > 0 && (
+            {streak === 0 && sessions.length > 0 ? (
               <p className="text-[11px] mt-2" style={{ color: "var(--color-text-dim)" }}>{t('stats_view.play_today_streak')}</p>
-            )}
+            ) : <div className="mt-2" />}
           </div>
 
           {/* Favorite Time of Day */}
-          <div className="rounded-xl p-5" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
+          <div className="rounded-xl p-5 flex flex-col" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
             <SectionHeader icon="🌙" title={t('stats_view.favorite_gaming_time')} />
-            <div className="flex items-end gap-3">
+            <div className="flex items-end gap-3 mb-2">
               <span className="text-2xl font-bold" style={{ color: "var(--color-accent)" }}>
                 {favoriteTimeLabel}
               </span>
@@ -903,7 +1044,7 @@ export function StatsView({
                 ({favoriteHour.toString().padStart(2, "0")}:00 {t('stats_view.peak')})
               </span>
             </div>
-            <div className="flex gap-1 mt-3">
+            <div className="flex flex-1 justify-between items-end gap-[1px]">
               {hourCounts.map((count, i) => (
                 <HourBar key={i} hour={i} value={count} max={maxHourCount} showLabel={i % 3 === 0} />
               ))}
@@ -979,6 +1120,17 @@ export function StatsView({
           </div>
         )}
       </div>
+
+      {showYearInReview && (
+        <YearInReviewModal
+          year={new Date().getFullYear()}
+          sessions={sessions}
+          games={games}
+          metadata={metadata}
+          customizations={customizations}
+          onClose={() => setShowYearInReview(false)}
+        />
+      )}
     </div>
   );
 }

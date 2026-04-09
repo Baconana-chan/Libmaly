@@ -57,7 +57,9 @@ const resources: Resource = {
         "no_meta": "No metadata discovered."
       },
       "stats_view": {
+        "playing": "Playing",
         "title": "Library Stats",
+        "playing": "Playing",
         "total_time": "Total Playtime",
         "most_played": "Most Played",
         "longest_session": "Longest Session",
@@ -392,6 +394,7 @@ const resources: Resource = {
           }
         },
         "filters": {
+          "ghost_mode": "Ghost Mode (Local Only)",
           "all": "All",
           "favs": "★ Favs",
           "hidden": "👁 Hidden ({{count}})",
@@ -731,6 +734,7 @@ const resources: Resource = {
         "no_meta": "Метаданные не найдены."
       },
       "stats_view": {
+        "playing": "Играю",
         "title": "Статистика библиотеки",
         "total_time": "Общее время игры",
         "most_played": "Больше всего сыграно",
@@ -1392,6 +1396,7 @@ const resources: Resource = {
         "no_meta": "メタデータが見つかりませんでした。"
       },
       "stats_view": {
+        "playing": "Playing",
         "title": "ライブラリの統計",
         "total_time": "総プレイ時間",
         "most_played": "最多プレイ",
@@ -1991,6 +1996,7 @@ const resources: Resource = {
         "no_meta": "未发现元数据。"
       },
       "stats_view": {
+        "playing": "Playing",
         "title": "库统计",
         "total_time": "总游戏时长",
         "most_played": "玩得最多",
@@ -2580,6 +2586,7 @@ const resources: Resource = {
         "no_meta": "메타데이터가 발견되지 않았습니다."
       },
       "stats_view": {
+        "playing": "Playing",
         "title": "라이브러리 통계",
         "total_time": "총 플레이 시간",
         "most_played": "가장 많이 플레이",
@@ -3178,6 +3185,7 @@ const resources: Resource = {
         "no_meta": "未發現中繼資料。"
       },
       "stats_view": {
+        "playing": "Playing",
         "title": "資料庫統計",
         "total_time": "總遊戲時數",
         "most_played": "遊玩最多",
@@ -3776,6 +3784,7 @@ const resources: Resource = {
         "no_meta": "Nie odkryto metadanych."
       },
       "stats_view": {
+        "playing": "Playing",
         "title": "Statystyki biblioteki",
         "total_time": "Łączny czas gry",
         "most_played": "Najczęściej grane",
@@ -4374,6 +4383,7 @@ const resources: Resource = {
         "no_meta": "Метадані не виявлено."
       },
       "stats_view": {
+        "playing": "Playing",
         "title": "Статистика бібліотеки",
         "total_time": "Загальний час гри",
         "most_played": "Найбільше зіграно",
@@ -4972,6 +4982,7 @@ const resources: Resource = {
         "no_meta": "Keine Metadaten gefunden."
       },
       "stats_view": {
+        "playing": "Playing",
         "title": "Bibliotheksstatistiken",
         "total_time": "Gesamtspielzeit",
         "most_played": "Am meisten gespielt",
@@ -5570,6 +5581,7 @@ const resources: Resource = {
         "no_meta": "Aucune métadonnée trouvée."
       },
       "stats_view": {
+        "playing": "Playing",
         "title": "Statistiques de la bibliothèque",
         "total_time": "Temps de jeu total",
         "most_played": "Le plus joué",

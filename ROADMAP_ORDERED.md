@@ -8,10 +8,10 @@ This roadmap organizes remaining tasks from easiest ("Quick Wins") to most diffi
 *Tasks that primarily involve UI additions or using existing data.*
 
 ### 📊 Stats & Visuals
-- [ ] **Activity Heatmaps** — GitHub-style 365-day play activity grid in the Stats view.
-- [ ] **Year-in-Review generator** — Automated summary card of the year's habits.
-- [ ] **Productivity Correlation** — Optional "Time well spent" vs "Binge" detection.
-- [ ] **Advanced Backdrop FX** — Dynamic blur/glassmorphism based on cover art colors.
+- [x] **Activity Heatmaps** — GitHub-style 365-day play activity grid in the Stats view.
+- [x] **Year-in-Review generator** — Automated summary card of the year's habits.
+- [x] **Productivity Correlation** — Optional "Time well spent" vs "Binge" detection.
+- [x] **Advanced Backdrop FX** — Dynamic blur/glassmorphism based on cover art colors.
 
 ### ⚙️ UI & Core
 - [ ] **Local-only "Ghost" mode** — Disable outbound checks for high-privacy games (per-game/profile).

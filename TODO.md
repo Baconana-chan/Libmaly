@@ -9,15 +9,15 @@
 
 - [ ] **Custom CSS / User Styles** — allow power users to inject custom CSS to override any part of the UI
 - [ ] **Layout Presets Manager** — save and switch between global layout configurations (e.g. "Minimalist", "Data-heavy", "Console-mode")
-- [ ] **Advanced Backdrop FX** — dynamic blur and glassmorphism levels based on the current game's cover art colors
+- [x] **Advanced Backdrop FX** — dynamic blur and glassmorphism levels based on the current game's cover art colors
 - [ ] **Theme Marketplace/Gallery** — browse and install community-made JSON themes from a trusted relay
 ---
 
 ## 📊 Stats & Tracking
 
-- [ ] **Year-in-Review generator** — automated summary card of the year's gaming habits, favorite developers, and milestones
-- [ ] **Activity Heatmaps** — GitHub-style 365-day play activity grid in the Stats view
-- [ ] **Productivity Correlation** — optional "Time well spent" vs "Binge" detection based on session length and frequency
+- [x] **Year-in-Review generator** — automated summary card of the year's gaming habits, favorite developers, and milestones
+- [x] **Activity Heatmaps** — GitHub-style 365-day play activity grid in the Stats view
+- [x] **Productivity Correlation** — optional "Time well spent" vs "Binge" detection based on session length and frequency
 ---
 
 ## 📸 Screenshots 

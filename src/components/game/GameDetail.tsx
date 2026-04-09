@@ -607,12 +607,57 @@ export function GameDetail({
     setReviewDraft(customization.personalReview ?? "");
   }, [customization.personalReview, game.path]);
 
+  const [dominantColor, setDominantColor] = useState<[number, number, number] | null>(null);
+
+  useEffect(() => {
+    if (!heroBg) {
+      setDominantColor(null);
+      return;
+    }
+    let active = true;
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = heroBg;
+    img.onload = () => {
+      if (!active) return;
+      const canvas = document.createElement('canvas');
+      canvas.width = 1;
+      canvas.height = 1;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, 1, 1);
+        const data = ctx.getImageData(0, 0, 1, 1).data;
+        setDominantColor([data[0], data[1], data[2]]);
+      }
+    };
+    return () => { active = false; };
+  }, [heroBg]);
+
+  const glassStyle = useMemo(() => {
+    if (!dominantColor) return { filter: "brightness(0.5)", blur: "0px", overlay: "rgba(27,40,56,0.15)", glow: "transparent" };
+    const [r, g, b] = dominantColor;
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    const isBright = luminance > 0.5;
+    return {
+      filter: isBright ? "brightness(0.4) saturate(1.5)" : "brightness(0.7) saturate(1.2)",
+      blur: isBright ? "12px" : "6px",
+      overlay: isBright ? `rgba(${Math.floor(r * 0.1)}, ${Math.floor(g * 0.1)}, ${Math.floor(b * 0.1)}, 0.4)` : `rgba(${Math.floor(r * 0.2)}, ${Math.floor(g * 0.2)}, ${Math.floor(b * 0.2)}, 0.2)`,
+      glow: `rgba(${r}, ${g}, ${b}, 0.25)`
+    };
+  }, [dominantColor]);
+
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
       <div className="relative flex-shrink-0 overflow-hidden" style={{ height: "240px" }}>
-        {heroBg ? <img src={heroBg} alt={displayTitle} className="absolute inset-0 w-full h-full object-cover" style={{ filter: "brightness(0.5)" }} /> : <div className="absolute inset-0" style={{ background: heroGradient(game.name) }} />}
+        {heroBg ? (
+          <>
+            <img src={heroBg} alt={displayTitle} className="absolute inset-0 w-full h-full object-cover transition-all duration-1000" style={{ filter: glassStyle.filter, transform: "scale(1.05)" }} />
+            <div className="absolute inset-0 transition-all duration-1000" style={{ backdropFilter: `blur(${glassStyle.blur})`, background: glassStyle.overlay }} />
+            <div className="absolute inset-0 transition-all duration-1000" style={{ boxShadow: `inset 0 0 120px ${glassStyle.glow}` }} />
+          </>
+        ) : <div className="absolute inset-0" style={{ background: heroGradient(game.name) }} />}
         <NsfwOverlay gamePath={game.path} meta={meta} appSettings={appSettings} revealed={revealedNsfw} onReveal={onRevealNsfw} />
-        <div className="absolute inset-0" style={{ background: "linear-gradient(to top,var(--color-bg) 0%,rgba(27,40,56,0.15) 60%,transparent 100%)" }} />
+        <div className="absolute inset-0 transition-all duration-1000" style={{ background: `linear-gradient(to top,var(--color-bg) 0%,${glassStyle.glow !== "transparent" ? glassStyle.overlay : "rgba(27,40,56,0.15)"} 60%,transparent 100%)` }} />
         <div className="absolute bottom-0 left-0 right-0 px-8 pb-5">
           <div className="flex items-end justify-between">
             <div>

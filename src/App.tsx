@@ -185,6 +185,8 @@ interface GameMetadata {
   title?: string;
   version?: string;
   developer?: string;
+  publisher?: string;
+  genres?: string[];
   overview?: string;
   /** For DLsite: HTML with possible inline images. For F95: plain paragraphs. */
   overview_html?: string;
@@ -701,6 +703,7 @@ type ProfileStorageSnapshot = {
   metadata: Record<string, GameMetadata>;
   hiddenGames: Record<string, boolean>;
   favGames: Record<string, boolean>;
+  ghostGames: Record<string, boolean>;
   customizations: Record<string, GameCustomization>;
   notes: Record<string, string>;
   achievements: GameAchievementsByPath;
@@ -760,6 +763,7 @@ function buildSnapshotEntries(payload: {
   metadata: Record<string, GameMetadata>;
   hiddenGames: Record<string, boolean>;
   favGames: Record<string, boolean>;
+  ghostGames: Record<string, boolean>;
   customizations: Record<string, GameCustomization>;
   notes: Record<string, string>;
   achievements: GameAchievementsByPath;
@@ -8364,7 +8368,6 @@ export default function App() {
             screenshots={screenshots[selected.path] ?? []}
             isHidden={!!hiddenGames[selected.path]}
             isFav={!!favGames[selected.path]}
-            isGhost={!!ghostGames[selected.path]}
             onPlay={(...args) => launchGame(selected.path, ...args)}
             onStop={killGame}
             isRunning={runningGamePath === selected.path}

@@ -2183,7 +2183,7 @@ function SettingsModal({
                 <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Provider Type</label>
                 <select
                   value={syncProviderType}
-                  onChange={(e) => setSyncProviderType(e.target.value as "webdav" | "nextcloud" | "s3" | "git")}
+                  onChange={(e) => setSyncProviderType((e.currentTarget as HTMLSelectElement).value as "webdav" | "nextcloud" | "s3" | "git")}
                   className="w-full px-2 py-1.5 rounded outline-none text-sm"
                   style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
                 >

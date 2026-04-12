@@ -2503,7 +2503,7 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
     // Extract game ID from URL (e.g., https://www.igdb.com/games/counter-strike)
     let game_id = url
         .split('/')
-        .last()
+        .next_back()
         .ok_or("Invalid IGDB URL")?;
 
     // GraphQL query for game details
@@ -2541,8 +2541,10 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
         involved_companies: Option<Vec<IgdbCompany>>,
         release_dates: Option<Vec<IgdbReleaseDate>>,
         rating: Option<f64>,
+        #[allow(dead_code)]
         rating_count: Option<u64>,
         platforms: Option<Vec<IgdbPlatform>>,
+        #[allow(dead_code)]
         websites: Option<Vec<IgdbWebsite>>,
         version_parent: Option<IgdbVersionParent>,
     }
@@ -2585,6 +2587,7 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
     }
 
     #[derive(Deserialize)]
+    #[allow(dead_code)]
     struct IgdbWebsite {
         url: Option<String>,
     }
@@ -2713,7 +2716,7 @@ pub async fn fetch_rawg_metadata(url: String) -> Result<GameMetadata, String> {
     // Extract game slug from URL (e.g., https://rawg.io/games/counter-strike)
     let slug = url
         .split('/')
-        .last()
+        .next_back()
         .ok_or("Invalid RAWG URL")?;
 
     let req_url = format!(
@@ -2742,7 +2745,9 @@ pub async fn fetch_rawg_metadata(url: String) -> Result<GameMetadata, String> {
         developers: Option<Vec<RawgDeveloper>>,
         publishers: Option<Vec<RawgPublisher>>,
         genres: Option<Vec<RawgGenre>>,
+        #[allow(dead_code)]
         platforms: Option<Vec<RawgPlatform>>,
+        #[allow(dead_code)]
         website: Option<String>,
         parent_platforms: Option<Vec<RawgParentPlatform>>,
     }
@@ -2764,6 +2769,7 @@ pub async fn fetch_rawg_metadata(url: String) -> Result<GameMetadata, String> {
 
     #[derive(Deserialize)]
     struct RawgPlatform {
+        #[allow(dead_code)]
         platform: Option<RawgPlatformDetail>,
     }
 
@@ -2886,6 +2892,7 @@ pub async fn fetch_mobygames_metadata(url: String) -> Result<GameMetadata, Strin
     struct MobyGame {
         title: Option<String>,
         description: Option<String>,
+        #[allow(dead_code)]
         moby_url: Option<String>,
         sample_cover_image: Option<MobyImage>,
         genres: Option<Vec<MobyGenre>>,
@@ -2965,7 +2972,7 @@ pub async fn fetch_mobygames_metadata(url: String) -> Result<GameMetadata, Strin
         if let (Some(y), Some(m), Some(d)) = (rd.y, rd.m, rd.d) {
             Some(format!("{:04}-{:02}-{:02}", y, m, d))
         } else if let Some(y) = rd.y {
-            Some(format!("{:04}", y))
+            rd.y.map(|y| format!("{:04}", y))
         } else {
             None
         }

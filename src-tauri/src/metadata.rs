@@ -2971,7 +2971,7 @@ pub async fn fetch_mobygames_metadata(url: String) -> Result<GameMetadata, Strin
     let release_date = game.release_date.as_ref().and_then(|rd| {
         if let (Some(y), Some(m), Some(d)) = (rd.y, rd.m, rd.d) {
             Some(format!("{:04}-{:02}-{:02}", y, m, d))
-        } else if let Some(y) = rd.y {
+        } else if let Some(_y) = rd.y {
             rd.y.map(|y| format!("{:04}", y))
         } else {
             None

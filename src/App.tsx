@@ -5984,6 +5984,7 @@ export default function App() {
           metadata,
           hiddenGames,
           favGames,
+          ghostGames,
           customizations,
           notes,
           achievements,
@@ -6010,6 +6011,7 @@ export default function App() {
     metadata,
     hiddenGames,
     favGames,
+    ghostGames,
     customizations,
     notes,
     achievements,
@@ -8416,9 +8418,8 @@ export default function App() {
                 beforeMedia: { ...matchingPrefix.media },
               });
             }: undefined}
-           onToggleHide={toggleHide}
-           onToggleFav={toggleFav}
-           onToggleGhost={toggleGhost}
+            onToggleHide={toggleHide}
+            onToggleFav={toggleFav}
             onOpenCustomize={() => setShowCustomizeModal(true)}
             onSaveCustomization={(changes) => {
               const nc = { ...(customizations[selected.path] || {}), ...changes };

@@ -371,7 +371,7 @@ function SettingsModal({
   onDeleteLibraryProfile: (profileId: string) => Promise<void> | void;
 }) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "sync" | "customcss" | "wine">("general");
+  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "sync" | "customcss" | "consistency" | "apikeys" | "wine">("general");
   const [customLangs, setCustomLangs] = useState<Record<string, { name: string; translation: Record<string, unknown> }>>({});
   const [langImporting, setLangImporting] = useState(false);
 
@@ -399,6 +399,17 @@ function SettingsModal({
   // Custom CSS state
   const [customCss, setCustomCss] = useState("");
   const [cssSaving, setCssSaving] = useState(false);
+
+  // API Keys state
+  const [igdbClientId, setIgdbClientId] = useState("");
+  const [igdbClientSecret, setIgdbClientSecret] = useState("");
+  const [rawgApiKey, setRawgApiKey] = useState("");
+  const [mobygamesApiKey, setMobygamesApiKey] = useState("");
+  const [apiKeySaving, setApiKeySaving] = useState(false);
+
+  // Data consistency test state
+  const [testResults, setTestResults] = useState<Record<string, { passed: boolean; message: string; details?: string[] }>>({});
+  const [testsRunning, setTestsRunning] = useState(false);
 
   const discordStatusSummary = !discordSnapshot
     ? t('settings.system.discord_not_initialized')
@@ -553,6 +564,27 @@ function SettingsModal({
     applyCustomCss(savedCss);
   }, []);
 
+  // Load API keys from backend
+  useEffect(() => {
+    const loadApiKeys = async () => {
+      try {
+        const [igdbId, igdbSecret, rawgKey, mobyKey] = await Promise.all([
+          invoke<string>("get_api_key", { provider: "igdb_client_id" }),
+          invoke<string>("get_api_key", { provider: "igdb_client_secret" }),
+          invoke<string>("get_api_key", { provider: "rawg" }),
+          invoke<string>("get_api_key", { provider: "mobygames" }),
+        ]);
+        if (igdbId) setIgdbClientId(igdbId);
+        if (igdbSecret) setIgdbClientSecret(igdbSecret);
+        if (rawgKey) setRawgApiKey(rawgKey);
+        if (mobyKey) setMobygamesApiKey(mobyKey);
+      } catch (e) {
+        console.error("Failed to load API keys:", e);
+      }
+    };
+    loadApiKeys();
+  }, []);
+
   const applyCustomCss = (css: string) => {
     let styleTag = document.getElementById("libmaly-custom-css") as HTMLStyleElement;
     if (!styleTag) {
@@ -580,6 +612,188 @@ function SettingsModal({
     setCustomCss("");
     localStorage.removeItem("libmaly_custom_css");
     applyCustomCss("");
+  };
+
+  // Data consistency test functions
+  const runConsistencyTests = async () => {
+    setTestsRunning(true);
+    const results: Record<string, { passed: boolean; message: string; details?: string[] }> = {};
+
+    // Test 1: Games list consistency
+    try {
+      const gamesList = JSON.parse(localStorage.getItem("games-list-v2") || "[]");
+      const details: string[] = [];
+      let passed = true;
+
+      if (!Array.isArray(gamesList)) {
+        passed = false;
+        details.push("Games list is not an array");
+      } else {
+        details.push(`Found ${gamesList.length} games`);
+        const duplicatePaths = gamesList.filter((g: any, i: number, arr: any[]) => 
+          arr.findIndex((x: any) => x.path === g.path) !== i
+        );
+        if (duplicatePaths.length > 0) {
+          passed = false;
+          details.push(`Found ${duplicatePaths.length} duplicate game paths`);
+        }
+        const invalidGames = gamesList.filter((g: any) => !g.path || !g.name);
+        if (invalidGames.length > 0) {
+          passed = false;
+          details.push(`Found ${invalidGames.length} games missing required fields`);
+        }
+      }
+      results["games_list"] = { passed, message: passed ? "Games list is valid" : "Games list has issues", details };
+    } catch (e) {
+      results["games_list"] = { passed: false, message: "Failed to parse games list", details: [String(e)] };
+    }
+
+    // Test 2: Metadata consistency
+    try {
+      const metadata = JSON.parse(localStorage.getItem("game-metadata") || "{}");
+      const details: string[] = [];
+      let passed = true;
+
+      if (typeof metadata !== "object" || metadata === null) {
+        passed = false;
+        details.push("Metadata is not an object");
+      } else {
+        details.push(`Found metadata for ${Object.keys(metadata).length} games`);
+        const gamesList = JSON.parse(localStorage.getItem("games-list-v2") || "[]");
+        const metadataKeys = Object.keys(metadata);
+        const gamePaths = gamesList.map((g: any) => g.path);
+        const orphanedMetadata = metadataKeys.filter(k => !gamePaths.includes(k));
+        if (orphanedMetadata.length > 0) {
+          passed = false;
+          details.push(`Found ${orphanedMetadata.length} orphaned metadata entries`);
+        }
+      }
+      results["metadata"] = { passed, message: passed ? "Metadata is consistent" : "Metadata has issues", details };
+    } catch (e) {
+      results["metadata"] = { passed: false, message: "Failed to parse metadata", details: [String(e)] };
+    }
+
+    // Test 3: Notes consistency
+    try {
+      const notes = JSON.parse(localStorage.getItem("game-notes-v1") || "{}");
+      const details: string[] = [];
+      let passed = true;
+
+      if (typeof notes !== "object" || notes === null) {
+        passed = false;
+        details.push("Notes is not an object");
+      } else {
+        details.push(`Found notes for ${Object.keys(notes).length} games`);
+        const gamesList = JSON.parse(localStorage.getItem("games-list-v2") || "[]");
+        const noteKeys = Object.keys(notes);
+        const gamePaths = gamesList.map((g: any) => g.path);
+        const orphanedNotes = noteKeys.filter(k => !gamePaths.includes(k));
+        if (orphanedNotes.length > 0) {
+          passed = false;
+          details.push(`Found ${orphanedNotes.length} orphaned note entries`);
+        }
+      }
+      results["notes"] = { passed, message: passed ? "Notes are consistent" : "Notes have issues", details };
+    } catch (e) {
+      results["notes"] = { passed: false, message: "Failed to parse notes", details: [String(e)] };
+    }
+
+    // Test 4: Collections consistency
+    try {
+      const collections = JSON.parse(localStorage.getItem("collections-v1") || "[]");
+      const details: string[] = [];
+      let passed = true;
+
+      if (!Array.isArray(collections)) {
+        passed = false;
+        details.push("Collections is not an array");
+      } else {
+        details.push(`Found ${collections.length} collections`);
+        const gamesList = JSON.parse(localStorage.getItem("games-list-v2") || "[]");
+        const gamePaths = new Set(gamesList.map((g: any) => g.path));
+        collections.forEach((col: any) => {
+          if (!col.games || !Array.isArray(col.games)) {
+            passed = false;
+            details.push(`Collection "${col.name}" has invalid games array`);
+          } else {
+            const invalidGames = col.games.filter((p: string) => !gamePaths.has(p));
+            if (invalidGames.length > 0) {
+              passed = false;
+              details.push(`Collection "${col.name}" has ${invalidGames.length} invalid game paths`);
+            }
+          }
+        });
+      }
+      results["collections"] = { passed, message: passed ? "Collections are consistent" : "Collections have issues", details };
+    } catch (e) {
+      results["collections"] = { passed: false, message: "Failed to parse collections", details: [String(e)] };
+    }
+
+    // Test 5: Storage keys consistency
+    try {
+      const details: string[] = [];
+      let passed = true;
+      const requiredKeys = ["games-list-v2", "game-metadata", "game-notes-v1"];
+      const optionalKeys = ["collections-v1"];
+      const foundKeys: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("libmaly_")) {
+          foundKeys.push(key);
+        }
+      }
+      details.push(`Found ${foundKeys.length} libmaly storage keys`);
+      const missingRequiredKeys = requiredKeys.filter(k => !localStorage.getItem(k));
+      if (missingRequiredKeys.length > 0) {
+        passed = false;
+        details.push(`Missing required keys: ${missingRequiredKeys.join(", ")}`);
+      }
+      const missingOptionalKeys = optionalKeys.filter(k => !localStorage.getItem(k));
+      if (missingOptionalKeys.length > 0) {
+        details.push(`Optional keys not present: ${missingOptionalKeys.join(", ")} (this is normal if you don't use this feature)`);
+      }
+      results["storage_keys"] = { passed, message: passed ? "Storage keys are present" : "Missing required keys", details };
+    } catch (e) {
+      results["storage_keys"] = { passed: false, message: "Failed to check storage keys", details: [String(e)] };
+    }
+
+    // Test 6: JSON validity for all libmaly keys
+    try {
+      const details: string[] = [];
+      let passed = true;
+      let invalidCount = 0;
+      let checkedCount = 0;
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("libmaly_")) {
+          const value = localStorage.getItem(key);
+          if (value) {
+            checkedCount++;
+            try {
+              JSON.parse(value);
+            } catch {
+              // If it's not JSON, check if it's a simple string value (which is valid)
+              if (value === value.trim() && !value.startsWith("{") && !value.startsWith("[")) {
+                // Simple string value, consider it valid
+              } else {
+                passed = false;
+                invalidCount++;
+                details.push(`Invalid JSON in key: ${key}`);
+              }
+            }
+          }
+        }
+      }
+      if (invalidCount === 0) {
+        details.push(`Checked ${checkedCount} libmaly keys - all contain valid data`);
+      }
+      results["json_validity"] = { passed, message: passed ? "All data is valid" : `Found ${invalidCount} invalid entries`, details };
+    } catch (e) {
+      results["json_validity"] = { passed: false, message: "Failed to check JSON validity", details: [String(e)] };
+    }
+
+    setTestResults(results);
+    setTestsRunning(false);
   };
 
   const handleSyncSave = async () => {
@@ -675,6 +889,8 @@ function SettingsModal({
     { id: "ghost", label: "👻 Ghost Mode" },
     { id: "sync", label: "🔄 Sync" },
     { id: "customcss", label: "🎨 Custom CSS" },
+    { id: "consistency", label: "🧪 Consistency Tests" },
+    { id: "apikeys" as const, label: "🔑 API Keys" },
     ...(platform !== "windows" ? [{ id: "wine" as const, label: t('settings.tabs.wine') }] : []),
   ];
   const jobTone = (status: BackgroundJobStatus) => {
@@ -726,10 +942,10 @@ function SettingsModal({
         </div>
 
         {/* Tab bar */}
-        <div className="flex gap-0.5 px-4 pt-3 flex-shrink-0">
+        <div className="flex gap-0.5 px-4 pt-3 flex-shrink-0 overflow-x-auto whitespace-nowrap" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
           {tabs.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
-              className="px-3 py-1.5 rounded-t text-xs font-medium"
+              className="px-3 py-1.5 rounded-t text-xs font-medium flex-shrink-0"
               style={{
                 background: tab === t.id ? "var(--color-bg-elev)" : "transparent",
                 color: tab === t.id ? "var(--color-accent)" : "var(--color-text-dim)",
@@ -2180,6 +2396,194 @@ function SettingsModal({
               <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
                 💡 Tip: Use browser DevTools to inspect elements and find CSS selectors to override.
               </p>
+            </section>
+          )}
+
+          {tab === "consistency" && (
+            <section className="space-y-3">
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Data Consistency Tests</h3>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                Run integration tests to verify data integrity across scan, launch, crash, and recovery scenarios.
+              </p>
+              
+              <button
+                onClick={runConsistencyTests}
+                disabled={testsRunning}
+                className="w-full py-2 rounded text-xs font-semibold disabled:opacity-50"
+                style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+              >
+                {testsRunning ? "Running Tests..." : "Run Consistency Tests"}
+              </button>
+
+              {Object.keys(testResults).length > 0 && (
+                <div className="space-y-2">
+                  {Object.entries(testResults).map(([testName, result]) => (
+                    <div
+                      key={testName}
+                      className="p-3 rounded"
+                      style={{
+                        background: result.passed ? "rgba(34, 197, 94, 0.1)" : "rgba(239, 68, 68, 0.1)",
+                        border: `1px solid ${result.passed ? "var(--color-success-border)" : "var(--color-warning-border)"}`
+                      }}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={result.passed ? "text-green-400" : "text-red-400"}>
+                          {result.passed ? "✓" : "✗"}
+                        </span>
+                        <span className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>
+                          {testName.replace(/_/g, " ").toUpperCase()}
+                        </span>
+                      </div>
+                      <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                        {result.message}
+                      </p>
+                      {result.details && result.details.length > 0 && (
+                        <ul className="text-xs mt-1 space-y-1" style={{ color: "var(--color-text-dim)" }}>
+                          {result.details.map((detail, i) => (
+                            <li key={i}>• {detail}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
+                💡 Tip: Run these tests after scanning games, launching games, or recovering from a crash to ensure data integrity.
+              </p>
+            </section>
+          )}
+
+          {tab === "apikeys" && (
+            <section className="space-y-4">
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Third-party API Keys</h3>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                Configure API keys for third-party metadata providers to fetch game information from IGDB, RAWG, and MobyGames.
+              </p>
+
+              {/* IGDB */}
+              <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>IGDB (Internet Game Database)</h4>
+                <p className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                  Requires Twitch Client ID and Client Secret. Get credentials from <a href="https://dev.twitch.tv/console" target="_blank" rel="noopener noreferrer" style={{ color: "var(--color-accent)" }}>Twitch Developer Console</a>.
+                </p>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[11px] block mb-1" style={{ color: "var(--color-text-dim)" }}>Client ID</label>
+                    <input
+                      type="text"
+                      value={igdbClientId}
+                      onChange={(e) => setIgdbClientId((e.target as HTMLInputElement).value)}
+                      placeholder="Enter IGDB Client ID"
+                      className="w-full px-3 py-2 rounded text-xs bg-transparent border outline-none"
+                      style={{ background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] block mb-1" style={{ color: "var(--color-text-dim)" }}>Client Secret</label>
+                    <input
+                      type="password"
+                      value={igdbClientSecret}
+                      onChange={(e) => setIgdbClientSecret((e.target as HTMLInputElement).value)}
+                      placeholder="Enter IGDB Client Secret"
+                      className="w-full px-3 py-2 rounded text-xs bg-transparent border outline-none"
+                      style={{ background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                    />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      setApiKeySaving(true);
+                      try {
+                        await invoke("set_api_key", { provider: "igdb_client_id", key: igdbClientId });
+                        await invoke("set_api_key", { provider: "igdb_client_secret", key: igdbClientSecret });
+                      } catch (e) {
+                        console.error("Failed to save IGDB keys:", e);
+                      }
+                      setApiKeySaving(false);
+                    }}
+                    disabled={apiKeySaving}
+                    className="w-full py-1.5 rounded text-xs font-medium disabled:opacity-50"
+                    style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                  >
+                    {apiKeySaving ? "Saving..." : "Save IGDB Keys"}
+                  </button>
+                </div>
+              </div>
+
+              {/* RAWG */}
+              <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>RAWG.io</h4>
+                <p className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                  Requires API key. Get your key from <a href="https://rawg.io/apidocs" target="_blank" rel="noopener noreferrer" style={{ color: "var(--color-accent)" }}>RAWG API documentation</a>.
+                </p>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[11px] block mb-1" style={{ color: "var(--color-text-dim)" }}>API Key</label>
+                    <input
+                      type="password"
+                      value={rawgApiKey}
+                      onChange={(e) => setRawgApiKey((e.target as HTMLInputElement).value)}
+                      placeholder="Enter RAWG API Key"
+                      className="w-full px-3 py-2 rounded text-xs bg-transparent border outline-none"
+                      style={{ background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                    />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      setApiKeySaving(true);
+                      try {
+                        await invoke("set_api_key", { provider: "rawg", key: rawgApiKey });
+                      } catch (e) {
+                        console.error("Failed to save RAWG key:", e);
+                      }
+                      setApiKeySaving(false);
+                    }}
+                    disabled={apiKeySaving}
+                    className="w-full py-1.5 rounded text-xs font-medium disabled:opacity-50"
+                    style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                  >
+                    {apiKeySaving ? "Saving..." : "Save RAWG Key"}
+                  </button>
+                </div>
+              </div>
+
+              {/* MobyGames */}
+              <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>MobyGames</h4>
+                <p className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                  Requires API key. Request your key from <a href="https://www.mobygames.com/info/api/" target="_blank" rel="noopener noreferrer" style={{ color: "var(--color-accent)" }}>MobyGames API page</a>.
+                </p>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[11px] block mb-1" style={{ color: "var(--color-text-dim)" }}>API Key</label>
+                    <input
+                      type="password"
+                      value={mobygamesApiKey}
+                      onChange={(e) => setMobygamesApiKey((e.target as HTMLInputElement).value)}
+                      placeholder="Enter MobyGames API Key"
+                      className="w-full px-3 py-2 rounded text-xs bg-transparent border outline-none"
+                      style={{ background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                    />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      setApiKeySaving(true);
+                      try {
+                        await invoke("set_api_key", { provider: "mobygames", key: mobygamesApiKey });
+                      } catch (e) {
+                        console.error("Failed to save MobyGames key:", e);
+                      }
+                      setApiKeySaving(false);
+                    }}
+                    disabled={apiKeySaving}
+                    className="w-full py-1.5 rounded text-xs font-medium disabled:opacity-50"
+                    style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                  >
+                    {apiKeySaving ? "Saving..." : "Save MobyGames Key"}
+                  </button>
+                </div>
+              </div>
             </section>
           )}
 

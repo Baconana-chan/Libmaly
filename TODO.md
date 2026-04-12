@@ -7,7 +7,7 @@
 
 ## 🎨 UI / UX
 
-- [ ] **Custom CSS / User Styles** — allow power users to inject custom CSS to override any part of the UI
+- [x] **Custom CSS / User Styles** — allow power users to inject custom CSS to override any part of the UI
 - [ ] **Layout Presets Manager** — save and switch between global layout configurations (e.g. "Minimalist", "Data-heavy", "Console-mode")
 - [x] **Advanced Backdrop FX** — dynamic blur and glassmorphism levels based on the current game's cover art colors
 - [ ] **Theme Marketplace/Gallery** — browse and install community-made JSON themes from a trusted relay
@@ -31,9 +31,9 @@
 
 - [ ] **Universal data-source engine** — allow adding custom metadata scrapers via JSON templates (URL patterns, CSS selectors, regex, or simple JS hooks)
 - [ ] **Multi-source metadata aggregation** — fetch and merge data from multiple sources for a single game (e.g. F95 version tags + VNDB media + DLsite descriptions)
-- [ ] **Local-only "Ghost" mode** — per-game or per-profile setting to disable all outbound metadata/update checks for high-privacy games
-- [ ] **Third-party store integration** — metadata providers for generic stores (IGDB, RAWG, MobyGames) to cover games not on F95/DLsite
-- [ ] **Provider-agnostic library sync** — add WebDAV, Nextcloud, and generic S3/Git backends for state/save sync beyond Google Drive/Dropbox
+- [x] **Local-only "Ghost" mode** — per-game or per-profile setting to disable all outbound metadata/update checks for high-privacy games
+- [x] **Third-party store integration** — metadata providers for generic stores (IGDB, RAWG, MobyGames) to cover games not on F95/DLsite
+- [x] **Provider-agnostic library sync** — add WebDAV, Nextcloud, and generic S3/Git backends for state/save sync beyond Google Drive/Dropbox
 
 ---
 
@@ -134,7 +134,7 @@
   - [ ] **State Access** — read library metadata, stats, and notes for external dashboards/sidecar apps
   - [ ] **Extension hooks** — allow external scripts to "push" notifications or widgets into the Libmaly overlay
 - [ ] **SDK / Reference implementation** — provide a boilerplate for third-party developers to build fan-made tools on top of Libmaly
-- [ ] **Data consistency tests** — integration scenarios for scan → launch → crash → recovery across Windows/Linux/macOS
+- [x] **Data consistency tests** — integration scenarios for scan → launch → crash → recovery across Windows/Linux/macOS
 
 
 ### Internal Interfaces / Types (planned)

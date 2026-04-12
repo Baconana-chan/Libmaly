@@ -120,6 +120,9 @@ export function isVNDBUrl(url: string) { return /vndb\.org\/v\d+/i.test(url); }
 export function isMangaGamerUrl(url: string) { return /mangagamer\.com/i.test(url); }
 export function isJohrenUrl(url: string) { return /johren\.net/i.test(url); }
 export function isFakkuUrl(url: string) { return /fakku\.net/i.test(url); }
+export function isIGDBUrl(url: string) { return /igdb\.com/i.test(url); }
+export function isRAWGUrl(url: string) { return /rawg\.io/i.test(url); }
+export function isMobyGamesUrl(url: string) { return /mobygames\.com/i.test(url); }
 
 export function detectMetadataSourceFromUrl(url: string): string | null {
   if (isF95Url(url)) return "f95";
@@ -128,6 +131,9 @@ export function detectMetadataSourceFromUrl(url: string): string | null {
   if (isMangaGamerUrl(url)) return "mangagamer";
   if (isJohrenUrl(url)) return "johren";
   if (isFakkuUrl(url)) return "fakku";
+  if (isIGDBUrl(url)) return "igdb";
+  if (isRAWGUrl(url)) return "rawg";
+  if (isMobyGamesUrl(url)) return "mobygames";
   return null;
 }
 
@@ -138,6 +144,9 @@ export function metadataFetchCommand(source: string) {
   if (source === "mangagamer") return "fetch_mangagamer_metadata";
   if (source === "johren") return "fetch_johren_metadata";
   if (source === "fakku") return "fetch_fakku_metadata";
+  if (source === "igdb") return "fetch_igdb_metadata";
+  if (source === "rawg") return "fetch_rawg_metadata";
+  if (source === "mobygames") return "fetch_mobygames_metadata";
   return null;
 }
 
@@ -148,6 +157,9 @@ export function metadataSourceLabel(source?: string) {
   if (source === "mangagamer") return "MangaGamer";
   if (source === "johren") return "Johren";
   if (source === "fakku") return "FAKKU";
+  if (source === "igdb") return "IGDB";
+  if (source === "rawg") return "RAWG";
+  if (source === "mobygames") return "MobyGames";
   return "Unknown";
 }
 

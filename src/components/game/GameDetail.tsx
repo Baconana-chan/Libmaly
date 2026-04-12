@@ -922,6 +922,18 @@ export function GameDetail({
                 )}
               </section>
             )}
+            {customization.personalReview && (
+              <section>
+                <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center gap-2" style={{ color: "var(--color-text-muted)" }}>
+                  <span>📝</span> {t('game.short_review')}
+                </h2>
+                <div className="rounded-lg p-3" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap" style={{ color: "var(--color-text-soft)" }}>
+                    {customization.personalReview}
+                  </p>
+                </div>
+              </section>
+            )}
             {shots.length > 0 && (
               <section>
                 <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.screenshots')}</h2>

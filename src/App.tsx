@@ -438,6 +438,12 @@ interface GameCustomization {
   ratingMode?: "manual" | "categories";
   /** Category scores in 0..100 */
   categoryRatings?: Partial<Record<RatingCategoryKey, number>>;
+  /** Manual metadata overrides (when scrapers don't work) */
+  manualDeveloper?: string;
+  manualPublisher?: string;
+  manualGenres?: string;
+  manualReleaseDate?: string;
+  manualDescription?: string;
 }
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
@@ -671,7 +677,7 @@ interface Collection {
 }
 
 type SortMode = "name" | "lastPlayed" | "playtime" | "custom";
-type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku" | "unlinked" | "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play" | string;
+type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku" | "igdb" | "rawg" | "mobygames" | "unlinked" | "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play" | string;
 type LaunchRequest = { mode: "path" | "name"; value: string };
 
 function achievementTrackerUiState(items: GameAchievementItem[] | undefined): { summary: string | null; openGoals: boolean } {
@@ -1559,6 +1565,14 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
   );
   const [detectedRunners, setDetectedRunners] = useState<{ name: string; path: string; kind: RunnerKind; flavor?: string }[]>([]);
   const [detectingRunners, setDetectingRunners] = useState(false);
+  const [customTags, setCustomTags] = useState<string[]>(custom.customTags ?? []);
+  const [tagInput, setTagInput] = useState("");
+  const [personalReview, setPersonalReview] = useState(custom.personalReview ?? "");
+  const [manualDeveloper, setManualDeveloper] = useState(custom.manualDeveloper ?? meta?.developer ?? "");
+  const [manualPublisher, setManualPublisher] = useState(custom.manualPublisher ?? meta?.publisher ?? "");
+  const [manualGenres, setManualGenres] = useState(custom.manualGenres ?? (meta?.genres?.join(", ") ?? ""));
+  const [manualReleaseDate, setManualReleaseDate] = useState(custom.manualReleaseDate ?? meta?.release_date ?? "");
+  const [manualDescription, setManualDescription] = useState(custom.manualDescription ?? meta?.overview ?? "");
 
   // Derive game folder from its exe path
   const gameFolder = game.path.replace(/[\\/][^\\/]+$/, "");
@@ -1619,6 +1633,13 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
         runnerPath: runnerOverride.runnerPath.trim(),
         prefixPath: runnerOverride.prefixPath.trim(),
       } : undefined,
+      customTags: customTags.length > 0 ? customTags : undefined,
+      personalReview: personalReview.trim() || undefined,
+      manualDeveloper: manualDeveloper.trim() || undefined,
+      manualPublisher: manualPublisher.trim() || undefined,
+      manualGenres: manualGenres.trim() || undefined,
+      manualReleaseDate: manualReleaseDate.trim() || undefined,
+      manualDescription: manualDescription.trim() || undefined,
     });
     onClose();
   };
@@ -1937,6 +1958,121 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
               <img src={bgUrl} alt="" className="mt-2 rounded h-20 w-full object-cover"
                 style={{ border: "1px solid var(--color-border)" }} />
             )}
+          </div>
+
+          {/* Custom tags */}
+          <div>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
+              Custom Tags <span style={{ fontWeight: "normal", color: "var(--color-text-dim)" }}>(for organization & filtering)</span>
+            </label>
+            <div className="flex gap-2 mb-2">
+              <input type="text" placeholder="Add a tag…" value={tagInput}
+                onInput={(e) => setTagInput((e.target as HTMLInputElement).value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && tagInput.trim()) {
+                    setCustomTags([...customTags, tagInput.trim()]);
+                    setTagInput("");
+                  }
+                }}
+                className="flex-1 px-3 py-2 rounded text-sm outline-none"
+                style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
+              <button onClick={() => {
+                if (tagInput.trim()) {
+                  setCustomTags([...customTags, tagInput.trim()]);
+                  setTagInput("");
+                }
+              }}
+                className="px-3 py-2 rounded text-xs flex-shrink-0"
+                style={{ background: "var(--color-accent-dark)", color: "var(--color-white)", border: "1px solid var(--color-accent-mid)" }}>
+                Add
+              </button>
+            </div>
+            {customTags.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {customTags.map((tag, i) => (
+                  <span key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs"
+                    style={{ background: "var(--color-accent-deeper)", color: "var(--color-accent)", border: "1px solid var(--color-accent-mid)" }}>
+                    {tag}
+                    <button onClick={() => setCustomTags(customTags.filter((_, idx) => idx !== i))}
+                      className="hover:text-white transition-colors" title="Remove tag">×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            {customTags.length === 0 && (
+              <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                No custom tags yet. Add tags to organize and filter your games.
+              </p>
+            )}
+          </div>
+
+          {/* Personal review */}
+          <div>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
+              Personal Review <span style={{ fontWeight: "normal", color: "var(--color-text-dim)" }}>(your thoughts & notes)</span>
+            </label>
+            <textarea
+              placeholder="Write your personal review, thoughts, or notes about this game…"
+              value={personalReview}
+              onInput={(e) => setPersonalReview((e.target as HTMLTextAreaElement).value)}
+              rows={4}
+              className="w-full px-3 py-2 rounded text-sm outline-none resize-y"
+              style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+            />
+            <p className="mt-1 text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+              This review is stored locally and won't be shared.
+            </p>
+          </div>
+
+          {/* Manual metadata overrides */}
+          <div>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
+              Manual Metadata Overrides <span style={{ fontWeight: "normal", color: "var(--color-text-dim)" }}>(when scrapers don't work)</span>
+            </label>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[10px] mb-1" style={{ color: "var(--color-text-dim)" }}>Developer</label>
+                <input type="text" placeholder="e.g. Studio Name" value={manualDeveloper}
+                  onInput={(e) => setManualDeveloper((e.target as HTMLInputElement).value)}
+                  className="w-full px-3 py-2 rounded text-sm outline-none"
+                  style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
+              </div>
+              <div>
+                <label className="block text-[10px] mb-1" style={{ color: "var(--color-text-dim)" }}>Publisher</label>
+                <input type="text" placeholder="e.g. Publisher Name" value={manualPublisher}
+                  onInput={(e) => setManualPublisher((e.target as HTMLInputElement).value)}
+                  className="w-full px-3 py-2 rounded text-sm outline-none"
+                  style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
+              </div>
+              <div>
+                <label className="block text-[10px] mb-1" style={{ color: "var(--color-text-dim)" }}>Genres <span style={{ fontWeight: "normal" }}>(comma-separated)</span></label>
+                <input type="text" placeholder="e.g. RPG, Adventure, Open World" value={manualGenres}
+                  onInput={(e) => setManualGenres((e.target as HTMLInputElement).value)}
+                  className="w-full px-3 py-2 rounded text-sm outline-none"
+                  style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
+              </div>
+              <div>
+                <label className="block text-[10px] mb-1" style={{ color: "var(--color-text-dim)" }}>Release Date</label>
+                <input type="text" placeholder="e.g. 2024-01-15" value={manualReleaseDate}
+                  onInput={(e) => setManualReleaseDate((e.target as HTMLInputElement).value)}
+                  className="w-full px-3 py-2 rounded text-sm outline-none"
+                  style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }} />
+              </div>
+              <div>
+                <label className="block text-[10px] mb-1" style={{ color: "var(--color-text-dim)" }}>Description</label>
+                <textarea
+                  placeholder="Game description or overview…"
+                  value={manualDescription}
+                  onInput={(e) => setManualDescription((e.target as HTMLTextAreaElement).value)}
+                  rows={3}
+                  className="w-full px-3 py-2 rounded text-sm outline-none resize-y"
+                  style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                />
+              </div>
+            </div>
+            <p className="mt-2 text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+              These fields override scraped metadata. Use when scrapers fail or for custom entries.
+            </p>
           </div>
         </div>
         <div className="flex items-center justify-between px-6 pb-5">
@@ -6842,6 +6978,9 @@ export default function App() {
         else if (filterMode === "mangagamer") return metadata[g.path]?.source === "mangagamer";
         else if (filterMode === "johren") return metadata[g.path]?.source === "johren";
         else if (filterMode === "fakku") return metadata[g.path]?.source === "fakku";
+        else if (filterMode === "igdb") return metadata[g.path]?.source === "igdb";
+        else if (filterMode === "rawg") return metadata[g.path]?.source === "rawg";
+        else if (filterMode === "mobygames") return metadata[g.path]?.source === "mobygames";
         else if (filterMode === "unlinked") return !metadata[g.path];
         else if (filterMode === "Playing" || filterMode === "Completed" || filterMode === "On Hold" || filterMode === "Dropped" || filterMode === "Plan to Play") {
           return customizations[g.path]?.status === filterMode;

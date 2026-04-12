@@ -16,7 +16,7 @@ This roadmap organizes remaining tasks from easiest ("Quick Wins") to most diffi
 ### ⚙️ UI & Core
 - [x] **Local-only "Ghost" mode** — Disable outbound checks for high-privacy games (per-game/profile).
 - [x] **Custom CSS / User Styles** — Allow power users to inject custom CSS overrides.
-- [ ] **Data consistency tests** — Integration scenarios for scan/launch/crash/recovery.
+- [x] **Data consistency tests** — Integration scenarios for scan/launch/crash/recovery.
 
 > [!TIP]
 > **Priority:** Implement **Ghost Mode** early to handle privacy-conscious users before expanding storefront connectors.

@@ -25,6 +25,8 @@ use metadata::{
     fetch_dlsite_metadata, fetch_f95_metadata, fetch_fakku_metadata, fetch_johren_metadata,
     fetch_mangagamer_metadata, fetch_vndb_metadata, fakku_is_logged_in, fakku_login,
     fakku_logout, get_scraper_health_snapshot, search_suggest_links,
+    fetch_igdb_metadata, fetch_rawg_metadata, fetch_mobygames_metadata,
+    set_api_key, get_api_key,
 };
 
 mod updater;
@@ -5239,7 +5241,12 @@ pub fn run() {
             fetch_mangagamer_metadata,
             fetch_johren_metadata,
             fetch_fakku_metadata,
+            fetch_igdb_metadata,
+            fetch_rawg_metadata,
+            fetch_mobygames_metadata,
             search_suggest_links,
+            set_api_key,
+            get_api_key,
             f95_login,
             f95_logout,
             f95_is_logged_in,

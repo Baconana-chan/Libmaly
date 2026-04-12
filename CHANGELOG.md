@@ -1,6 +1,48 @@
 # Changelog
 
-## Next ver.
+## 1.7.0 - 2026-04-12
+
+### 📊 Stats & Visuals
+- **Activity Heatmaps** — GitHub-style 365-day play activity grid in the Stats view.
+- **Year-in-Review generator** — Automated summary card of the year's gaming habits, favorite developers, and milestones.
+- **Productivity Correlation** — Optional "Time well spent" vs "Binge" detection based on session length and frequency.
+- **Advanced Backdrop FX** — Dynamic blur and glassmorphism levels based on the current game's cover art colors.
+
+### 🎨 UI / UX
+- **Custom CSS / User Styles** — added a new "🎨 Custom CSS" tab in Settings that allows power users to inject custom CSS overrides. Changes are applied immediately and persisted in localStorage.
+- **Local-only "Ghost" mode** — added per-game or per-profile setting to disable all outbound metadata/update checks for high-privacy games.
+- **Scrollable tab bar** — fixed Settings modal tab overflow by making the tab bar horizontally scrollable.
+- **API Keys configuration** — added a "🔑 API Keys" tab in Settings for configuring third-party API credentials.
+- **Enhanced Customize Game modal** — added new customization options:
+  - **Custom tags** — add free-form tags for organization and filtering with inline editing and removal.
+  - **Personal review** — write personal thoughts and notes about games, stored locally.
+  - **Manual metadata overrides** — manually set developer, publisher, genres, release date, and description when scrapers don't work or for custom entries.
+
+### 🌐 Sources & Extensibility
+- **Third-party store integration** — added metadata providers for generic game databases to cover games not on F95/DLsite.
+  - **IGDB (Internet Game Database)** — implemented metadata fetcher using Twitch OAuth authentication. Requires Client ID and Client Secret.
+  - **RAWG.io** — implemented metadata fetcher using API key authentication.
+  - **MobyGames** — implemented metadata fetcher using API key authentication.
+  - **Filter support** — added IGDB, RAWG, and MobyGames as filter options in the game library.
+  - **URL detection** — added helper functions to detect and handle IGDB, RAWG, and MobyGames URLs.
+
+### ☁️ Sync & Backup
+- **Provider-agnostic library sync** — implemented WebDAV, Nextcloud, and Git backends for state/save sync. S3 backend stubbed for future AWS SDK integration.
+  - **WebDAV support** — full WebDAV provider with URL, username, password, and path configuration.
+  - **Nextcloud support** — WebDAV-based Nextcloud provider with automatic URL path adjustment.
+  - **Git support** — Git provider with repository URL, branch, and optional username/password credentials.
+  - **Sync configuration** — integrated sync settings as a "🔄 Sync" tab in Settings modal.
+  - **Conflict resolution** — added SyncConflictModal for resolving local/remote state conflicts.
+- **Sync API layer** — created TypeScript API layer for frontend sync operations (configure, upload, download, check remote, resolve conflicts).
+
+### 🛡️ Reliability & Recovery
+- **Data consistency tests** — added a "🧪 Consistency Tests" tab in Settings that runs integration tests for scan, launch, crash, and recovery scenarios.
+  - **Games list validation** — checks for duplicate paths and missing required fields.
+  - **Metadata consistency** — verifies metadata matches games list, detects orphaned entries.
+  - **Notes consistency** — verifies notes match games list, detects orphaned entries.
+  - **Collections consistency** — validates collection game paths against games list.
+  - **Storage keys validation** — checks for required storage keys.
+  - **JSON validity** — validates all libmaly storage keys contain valid data.
 
 ### 📦 Package Management
 - **Added .rpm build support** — Red Hat Package Manager packages for Linux distributions (Fedora, CentOS, RHEL)

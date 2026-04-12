@@ -1439,7 +1439,7 @@ pub async fn fetch_vndb_metadata(url: String) -> Result<GameMetadata, String> {
             .build()
             .map_err(|e| format!("VNDB Client failed: {}", e))?
             .post("https://api.vndb.org/kana/vn")
-            .header("User-Agent", "LIBMALY/1.6.0")
+            .header("User-Agent", "LIBMALY/1.7.0")
             .json(&body)
             .send()
             .await
@@ -1935,7 +1935,7 @@ async fn fetch_vndb_alias_queries(query: &str) -> Vec<String> {
 
     let resp = match client
         .post("https://api.vndb.org/kana/vn")
-        .header("User-Agent", "LIBMALY/1.6.0")
+        .header("User-Agent", "LIBMALY/1.7.0")
         .json(&body)
         .send()
         .await
@@ -2276,7 +2276,7 @@ pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>
 
         if let Ok(resp) = client
             .post("https://api.vndb.org/kana/vn")
-            .header("User-Agent", "LIBMALY/1.6.0")
+            .header("User-Agent", "LIBMALY/1.7.0")
             .json(&body)
             .send()
             .await
@@ -2373,4 +2373,637 @@ pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>
     }
 
     Ok(results)
+}
+
+// ── Third-party API Key Storage ───────────────────────────────────────────────
+
+fn api_keys_path() -> PathBuf {
+    app_data_root().join("api_keys.json")
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct ApiKeys {
+    igdb_client_id: Option<String>,
+    igdb_client_secret: Option<String>,
+    rawg_api_key: Option<String>,
+    mobygames_api_key: Option<String>,
+}
+
+fn load_api_keys() -> ApiKeys {
+    let path = api_keys_path();
+    if path.exists() {
+        if let Ok(f) = std::fs::File::open(&path) {
+            if let Ok(keys) = serde_json::from_reader::<_, ApiKeys>(f) {
+                return keys;
+            }
+        }
+    }
+    ApiKeys::default()
+}
+
+fn save_api_keys(keys: &ApiKeys) {
+    let path = api_keys_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::File::create(&path) {
+        let _ = serde_json::to_writer_pretty(&mut f, keys);
+    }
+}
+
+#[tauri::command]
+pub fn set_api_key(provider: String, key: String) -> Result<(), String> {
+    let mut keys = load_api_keys();
+    match provider.as_str() {
+        "igdb_client_id" => keys.igdb_client_id = Some(key),
+        "igdb_client_secret" => keys.igdb_client_secret = Some(key),
+        "rawg" => keys.rawg_api_key = Some(key),
+        "mobygames" => keys.mobygames_api_key = Some(key),
+        _ => return Err(format!("Unknown provider: {}", provider)),
+    }
+    save_api_keys(&keys);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_api_key(provider: String) -> Option<String> {
+    let keys = load_api_keys();
+    match provider.as_str() {
+        "igdb_client_id" => keys.igdb_client_id,
+        "igdb_client_secret" => keys.igdb_client_secret,
+        "rawg" => keys.rawg_api_key,
+        "mobygames" => keys.mobygames_api_key,
+        _ => None,
+    }
+}
+
+// ── IGDB Metadata Fetcher ─────────────────────────────────────────────────────
+
+static IGDB_ACCESS_TOKEN: Mutex<Option<(String, u64)>> = Mutex::new(None); // (token, expiry_ms)
+
+async fn get_igdb_access_token() -> Result<String, String> {
+    let keys = load_api_keys();
+    let client_id = keys.igdb_client_id.ok_or("IGDB Client ID not configured")?;
+    let client_secret = keys.igdb_client_secret.ok_or("IGDB Client Secret not configured")?;
+
+    // Check if we have a valid cached token
+    {
+        let guard = IGDB_ACCESS_TOKEN.lock().unwrap();
+        if let Some((token, expiry)) = guard.as_ref() {
+            if now_ms() < *expiry {
+                return Ok(token.clone());
+            }
+        }
+    }
+
+    // Request new token
+    let params = [
+        ("client_id", client_id.as_str()),
+        ("client_secret", client_secret.as_str()),
+        ("grant_type", "client_credentials"),
+    ];
+
+    let resp = http()
+        .post("https://id.twitch.tv/oauth2/token")
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("IGDB token request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("IGDB token request HTTP {}", resp.status()));
+    }
+
+    #[derive(Deserialize)]
+    struct TokenResponse {
+        access_token: String,
+        expires_in: u64,
+    }
+
+    let token_resp: TokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse IGDB token response: {}", e))?;
+
+    let expiry_ms = now_ms() + (token_resp.expires_in * 1000) - 60000; // 1 minute buffer
+
+    // Cache the token
+    {
+        let mut guard = IGDB_ACCESS_TOKEN.lock().unwrap();
+        *guard = Some((token_resp.access_token.clone(), expiry_ms));
+    }
+
+    Ok(token_resp.access_token)
+}
+
+#[tauri::command]
+pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
+    let token = get_igdb_access_token().await?;
+
+    // Extract game ID from URL (e.g., https://www.igdb.com/games/counter-strike)
+    let game_id = url
+        .split('/')
+        .last()
+        .ok_or("Invalid IGDB URL")?;
+
+    // GraphQL query for game details
+    let query = format!(
+        r#"
+        fields name, summary, cover.url, screenshots.url, genres.name, involved_companies.company.name,
+               involved_companies.developer, involved_companies.publisher, release_dates.date,
+               rating, rating_count, platforms.name, websites.url, version_parent.name;
+        where slug = "{}";
+        limit 1;
+    "#,
+        game_id
+    );
+
+    let resp = http()
+        .post("https://api.igdb.com/v4/games")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Client-ID", load_api_keys().igdb_client_id.unwrap_or_default())
+        .body(query)
+        .send()
+        .await
+        .map_err(|e| format!("IGDB API request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("IGDB API HTTP {}", resp.status()));
+    }
+
+    #[derive(Deserialize)]
+    struct IgdbGame {
+        name: Option<String>,
+        summary: Option<String>,
+        cover: Option<IgdbCover>,
+        screenshots: Option<Vec<IgdbScreenshot>>,
+        genres: Option<Vec<IgdbGenre>>,
+        involved_companies: Option<Vec<IgdbCompany>>,
+        release_dates: Option<Vec<IgdbReleaseDate>>,
+        rating: Option<f64>,
+        rating_count: Option<u64>,
+        platforms: Option<Vec<IgdbPlatform>>,
+        websites: Option<Vec<IgdbWebsite>>,
+        version_parent: Option<IgdbVersionParent>,
+    }
+
+    #[derive(Deserialize)]
+    struct IgdbCover {
+        url: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct IgdbScreenshot {
+        url: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct IgdbGenre {
+        name: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct IgdbCompany {
+        company: Option<IgdbCompanyDetail>,
+        developer: Option<bool>,
+        publisher: Option<bool>,
+    }
+
+    #[derive(Deserialize)]
+    struct IgdbCompanyDetail {
+        name: Option<String>,
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct IgdbReleaseDate {
+        date: Option<i64>,
+    }
+
+    #[derive(Deserialize)]
+    struct IgdbPlatform {
+        name: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct IgdbWebsite {
+        url: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct IgdbVersionParent {
+        name: Option<String>,
+    }
+
+    let games: Vec<IgdbGame> = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse IGDB response: {}", e))?;
+
+    let game = games.first().ok_or("Game not found in IGDB")?;
+
+    let cover_url = game.cover.as_ref().and_then(|c| c.url.as_ref()).map(|u| {
+        if u.starts_with("//") {
+            format!("https:{}", u)
+        } else {
+            u.clone()
+        }
+    });
+
+    let screenshots: Vec<String> = game
+        .screenshots
+        .as_ref()
+        .map(|s| {
+            s.iter()
+                .filter_map(|sc| sc.url.as_ref())
+                .map(|u| {
+                    if u.starts_with("//") {
+                        format!("https:{}", u)
+                    } else {
+                        u.clone()
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let tags: Vec<String> = game
+        .genres
+        .as_ref()
+        .map(|g| g.iter().filter_map(|genre| genre.name.clone()).collect())
+        .unwrap_or_default();
+
+    let mut developers: Vec<String> = Vec::new();
+    let mut publishers: Vec<String> = Vec::new();
+    if let Some(companies) = &game.involved_companies {
+        for ic in companies {
+            if let Some(company) = &ic.company {
+                if let Some(name) = &company.name {
+                    if ic.developer.unwrap_or(false) {
+                        developers.push(name.clone());
+                    }
+                    if ic.publisher.unwrap_or(false) {
+                        publishers.push(name.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let developer = if developers.is_empty() { None } else { Some(developers.join(", ")) };
+    let _publisher = if publishers.is_empty() { None } else { Some(publishers.join(", ")) };
+
+    let release_date = game
+        .release_dates
+        .as_ref()
+        .and_then(|d| d.first().cloned())
+        .and_then(|rd| rd.date)
+        .map(|timestamp| {
+            let dt = chrono::DateTime::from_timestamp(timestamp, 0).unwrap_or_default();
+            dt.format("%Y-%m-%d").to_string()
+        });
+
+    let rating = game.rating.map(|r| (r / 10.0).to_string()); // Convert to 0-10 scale
+
+    let os = game
+        .platforms
+        .as_ref()
+        .map(|p| p.iter().filter_map(|pl| pl.name.clone()).collect::<Vec<_>>().join(", "));
+
+    let metadata = GameMetadata {
+        source: "igdb".to_string(),
+        source_url: url.clone(),
+        title: game.name.clone(),
+        version: game.version_parent.as_ref().and_then(|vp| vp.name.clone()),
+        developer,
+        overview: game.summary.clone(),
+        overview_html: game.summary.clone(),
+        cover_url,
+        screenshots,
+        tags,
+        relations: Vec::new(),
+        engine: None,
+        os,
+        language: None,
+        censored: None,
+        release_date,
+        last_updated: None,
+        rating,
+        price: None,
+        circle: None,
+        series: None,
+        author: None,
+        illustration: None,
+        voice_actor: None,
+        music: None,
+        age_rating: None,
+        product_format: None,
+        file_format: None,
+        file_size: None,
+    };
+
+    finalize_scrape_result("igdb", "IGDB", &url, Ok(metadata))
+}
+
+// ── RAWG Metadata Fetcher ─────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn fetch_rawg_metadata(url: String) -> Result<GameMetadata, String> {
+    let api_key = load_api_keys().rawg_api_key.ok_or("RAWG API key not configured")?;
+
+    // Extract game slug from URL (e.g., https://rawg.io/games/counter-strike)
+    let slug = url
+        .split('/')
+        .last()
+        .ok_or("Invalid RAWG URL")?;
+
+    let req_url = format!(
+        "https://api.rawg.io/api/games/{}?key={}",
+        slug, api_key
+    );
+
+    let resp = http()
+        .get(&req_url)
+        .send()
+        .await
+        .map_err(|e| format!("RAWG API request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("RAWG API HTTP {}", resp.status()));
+    }
+
+    #[derive(Deserialize)]
+    struct RawgGame {
+        name: Option<String>,
+        description_raw: Option<String>,
+        background_image: Option<String>,
+        background_image_additional: Option<String>,
+        metacritic: Option<i32>,
+        released: Option<String>,
+        developers: Option<Vec<RawgDeveloper>>,
+        publishers: Option<Vec<RawgPublisher>>,
+        genres: Option<Vec<RawgGenre>>,
+        platforms: Option<Vec<RawgPlatform>>,
+        website: Option<String>,
+        parent_platforms: Option<Vec<RawgParentPlatform>>,
+    }
+
+    #[derive(Deserialize)]
+    struct RawgDeveloper {
+        name: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct RawgPublisher {
+        name: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct RawgGenre {
+        name: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct RawgPlatform {
+        platform: Option<RawgPlatformDetail>,
+    }
+
+    #[derive(Deserialize)]
+    struct RawgPlatformDetail {
+        name: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct RawgParentPlatform {
+        platform: Option<RawgPlatformDetail>,
+    }
+
+    let game: RawgGame = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse RAWG response: {}", e))?;
+
+    let screenshots: Vec<String> = vec![
+        game.background_image.clone(),
+        game.background_image_additional,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let tags: Vec<String> = game
+        .genres
+        .as_ref()
+        .map(|g| g.iter().filter_map(|genre| genre.name.clone()).collect())
+        .unwrap_or_default();
+
+    let developer = game
+        .developers
+        .as_ref()
+        .map(|d| d.iter().filter_map(|dev| dev.name.clone()).collect::<Vec<_>>().join(", "));
+
+    let _publisher = game
+        .publishers
+        .as_ref()
+        .map(|p| p.iter().filter_map(|pub_item| pub_item.name.clone()).collect::<Vec<_>>().join(", "));
+
+    let os = game
+        .parent_platforms
+        .as_ref()
+        .map(|p| p.iter().filter_map(|pp| pp.platform.as_ref().and_then(|pl| pl.name.clone())).collect::<Vec<_>>().join(", "));
+
+    let rating = game.metacritic.map(|m| (m as f64 / 10.0).to_string());
+
+    let metadata = GameMetadata {
+        source: "rawg".to_string(),
+        source_url: url.clone(),
+        title: game.name.clone(),
+        version: None,
+        developer,
+        overview: game.description_raw.clone(),
+        overview_html: game.description_raw.clone(),
+        cover_url: game.background_image,
+        screenshots,
+        tags,
+        relations: Vec::new(),
+        engine: None,
+        os,
+        language: None,
+        censored: None,
+        release_date: game.released,
+        last_updated: None,
+        rating,
+        price: None,
+        circle: None,
+        series: None,
+        author: None,
+        illustration: None,
+        voice_actor: None,
+        music: None,
+        age_rating: None,
+        product_format: None,
+        file_format: None,
+        file_size: None,
+    };
+
+    finalize_scrape_result("rawg", "RAWG", &url, Ok(metadata))
+}
+
+// ── MobyGames Metadata Fetcher ─────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn fetch_mobygames_metadata(url: String) -> Result<GameMetadata, String> {
+    let api_key = load_api_keys().mobygames_api_key.ok_or("MobyGames API key not configured")?;
+
+    // Extract game ID from URL (e.g., https://www.mobygames.com/game/counter-strike)
+    let parts: Vec<&str> = url.split('/').collect();
+    let game_id = parts
+        .iter()
+        .position(|&p| p == "game")
+        .and_then(|idx| parts.get(idx + 1))
+        .ok_or("Invalid MobyGames URL")?;
+
+    let req_url = format!(
+        "https://api.mobygames.com/v1/games?api_key={}&id={}",
+        api_key, game_id
+    );
+
+    let resp = http()
+        .get(&req_url)
+        .send()
+        .await
+        .map_err(|e| format!("MobyGames API request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("MobyGames API HTTP {}", resp.status()));
+    }
+
+    #[derive(Deserialize)]
+    struct MobyResponse {
+        games: Option<Vec<MobyGame>>,
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct MobyGame {
+        title: Option<String>,
+        description: Option<String>,
+        moby_url: Option<String>,
+        sample_cover_image: Option<MobyImage>,
+        genres: Option<Vec<MobyGenre>>,
+        platforms: Option<Vec<MobyPlatform>>,
+        developers: Option<Vec<MobyDeveloper>>,
+        publishers: Option<Vec<MobyPublisher>>,
+        release_date: Option<MobyReleaseDate>,
+        critic_score: Option<f64>,
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct MobyImage {
+        image: Option<String>,
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct MobyGenre {
+        genre_name: Option<String>,
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct MobyPlatform {
+        platform_name: Option<String>,
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct MobyDeveloper {
+        developer_name: Option<String>,
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct MobyPublisher {
+        publisher_name: Option<String>,
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct MobyReleaseDate {
+        y: Option<u32>,
+        m: Option<u32>,
+        d: Option<u32>,
+    }
+
+    let moby_resp: MobyResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse MobyGames response: {}", e))?;
+
+    let game = moby_resp
+        .games
+        .and_then(|g| g.first().cloned())
+        .ok_or("Game not found in MobyGames")?;
+
+    let cover_url = game.sample_cover_image.as_ref().and_then(|i| i.image.clone());
+
+    let tags: Vec<String> = game
+        .genres
+        .as_ref()
+        .map(|g| g.iter().filter_map(|genre| genre.genre_name.clone()).collect())
+        .unwrap_or_default();
+
+    let developer = game
+        .developers
+        .as_ref()
+        .map(|d| d.iter().filter_map(|dev| dev.developer_name.clone()).collect::<Vec<_>>().join(", "));
+
+    let _publisher = game
+        .publishers
+        .as_ref()
+        .map(|p| p.iter().filter_map(|pub_item| pub_item.publisher_name.clone()).collect::<Vec<_>>().join(", "));
+
+    let os = game
+        .platforms
+        .as_ref()
+        .map(|p| p.iter().filter_map(|pl| pl.platform_name.clone()).collect::<Vec<_>>().join(", "));
+
+    let release_date = game.release_date.as_ref().and_then(|rd| {
+        if let (Some(y), Some(m), Some(d)) = (rd.y, rd.m, rd.d) {
+            Some(format!("{:04}-{:02}-{:02}", y, m, d))
+        } else if let Some(y) = rd.y {
+            Some(format!("{:04}", y))
+        } else {
+            None
+        }
+    });
+
+    let rating = game.critic_score.map(|s| (s / 10.0).to_string());
+
+    let metadata = GameMetadata {
+        source: "mobygames".to_string(),
+        source_url: url.clone(),
+        title: game.title.clone(),
+        version: None,
+        developer,
+        overview: game.description.clone(),
+        overview_html: game.description.clone(),
+        cover_url,
+        screenshots: Vec::new(),
+        tags,
+        relations: Vec::new(),
+        engine: None,
+        os,
+        language: None,
+        censored: None,
+        release_date,
+        last_updated: None,
+        rating,
+        price: None,
+        circle: None,
+        series: None,
+        author: None,
+        illustration: None,
+        voice_actor: None,
+        music: None,
+        age_rating: None,
+        product_format: None,
+        file_format: None,
+        file_size: None,
+    };
+
+    finalize_scrape_result("mobygames", "MobyGames", &url, Ok(metadata))
 }

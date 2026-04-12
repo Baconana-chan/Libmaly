@@ -3,6 +3,23 @@ import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { addCustomLanguage, loadCustomLanguages, removeCustomLanguage } from "../../i18n";
+import {
+  syncConfigure,
+  syncGetConfig,
+  syncUpload,
+  syncDownload,
+  syncCheckRemote,
+  type SyncProviderConfig,
+  type SyncResult,
+  type WebdavConfig,
+  type NextcloudConfig,
+  type S3Config,
+  type GitConfig,
+  createWebdavConfig,
+  createNextcloudConfig,
+  createS3Config,
+  createGitConfig,
+} from "../../lib/sync";
 
 interface Game { name: string; path: string; }
 type BackgroundJobStatus = "queued" | "running" | "retrying" | "failed" | "permanent_failed";
@@ -354,9 +371,35 @@ function SettingsModal({
   onDeleteLibraryProfile: (profileId: string) => Promise<void> | void;
 }) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "wine">("general");
+  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "sync" | "customcss" | "wine">("general");
   const [customLangs, setCustomLangs] = useState<Record<string, { name: string; translation: Record<string, unknown> }>>({});
   const [langImporting, setLangImporting] = useState(false);
+
+  // Sync state
+  const [syncProviderType, setSyncProviderType] = useState<"webdav" | "nextcloud" | "s3" | "git">("webdav");
+  const [syncConfig, setSyncConfig] = useState<SyncProviderConfig | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [remoteExists, setRemoteExists] = useState<boolean | null>(null);
+  const [webdavUrl, setWebdavUrl] = useState("");
+  const [webdavUsername, setWebdavUsername] = useState("");
+  const [webdavPassword, setWebdavPassword] = useState("");
+  const [webdavPath, setWebdavPath] = useState("libmaly-state.json");
+  const [s3Bucket, setS3Bucket] = useState("");
+  const [s3Region, setS3Region] = useState("");
+  const [s3AccessKey, setS3AccessKey] = useState("");
+  const [s3SecretKey, setS3SecretKey] = useState("");
+  const [s3Endpoint, setS3Endpoint] = useState("");
+  const [s3Path, setS3Path] = useState("libmaly-state.json");
+  const [gitUrl, setGitUrl] = useState("");
+  const [gitBranch, setGitBranch] = useState("main");
+  const [gitUsername, setGitUsername] = useState("");
+  const [gitPassword, setGitPassword] = useState("");
+
+  // Custom CSS state
+  const [customCss, setCustomCss] = useState("");
+  const [cssSaving, setCssSaving] = useState(false);
+
   const discordStatusSummary = !discordSnapshot
     ? t('settings.system.discord_not_initialized')
     : (!discordSnapshot.connected && discordSnapshot.richPresenceActive)
@@ -454,12 +497,184 @@ function SettingsModal({
       onSaveSettings({ ...appSettings, language: "en" });
     }
   };
+
+  // Sync functions
+  const loadSyncConfig = async () => {
+    setSyncLoading(true);
+    try {
+      const savedConfig = await syncGetConfig();
+      if (savedConfig) {
+        setSyncConfig(savedConfig);
+        setSyncProviderType(savedConfig.provider);
+        
+        if (savedConfig.provider === "webdav") {
+          const cfg = savedConfig.config as WebdavConfig;
+          setWebdavUrl(cfg.url);
+          setWebdavUsername(cfg.username);
+          setWebdavPassword(cfg.password);
+          setWebdavPath(cfg.path);
+        } else if (savedConfig.provider === "nextcloud") {
+          const cfg = savedConfig.config as NextcloudConfig;
+          setWebdavUrl(cfg.url);
+          setWebdavUsername(cfg.username);
+          setWebdavPassword(cfg.password);
+          setWebdavPath(cfg.path);
+        } else if (savedConfig.provider === "s3") {
+          const cfg = savedConfig.config as S3Config;
+          setS3Bucket(cfg.bucket);
+          setS3Region(cfg.region);
+          setS3AccessKey(cfg.accessKey);
+          setS3SecretKey(cfg.secretKey);
+          setS3Endpoint(cfg.endpoint || "");
+          setS3Path(cfg.path);
+        } else if (savedConfig.provider === "git") {
+          const cfg = savedConfig.config as GitConfig;
+          setGitUrl(cfg.url);
+          setGitBranch(cfg.branch);
+          setGitUsername(cfg.username || "");
+          setGitPassword(cfg.password || "");
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load sync config:", error);
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSyncConfig();
+  }, []);
+
+  // Load custom CSS from localStorage and apply it
+  useEffect(() => {
+    const savedCss = localStorage.getItem("libmaly_custom_css") || "";
+    setCustomCss(savedCss);
+    applyCustomCss(savedCss);
+  }, []);
+
+  const applyCustomCss = (css: string) => {
+    let styleTag = document.getElementById("libmaly-custom-css") as HTMLStyleElement;
+    if (!styleTag) {
+      styleTag = document.createElement("style");
+      styleTag.id = "libmaly-custom-css";
+      document.head.appendChild(styleTag);
+    }
+    styleTag.textContent = css;
+  };
+
+  const handleSaveCustomCss = () => {
+    setCssSaving(true);
+    try {
+      localStorage.setItem("libmaly_custom_css", customCss);
+      applyCustomCss(customCss);
+      setTimeout(() => setCssSaving(false), 500);
+    } catch (error) {
+      console.error("Failed to save custom CSS:", error);
+      setCssSaving(false);
+    }
+  };
+
+  const handleResetCustomCss = () => {
+    if (!confirm("Reset custom CSS to default?")) return;
+    setCustomCss("");
+    localStorage.removeItem("libmaly_custom_css");
+    applyCustomCss("");
+  };
+
+  const handleSyncSave = async () => {
+    setSyncLoading(true);
+    try {
+      let newConfig: SyncProviderConfig;
+
+      if (syncProviderType === "webdav") {
+        newConfig = createWebdavConfig({
+          url: webdavUrl,
+          username: webdavUsername,
+          password: webdavPassword,
+          path: webdavPath,
+        });
+      } else if (syncProviderType === "nextcloud") {
+        newConfig = createNextcloudConfig({
+          url: webdavUrl,
+          username: webdavUsername,
+          password: webdavPassword,
+          path: webdavPath,
+        });
+      } else if (syncProviderType === "s3") {
+        newConfig = createS3Config({
+          bucket: s3Bucket,
+          region: s3Region,
+          accessKey: s3AccessKey,
+          secretKey: s3SecretKey,
+          endpoint: s3Endpoint || undefined,
+          path: s3Path,
+        });
+      } else {
+        newConfig = createGitConfig({
+          url: gitUrl,
+          branch: gitBranch,
+          username: gitUsername || undefined,
+          password: gitPassword || undefined,
+        });
+      }
+
+      await syncConfigure(newConfig);
+      setSyncConfig(newConfig);
+      setSyncResult({ success: true, message: "Configuration saved", conflictsDetected: false, entriesSynced: 0 });
+    } catch (error) {
+      setSyncResult({ success: false, message: String(error), conflictsDetected: false, entriesSynced: 0 });
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
+  const handleSyncUpload = async () => {
+    if (!syncConfig) return;
+    setSyncLoading(true);
+    try {
+      const result = await syncUpload();
+      setSyncResult(result);
+    } catch (error) {
+      setSyncResult({ success: false, message: String(error), conflictsDetected: false, entriesSynced: 0 });
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
+  const handleSyncDownload = async () => {
+    if (!syncConfig) return;
+    setSyncLoading(true);
+    try {
+      const result = await syncDownload();
+      setSyncResult(result);
+    } catch (error) {
+      setSyncResult({ success: false, message: String(error), conflictsDetected: false, entriesSynced: 0 });
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
+  const handleCheckRemote = async () => {
+    if (!syncConfig) return;
+    setSyncLoading(true);
+    try {
+      const exists = await syncCheckRemote();
+      setRemoteExists(exists);
+    } catch (error) {
+      console.error("Failed to check remote:", error);
+    } finally {
+      setSyncLoading(false);
+    }
+  };
   const tabs: { id: typeof tab; label: string }[] = [
     { id: "general", label: t('settings.tabs.general') },
     { id: "scanner", label: t('settings.tabs.scanner') },
     { id: "import", label: t('settings.tabs.import') },
     { id: "rss", label: t('settings.tabs.rss') },
     { id: "ghost", label: "👻 Ghost Mode" },
+    { id: "sync", label: "🔄 Sync" },
+    { id: "customcss", label: "🎨 Custom CSS" },
     ...(platform !== "windows" ? [{ id: "wine" as const, label: t('settings.tabs.wine') }] : []),
   ];
   const jobTone = (status: BackgroundJobStatus) => {
@@ -1739,6 +1954,231 @@ function SettingsModal({
 
               <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
                 {Object.keys(ghostGames).length} / {games.length} games in Ghost mode
+              </p>
+            </section>
+          )}
+
+          {tab === "sync" && (
+            <section className="space-y-3">
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Sync Configuration</h3>
+              
+              {/* Provider Type Selection */}
+              <div>
+                <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Provider Type</label>
+                <select
+                  value={syncProviderType}
+                  onChange={(e) => setSyncProviderType(e.target.value as "webdav" | "nextcloud" | "s3" | "git")}
+                  className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                  style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                >
+                  <option value="webdav">WebDAV</option>
+                  <option value="nextcloud">Nextcloud</option>
+                  <option value="s3">S3 (Coming Soon)</option>
+                  <option value="git">Git</option>
+                </select>
+              </div>
+
+              {/* WebDAV / Nextcloud Configuration */}
+              {(syncProviderType === "webdav" || syncProviderType === "nextcloud") && (
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>URL</label>
+                    <input
+                      type="text"
+                      value={webdavUrl}
+                      onChange={(e) => setWebdavUrl((e.target as HTMLInputElement).value)}
+                      placeholder={syncProviderType === "nextcloud" ? "https://nextcloud.example.com" : "https://dav.example.com"}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Username</label>
+                    <input
+                      type="text"
+                      value={webdavUsername}
+                      onChange={(e) => setWebdavUsername((e.target as HTMLInputElement).value)}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Password</label>
+                    <input
+                      type="password"
+                      value={webdavPassword}
+                      onChange={(e) => setWebdavPassword((e.target as HTMLInputElement).value)}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Path</label>
+                    <input
+                      type="text"
+                      value={webdavPath}
+                      onChange={(e) => setWebdavPath((e.target as HTMLInputElement).value)}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* S3 Configuration */}
+              {syncProviderType === "s3" && (
+                <div className="space-y-2">
+                  <p className="text-xs" style={{ color: "var(--color-warning)" }}>S3 provider requires AWS SDK integration. Please use WebDAV, Nextcloud, or Git for now.</p>
+                </div>
+              )}
+
+              {/* Git Configuration */}
+              {syncProviderType === "git" && (
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Repository URL</label>
+                    <input
+                      type="text"
+                      value={gitUrl}
+                      onChange={(e) => setGitUrl((e.target as HTMLInputElement).value)}
+                      placeholder="https://github.com/user/repo.git"
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Branch</label>
+                    <input
+                      type="text"
+                      value={gitBranch}
+                      onChange={(e) => setGitBranch((e.target as HTMLInputElement).value)}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Username (optional)</label>
+                    <input
+                      type="text"
+                      value={gitUsername}
+                      onChange={(e) => setGitUsername((e.target as HTMLInputElement).value)}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Password/Token (optional)</label>
+                    <input
+                      type="password"
+                      value={gitPassword}
+                      onChange={(e) => setGitPassword((e.target as HTMLInputElement).value)}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-2">
+                <button
+                  onClick={handleSyncSave}
+                  disabled={syncLoading}
+                  className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                  style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                >
+                  {syncLoading ? "Saving..." : "Save Configuration"}
+                </button>
+                <button
+                  onClick={handleCheckRemote}
+                  disabled={syncLoading || !syncConfig}
+                  className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                >
+                  Check Remote
+                </button>
+              </div>
+
+              {/* Remote Status */}
+              {remoteExists !== null && (
+                <div className={`p-2 rounded text-xs ${remoteExists ? "bg-green-900/50" : "bg-yellow-900/50"}`}>
+                  <p style={{ color: "var(--color-white)" }}>
+                    {remoteExists ? "Remote state exists" : "Remote state does not exist"}
+                  </p>
+                </div>
+              )}
+
+              {/* Sync Actions */}
+              {syncConfig && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleSyncUpload}
+                    disabled={syncLoading}
+                    className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                    style={{ background: "var(--color-success)", color: "var(--color-white)" }}
+                  >
+                    {syncLoading ? "Uploading..." : "Upload"}
+                  </button>
+                  <button
+                    onClick={handleSyncDownload}
+                    disabled={syncLoading}
+                    className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                    style={{ background: "var(--color-accent)", color: "var(--color-white)" }}
+                  >
+                    {syncLoading ? "Downloading..." : "Download"}
+                  </button>
+                </div>
+              )}
+
+              {/* Result Message */}
+              {syncResult && (
+                <div className={`p-2 rounded text-xs ${syncResult.success ? "bg-green-900/50" : "bg-red-900/50"}`}>
+                  <p style={{ color: "var(--color-white)" }}>{syncResult.message}</p>
+                  {syncResult.conflictsDetected && (
+                    <p style={{ color: "var(--color-warning)" }} className="mt-1">
+                      Conflicts detected. Please resolve manually.
+                    </p>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+
+          {tab === "customcss" && (
+            <section className="space-y-3">
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Custom CSS</h3>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                Inject custom CSS to override the application's styling. Changes are applied immediately and persisted in localStorage.
+              </p>
+              <div className="space-y-2">
+                <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>CSS Styles</label>
+                <textarea
+                  value={customCss}
+                  onChange={(e) => setCustomCss((e.target as HTMLTextAreaElement).value)}
+                  placeholder="/* Your custom CSS here */\n/* Example: .game-card { background: red; } */"
+                  className="w-full h-64 px-3 py-2 rounded outline-none text-xs font-mono resize-none"
+                  style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                />
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleSaveCustomCss}
+                  disabled={cssSaving}
+                  className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                  style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                >
+                  {cssSaving ? "Saving..." : "Apply CSS"}
+                </button>
+                <button
+                  onClick={handleResetCustomCss}
+                  className="flex-1 py-2 rounded text-xs font-semibold"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                >
+                  Reset
+                </button>
+              </div>
+              <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
+                💡 Tip: Use browser DevTools to inspect elements and find CSS selectors to override.
               </p>
             </section>
           )}

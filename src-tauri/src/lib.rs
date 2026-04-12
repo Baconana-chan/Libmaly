@@ -38,6 +38,7 @@ use screenshot::{
 };
 mod discord;
 mod data_paths;
+mod sync;
 use data_paths::{app_data_root, crash_report_path, is_portable_mode};
 use discord::{
     discord_clear_presence, discord_get_snapshot, discord_initialize, discord_open_connected_games_settings,
@@ -5030,6 +5031,162 @@ fn persist_storage_snapshot(entries: HashMap<String, String>) -> Result<(), Stri
     atomic_write_string(&path, &raw, "persist_storage_snapshot")
 }
 
+const SYNC_CONFIG_FILE: &str = "sync_config.json";
+
+#[tauri::command]
+async fn sync_configure(config: sync::SyncProviderConfig) -> Result<(), String> {
+    let dir = app_data_root();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(SYNC_CONFIG_FILE);
+    
+    let raw = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    atomic_write_string(&path, &raw, "sync_configure")
+}
+
+#[tauri::command]
+async fn sync_get_config() -> Result<Option<sync::SyncProviderConfig>, String> {
+    let dir = app_data_root();
+    let path = dir.join(SYNC_CONFIG_FILE);
+    
+    if !path.exists() {
+        return Ok(None);
+    }
+    
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let config = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    Ok(Some(config))
+}
+
+#[tauri::command]
+async fn sync_upload() -> Result<sync::SyncResult, String> {
+    let config = sync_get_config().await?.ok_or("No sync configuration found")?;
+    
+    // Read local state
+    let dir = app_data_root();
+    let state_path = dir.join(STATE_STORAGE_FILE);
+    let raw = std::fs::read_to_string(&state_path).map_err(|e| e.to_string())?;
+    
+    // Create provider
+    let provider = sync::create_provider(config)?;
+    
+    // Create metadata
+    let metadata = sync::SyncMetadata {
+        last_sync_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+        last_sync_hash: sync::compute_hash(&raw),
+        provider_type: provider.provider_type(),
+    };
+    
+    // Upload
+    provider.upload(&raw, &metadata).await?;
+    
+    Ok(sync::SyncResult {
+        success: true,
+        message: "State uploaded successfully".to_string(),
+        conflicts_detected: false,
+        entries_synced: 0,
+    })
+}
+
+#[tauri::command]
+async fn sync_download() -> Result<sync::SyncResult, String> {
+    let config = sync_get_config().await?.ok_or("No sync configuration found")?;
+    
+    // Read local state
+    let dir = app_data_root();
+    let state_path = dir.join(STATE_STORAGE_FILE);
+    let local_raw = std::fs::read_to_string(&state_path).unwrap_or_default();
+    let local_store: StateStore = serde_json::from_str(&local_raw).unwrap_or_else(|_| StateStore {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        entries: HashMap::new(),
+    });
+    
+    // Create provider
+    let provider = sync::create_provider(config)?;
+    
+    // Download
+    let (remote_raw, _metadata) = provider.download().await?;
+    let remote_store: StateStore = serde_json::from_str(&remote_raw).map_err(|e| format!("Invalid remote state: {}", e))?;
+    
+    // Detect conflicts
+    let conflicts = sync::detect_conflicts(&local_store.entries, &remote_store.entries);
+    
+    if !conflicts.is_empty() {
+        return Ok(sync::SyncResult {
+            success: false,
+            message: format!("Conflicts detected: {} entries differ", conflicts.len()),
+            conflicts_detected: true,
+            entries_synced: 0,
+        });
+    }
+    
+    // Apply remote state
+    atomic_write_string(&state_path, &remote_raw, "sync_download")?;
+    
+    Ok(sync::SyncResult {
+        success: true,
+        message: "State downloaded successfully".to_string(),
+        conflicts_detected: false,
+        entries_synced: remote_store.entries.len(),
+    })
+}
+
+#[tauri::command]
+async fn sync_resolve_conflicts(resolution: HashMap<String, String>) -> Result<sync::SyncResult, String> {
+    let config = sync_get_config().await?.ok_or("No sync configuration found")?;
+    
+    // Read local state
+    let dir = app_data_root();
+    let state_path = dir.join(STATE_STORAGE_FILE);
+    let local_raw = std::fs::read_to_string(&state_path).map_err(|e| e.to_string())?;
+    let local_store: StateStore = serde_json::from_str(&local_raw).map_err(|e| format!("Invalid local state: {}", e))?;
+    
+    // Create provider
+    let provider = sync::create_provider(config)?;
+    
+    // Download remote state
+    let (remote_raw, _metadata) = provider.download().await?;
+    let remote_store: StateStore = serde_json::from_str(&remote_raw).map_err(|e| format!("Invalid remote state: {}", e))?;
+    
+    // Detect conflicts
+    let conflicts = sync::detect_conflicts(&local_store.entries, &remote_store.entries);
+    
+    // Merge with resolution
+    let merged_entries = sync::merge_state(local_store.entries, remote_store.entries, &conflicts, &resolution);
+    
+    // Create merged state
+    let merged_store = StateStore {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        entries: merged_entries,
+    };
+    
+    let merged_raw = serde_json::to_string(&merged_store).map_err(|e| e.to_string())?;
+    
+    // Save locally
+    atomic_write_string(&state_path, &merged_raw, "sync_resolve_conflicts")?;
+    
+    // Upload to remote
+    let metadata = sync::SyncMetadata {
+        last_sync_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+        last_sync_hash: sync::compute_hash(&merged_raw),
+        provider_type: provider.provider_type(),
+    };
+    provider.upload(&merged_raw, &metadata).await?;
+    
+    Ok(sync::SyncResult {
+        success: true,
+        message: "Conflicts resolved and state synced".to_string(),
+        conflicts_detected: false,
+        entries_synced: merged_store.entries.len(),
+    })
+}
+
+#[tauri::command]
+async fn sync_check_remote() -> Result<bool, String> {
+    let config = sync_get_config().await?.ok_or("No sync configuration found")?;
+    let provider = sync::create_provider(config)?;
+    provider.exists().await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -5135,6 +5292,12 @@ pub fn run() {
             clear_last_crash_report,
             get_storage_bootstrap,
             persist_storage_snapshot,
+            sync_configure,
+            sync_get_config,
+            sync_upload,
+            sync_download,
+            sync_resolve_conflicts,
+            sync_check_remote,
         ])
         .setup(|app| {
             push_rust_log(Some(app.handle()), "info", "LIBMALY started");

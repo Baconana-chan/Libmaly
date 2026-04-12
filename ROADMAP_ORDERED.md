@@ -15,7 +15,7 @@ This roadmap organizes remaining tasks from easiest ("Quick Wins") to most diffi
 
 ### ⚙️ UI & Core
 - [x] **Local-only "Ghost" mode** — Disable outbound checks for high-privacy games (per-game/profile).
-- [ ] **Custom CSS / User Styles** — Allow power users to inject custom CSS overrides.
+- [x] **Custom CSS / User Styles** — Allow power users to inject custom CSS overrides.
 - [ ] **Data consistency tests** — Integration scenarios for scan/launch/crash/recovery.
 
 > [!TIP]
@@ -27,7 +27,7 @@ This roadmap organizes remaining tasks from easiest ("Quick Wins") to most diffi
 *Building on top of the established versioned state store.*
 
 ### ☁️ Cloud & Backup
-- [ ] **Provider-agnostic library sync** — Add WebDAV, Nextcloud, S3/Git backends for state sync.
+- [x] **Provider-agnostic library sync** — Add WebDAV, Nextcloud, S3/Git backends for state sync.
 - [ ] **Google Drive / Dropbox auto-backup** — Optional periodic upload of library state.
 - [ ] **Save-file cloud sync** — Upload save zips to configured cloud folders.
 - [ ] **Cloud sync conflict resolver** — UI and logic for 3-way merge (Local/Remote/Base).

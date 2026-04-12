@@ -6792,13 +6792,6 @@ export default function App() {
     setFavGames(next); saveCache(SK_FAVS, next);
   };
 
-  const toggleGhost = () => {
-    if (!selected) return;
-    const next = { ...ghostGames };
-    if (next[selected.path]) delete next[selected.path]; else next[selected.path] = true;
-    setGhostGames(next); saveCache(SK_GHOST, next);
-  };
-
   const handleSaveCustomization = (c: GameCustomization) => {
     if (!selected) return;
     const next = { ...customizations };

@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::data_paths::app_data_root;
 
@@ -62,7 +63,7 @@ impl SearchCache {
     }
 }
 
-static SEARCH_CACHE: Mutex<SearchCache> = Mutex::new(SearchCache::new());
+static SEARCH_CACHE: LazyLock<Mutex<SearchCache>> = LazyLock::new(|| Mutex::new(SearchCache::new()));
 
 // ── Cookie store with disk persistence ────────────────────────────────────
 

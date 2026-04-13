@@ -591,6 +591,8 @@ interface AppSettings {
   bossKeyFallbackUrl?: string;
   customThemeColors?: Record<string, string>;
   language?: string;
+  preferredMetadataSource?: "all" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku";
+  preferredSearchEngine?: "duckduckgo" | "google" | "bing" | "brave";
 }
 
 interface DiscordUserSnapshot {
@@ -1071,7 +1073,7 @@ function MetadataDiffModal({ oldMeta, newMeta, onConfirm, onClose }: {
 }
 
 // ─── Link Page Modal ──────────────────────────────────────────────────────────
-function LinkPageModal({ gameName, gamePath, onClose, onFetched, f95LoggedIn, onOpenF95Login, ghostGames }: {
+function LinkPageModal({ gameName, gamePath, onClose, onFetched, f95LoggedIn, onOpenF95Login, ghostGames, appSettings }: {
   gameName: string;
   gamePath: string;
   onClose: () => void;
@@ -1079,11 +1081,14 @@ function LinkPageModal({ gameName, gamePath, onClose, onFetched, f95LoggedIn, on
   f95LoggedIn: boolean;
   onOpenF95Login: () => void;
   ghostGames: Record<string, boolean>;
+  appSettings: AppSettings;
 }) {
   const { t } = useTranslation();
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [selectedSource, setSelectedSource] = useState<"all" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku">(appSettings.preferredMetadataSource || "all");
+  const [selectedSearchEngine, setSelectedSearchEngine] = useState<"duckduckgo" | "google" | "bing" | "brave">(appSettings.preferredSearchEngine || "duckduckgo");
 
   const src = detectMetadataSourceFromUrl(url);
 
@@ -1093,17 +1098,17 @@ function LinkPageModal({ gameName, gamePath, onClose, onFetched, f95LoggedIn, on
 
   const fetchSuggestions = () => {
     setIsLoadingSuggestions(true);
-    invoke<SearchResultItem[]>("search_suggest_links", { query })
+    invoke<SearchResultItem[]>("search_suggest_links", { query, searchEngine: selectedSearchEngine })
       .then((res) => setSuggestions(res))
       .catch((e) => { console.error("suggestions err", e); setSuggestions([]); })
       .finally(() => setIsLoadingSuggestions(false));
   };
 
-  // Auto-fetch suggestions on mount
+  // Auto-fetch suggestions on mount or when search engine changes
   useEffect(() => {
     fetchSuggestions();
     // eslint-disable-next-line
-  }, [gameName]);
+  }, [gameName, selectedSearchEngine]);
 
   const doFetch = async (targetUrl = url) => {
     if (!targetUrl) return;
@@ -1132,6 +1137,35 @@ function LinkPageModal({ gameName, gamePath, onClose, onFetched, f95LoggedIn, on
         <p className="text-xs mb-4" style={{ color: "var(--color-text-muted)" }}>
           {t('game.link.hint', { name: gameName })}
         </p>
+        <div className="flex items-center gap-2 mb-4">
+          <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>Preferred source:</span>
+          <select
+            value={selectedSource}
+            onChange={(e) => setSelectedSource(e.target.value as typeof selectedSource)}
+            className="px-2 py-1 rounded text-xs outline-none"
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+          >
+            <option value="all">All</option>
+            <option value="f95">F95zone</option>
+            <option value="dlsite">DLsite</option>
+            <option value="vndb">VNDB</option>
+            <option value="mangagamer">MangaGamer</option>
+            <option value="johren">Johren</option>
+            <option value="fakku">FAKKU</option>
+          </select>
+          <span className="text-xs ml-auto" style={{ color: "var(--color-text-muted)" }}>Search engine:</span>
+          <select
+            value={selectedSearchEngine}
+            onChange={(e) => setSelectedSearchEngine(e.target.value as typeof selectedSearchEngine)}
+            className="px-2 py-1 rounded text-xs outline-none"
+            style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+          >
+            <option value="duckduckgo">DuckDuckGo</option>
+            <option value="google">Google</option>
+            <option value="bing">Bing</option>
+            <option value="brave">Brave</option>
+          </select>
+        </div>
         <div className="flex gap-2 mb-4">
           {(["f95", "dlsite", "vndb", "mangagamer", "johren", "fakku"] as const).map((s) => (
             <span key={s} className="px-2 py-0.5 rounded text-xs font-semibold"
@@ -6026,6 +6060,23 @@ export default function App() {
     dirMtimes: loadCache<DirMtime[]>(SK_MTIMES, []),
   });
 
+  const createPreUpdateBackup = async () => {
+    try {
+      const entries = getCurrentSnapshotEntries();
+      const result = await invoke<{ id: string }>("create_snapshot", {
+        request: {
+          label: "pre-update-backup",
+          reason: `Automatic backup before updating to version ${appUpdate?.version || "latest"}`,
+          entries,
+        },
+      });
+      console.log("Pre-update backup created:", result.id);
+    } catch (e) {
+      console.error("Failed to create pre-update backup:", e);
+      // Don't block the update if backup fails
+    }
+  };
+
   const ensureSnapshotBeforeRiskyOp = async (label: string, reason: string) => {
     try {
       return await createStateSnapshot(label, reason);
@@ -8673,6 +8724,7 @@ export default function App() {
             url={appUpdate.url}
             downloadUrl={appUpdate.downloadUrl}
             onClose={() => setShowAppUpdateModal(false)}
+            onBeforeUpdate={createPreUpdateBackup}
           />
         )
       }
@@ -8752,6 +8804,7 @@ export default function App() {
             onFetched={handleMetaFetched}
             f95LoggedIn={f95LoggedIn}
             onOpenF95Login={() => { setShowLinkModal(false); setShowF95Login(true); }}
+            appSettings={appSettings}
           />
         )
       }

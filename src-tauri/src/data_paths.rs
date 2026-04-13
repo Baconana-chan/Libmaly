@@ -30,17 +30,20 @@ pub fn is_portable_mode() -> bool {
 }
 
 pub fn app_data_root() -> PathBuf {
+    let is_dev = cfg!(debug_assertions);
+    let suffix = if is_dev { "-dev" } else { "" };
+    
     if is_portable_mode() {
         executable_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("libmaly-data")
+            .join(format!("libmaly-data{}", suffix))
     } else {
         #[cfg(windows)]
         {
             let base = std::env::var("APPDATA")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("."));
-            base.join("libmaly")
+            base.join(format!("libmaly{}", suffix))
         }
         #[cfg(target_os = "linux")]
         {
@@ -48,7 +51,7 @@ pub fn app_data_root() -> PathBuf {
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(".local/share")
-                .join("libmaly")
+                .join(format!("libmaly{}", suffix))
         }
         #[cfg(target_os = "macos")]
         {
@@ -56,7 +59,7 @@ pub fn app_data_root() -> PathBuf {
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join("Library/Application Support")
-                .join("libmaly")
+                .join(format!("libmaly{}", suffix))
         }
     }
 }

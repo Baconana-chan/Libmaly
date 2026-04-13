@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.1 - 2026-04-13
+
+### 🛡️ Critical Fixes
+- **Dev/Prod data isolation** — fixed critical issue where development environment metadata could overwrite production data. Debug builds now use a separate data directory with `-dev` suffix (e.g., `libmaly-dev` on Windows) to completely isolate development and production environments.
+- **Automatic pre-update backups** — added mandatory backup creation before any app update, protecting against data corruption even when users choose "install without deleting the application" in the installer. Backups are stored with the label "pre-update-backup" and can be restored from Settings.
+
+### 🔍 Search & Metadata
+- **Preferred metadata source selector** — added ability to set a preferred metadata source (F95zone, DLsite, VNDB, MangaGamer, Johren, FAKKU) that is used by default in the Link Game Metadata modal.
+- **Preferred web search engine selector** — added ability to choose the web search engine (DuckDuckGo, Google, Bing, Brave) used for metadata lookups in Link Game Metadata. This allows users to switch search engines if one is not available or preferred.
+
 ## 1.7.0 - 2026-04-12
 
 ### 📊 Stats & Visuals

@@ -84,6 +84,7 @@ interface AppSettingsLike {
   bossKeyFallbackUrl?: string;
   customThemeColors?: Record<string, string>;
   language?: string;
+  preferredSearchEngine?: "duckduckgo" | "google" | "bing" | "brave";
 }
 
 interface DiscordSdkSnapshotLike {
@@ -1017,6 +1018,24 @@ function SettingsModal({
                     💡 Custom languages: {Object.keys(customLangs).map(c => customLangs[c].name).join(", ")}
                   </p>
                 )}
+              </section>
+
+              <section className="space-y-2">
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Search Engine</h3>
+                <select
+                  value={appSettings.preferredSearchEngine || "duckduckgo"}
+                  onChange={(e) => onSaveSettings({ ...appSettings, preferredSearchEngine: e.currentTarget.value as any })}
+                  className="w-full px-3 py-2 rounded-lg text-sm bg-transparent border outline-none"
+                  style={{ background: "var(--color-panel)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                >
+                  <option value="duckduckgo" style={{ background: "var(--color-panel-2)" }}>DuckDuckGo</option>
+                  <option value="google" style={{ background: "var(--color-panel-2)" }}>Google</option>
+                  <option value="bing" style={{ background: "var(--color-panel-2)" }}>Bing</option>
+                  <option value="brave" style={{ background: "var(--color-panel-2)" }}>Brave</option>
+                </select>
+                <p className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>
+                  Search engine used for metadata lookups in Link Game Metadata
+                </p>
               </section>
 
               <section className="space-y-3">

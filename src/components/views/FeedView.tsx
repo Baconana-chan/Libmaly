@@ -257,8 +257,11 @@ export function FeedView({
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => openInBrowser(previewItem.link)}
-                  className="px-3 py-1.5 rounded text-xs"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openInBrowser(previewItem.link);
+                  }}
+                  className="px-3 py-1.5 rounded text-xs relative z-10"
                   style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}
                 >
                   {t('feed_view.open_in_browser')}

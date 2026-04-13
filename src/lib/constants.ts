@@ -115,4 +115,6 @@ export const DEFAULT_SETTINGS = {
   bossKeyFallbackUrl: "",
   customThemeColors: {},
   language: "en",
+  preferredMetadataSource: "all" as const,
+  preferredSearchEngine: "duckduckgo" as const,
 };

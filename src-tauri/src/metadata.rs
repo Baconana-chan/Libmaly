@@ -1439,7 +1439,7 @@ pub async fn fetch_vndb_metadata(url: String) -> Result<GameMetadata, String> {
             .build()
             .map_err(|e| format!("VNDB Client failed: {}", e))?
             .post("https://api.vndb.org/kana/vn")
-            .header("User-Agent", "LIBMALY/1.7.0")
+            .header("User-Agent", "LIBMALY/1.7.1")
             .json(&body)
             .send()
             .await
@@ -1935,7 +1935,7 @@ async fn fetch_vndb_alias_queries(query: &str) -> Vec<String> {
 
     let resp = match client
         .post("https://api.vndb.org/kana/vn")
-        .header("User-Agent", "LIBMALY/1.7.0")
+        .header("User-Agent", "LIBMALY/1.7.1")
         .json(&body)
         .send()
         .await
@@ -2075,41 +2075,142 @@ async fn fetch_ddg_site_suggestions(
     site: &str,
     source: &str,
     limit: usize,
+    search_engine: &str,
 ) -> Vec<SearchResultItem> {
-    let ddg_body = format!("q=site:{site}+{}", urlencoding::encode(query));
-    let resp = match reqwest::Client::new()
-        .post("https://lite.duckduckgo.com/lite/")
-        .header("User-Agent", "Mozilla/5.0")
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(ddg_body)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let (resp, parse_engine) = match search_engine {
+        "google" => {
+            let resp = match client
+                .get("https://www.google.com/search")
+                .header("User-Agent", "Mozilla/5.0")
+                .query(&[("q", &format!("site:{} {}", site, query))])
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => return Vec::new(),
+            };
+            (resp, "google")
+        }
+        "bing" => {
+            let resp = match client
+                .get("https://www.bing.com/search")
+                .header("User-Agent", "Mozilla/5.0")
+                .query(&[("q", &format!("site:{} {}", site, query))])
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => return Vec::new(),
+            };
+            (resp, "bing")
+        }
+        "brave" => {
+            let resp = match client
+                .get("https://search.brave.com/search")
+                .header("User-Agent", "Mozilla/5.0")
+                .query(&[("q", &format!("site:{} {}", site, query))])
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => return Vec::new(),
+            };
+            (resp, "brave")
+        }
+        _ => {
+            // DuckDuckGo: use POST for faster performance
+            let ddg_body = format!("q=site:{}+{}", site, urlencoding::encode(query));
+            let resp = match client
+                .post("https://lite.duckduckgo.com/lite/")
+                .header("User-Agent", "Mozilla/5.0")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(ddg_body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => return Vec::new(),
+            };
+            (resp, "duckduckgo")
+        }
     };
+
     let body = match resp.text().await {
         Ok(b) => b,
         Err(_) => return Vec::new(),
     };
     let doc = Html::parse_document(&body);
-    let a_sel = sel(".result-link");
+    
+    // Use specific selectors for each search engine
+    let results: Vec<(String, String)> = match parse_engine {
+        "google" => {
+            doc.select(&sel("div.g a[href]"))
+                .filter_map(|el| {
+                    let url = el.attr("href").unwrap_or("").trim().to_string();
+                    let title = el.text().collect::<String>().trim().to_string();
+                    if !url.is_empty() && !title.is_empty() && url.to_lowercase().contains(site) {
+                        Some((url, title))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        "bing" => {
+            doc.select(&sel("li.b_algo h2 a[href]"))
+                .filter_map(|el| {
+                    let url = el.attr("href").unwrap_or("").trim().to_string();
+                    let title = el.text().collect::<String>().trim().to_string();
+                    if !url.is_empty() && !title.is_empty() && url.to_lowercase().contains(site) {
+                        Some((url, title))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        "brave" => {
+            doc.select(&sel("div.web-result a[href]"))
+                .filter_map(|el| {
+                    let url = el.attr("href").unwrap_or("").trim().to_string();
+                    let title = el.text().collect::<String>().trim().to_string();
+                    if !url.is_empty() && !title.is_empty() && url.to_lowercase().contains(site) {
+                        Some((url, title))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        _ => {
+            // DuckDuckGo: use the original selector
+            doc.select(&sel(".result-link"))
+                .filter_map(|el| {
+                    let url = el.attr("href").unwrap_or("").trim().to_string();
+                    let title = el.text().collect::<String>().trim().to_string();
+                    if !url.is_empty() && !title.is_empty() && url.to_lowercase().contains(site) {
+                        Some((url, title))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+    };
+    
     let mut out = Vec::<SearchResultItem>::new();
-    for el in doc.select(&a_sel) {
+    for (url, title) in results {
         if out.len() >= limit {
             break;
         }
-        let url = el.attr("href").unwrap_or("").trim().to_string();
-        if url.is_empty() || !url.to_lowercase().contains(site) {
-            continue;
-        }
-        let title = el.text().collect::<String>().trim().to_string();
         out.push(SearchResultItem {
-            title: if title.is_empty() {
-                "Unknown".to_string()
-            } else {
-                title
-            },
+            title,
             url: normalize_store_suggestion_url(&url, source),
             cover_url: None,
             source: source.to_string(),
@@ -2119,7 +2220,8 @@ async fn fetch_ddg_site_suggestions(
 }
 
 #[tauri::command]
-pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>, String> {
+pub async fn search_suggest_links(query: String, search_engine: Option<String>) -> Result<Vec<SearchResultItem>, String> {
+    let search_engine = search_engine.unwrap_or_else(|| "duckduckgo".to_string());
     let mut results = Vec::new();
     let mut seen_urls = std::collections::HashSet::<String>::new();
     let cache_key = normalize_search_query(&query).to_lowercase();
@@ -2276,7 +2378,7 @@ pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>
 
         if let Ok(resp) = client
             .post("https://api.vndb.org/kana/vn")
-            .header("User-Agent", "LIBMALY/1.7.0")
+            .header("User-Agent", "LIBMALY/1.7.1")
             .json(&body)
             .send()
             .await
@@ -2309,13 +2411,13 @@ pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>
         }
     }
 
-    // MangaGamer suggestions via DDG site search.
+    // MangaGamer suggestions via search engine site search.
     let mut mg_count = 0usize;
     for q in &queries {
         if mg_count >= 3 {
             break;
         }
-        for item in fetch_ddg_site_suggestions(q, "mangagamer.com", "MangaGamer", 3).await {
+        for item in fetch_ddg_site_suggestions(q, "mangagamer.com", "MangaGamer", 3, &search_engine).await {
             if mg_count >= 3 {
                 break;
             }
@@ -2325,13 +2427,13 @@ pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>
         }
     }
 
-    // Johren suggestions via DDG site search.
+    // Johren suggestions via search engine site search.
     let mut johren_count = 0usize;
     for q in &queries {
         if johren_count >= 3 {
             break;
         }
-        for item in fetch_ddg_site_suggestions(q, "johren.net", "Johren", 3).await {
+        for item in fetch_ddg_site_suggestions(q, "johren.net", "Johren", 3, &search_engine).await {
             if johren_count >= 3 {
                 break;
             }
@@ -2341,13 +2443,13 @@ pub async fn search_suggest_links(query: String) -> Result<Vec<SearchResultItem>
         }
     }
 
-    // FAKKU suggestions via DDG site search.
+    // FAKKU suggestions via search engine site search.
     let mut fakku_count = 0usize;
     for q in &queries {
         if fakku_count >= 3 {
             break;
         }
-        for item in fetch_ddg_site_suggestions(q, "fakku.net", "FAKKU", 3).await {
+        for item in fetch_ddg_site_suggestions(q, "fakku.net", "FAKKU", 3, &search_engine).await {
             if fakku_count >= 3 {
                 break;
             }

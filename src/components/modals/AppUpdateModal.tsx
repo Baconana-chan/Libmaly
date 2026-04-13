@@ -6,11 +6,13 @@ export function AppUpdateModal({
   url,
   downloadUrl,
   onClose,
+  onBeforeUpdate,
 }: {
   version: string;
   url: string;
   downloadUrl: string;
   onClose: () => void;
+  onBeforeUpdate?: () => Promise<void>;
 }) {
   type Phase = "idle" | "downloading" | "done" | "error";
   const [phase, setPhase] = useState<Phase>("idle");
@@ -20,6 +22,9 @@ export function AppUpdateModal({
     if (!downloadUrl) return;
     setPhase("downloading");
     try {
+      if (onBeforeUpdate) {
+        await onBeforeUpdate();
+      }
       await invoke("apply_update", { downloadUrl });
       setPhase("done");
     } catch (e: any) {

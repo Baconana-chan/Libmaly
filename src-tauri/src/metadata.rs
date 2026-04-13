@@ -9,6 +9,61 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::data_paths::app_data_root;
 
+// ── Search Suggestion Cache & Rate Limiter ───────────────────────────────
+
+#[derive(Clone)]
+struct CachedResult {
+    items: Vec<SearchResultItem>,
+    timestamp: u64,
+}
+
+struct SearchCache {
+    cache: HashMap<String, CachedResult>,
+    rate_limits: HashMap<String, u64>, // timestamp of last request per search engine
+}
+
+impl SearchCache {
+    fn new() -> Self {
+        Self {
+            cache: HashMap::new(),
+            rate_limits: HashMap::new(),
+        }
+    }
+
+    fn get(&self, key: &str, ttl_secs: u64) -> Option<Vec<SearchResultItem>> {
+        let now = now_ms() / 1000;
+        self.cache.get(key).and_then(|cached| {
+            if now - cached.timestamp < ttl_secs {
+                Some(cached.items.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn set(&mut self, key: String, items: Vec<SearchResultItem>) {
+        self.cache.insert(key, CachedResult {
+            items,
+            timestamp: now_ms() / 1000,
+        });
+        // Clean old entries periodically
+        let now = now_ms() / 1000;
+        self.cache.retain(|_, cached| now - cached.timestamp < 3600); // 1 hour max
+    }
+
+    fn check_rate_limit(&mut self, search_engine: &str, min_interval_secs: u64) -> bool {
+        let now = now_ms() / 1000;
+        let last = self.rate_limits.get(search_engine).copied().unwrap_or(0);
+        if now - last < min_interval_secs {
+            return false;
+        }
+        self.rate_limits.insert(search_engine.to_string(), now);
+        true
+    }
+}
+
+static SEARCH_CACHE: Mutex<SearchCache> = Mutex::new(SearchCache::new());
+
 // ── Cookie store with disk persistence ────────────────────────────────────
 
 static COOKIE_STORE: Mutex<Option<Arc<CookieStoreMutex>>> = Mutex::new(None);
@@ -2077,6 +2132,17 @@ async fn fetch_ddg_site_suggestions(
     limit: usize,
     search_engine: &str,
 ) -> Vec<SearchResultItem> {
+    // Check cache first (5 minute TTL)
+    let cache_key = format!("{}:{}:{}:{}", search_engine, site, query, source);
+    if let Some(cached) = SEARCH_CACHE.lock().unwrap().get(&cache_key, 300) {
+        return cached;
+    }
+
+    // Check rate limit (2 seconds minimum between requests per search engine)
+    if !SEARCH_CACHE.lock().unwrap().check_rate_limit(search_engine, 2) {
+        return Vec::new(); // Rate limited, return empty
+    }
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .connect_timeout(std::time::Duration::from_secs(5))
@@ -2216,6 +2282,10 @@ async fn fetch_ddg_site_suggestions(
             source: source.to_string(),
         });
     }
+    
+    // Cache the results
+    SEARCH_CACHE.lock().unwrap().set(cache_key, out.clone());
+    
     out
 }
 

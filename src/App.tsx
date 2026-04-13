@@ -1141,7 +1141,7 @@ function LinkPageModal({ gameName, gamePath, onClose, onFetched, f95LoggedIn, on
           <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>Preferred source:</span>
           <select
             value={selectedSource}
-            onChange={(e) => setSelectedSource(e.target.value as typeof selectedSource)}
+            onChange={(e) => setSelectedSource((e.target as HTMLSelectElement).value as typeof selectedSource)}
             className="px-2 py-1 rounded text-xs outline-none"
             style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
           >
@@ -1156,7 +1156,7 @@ function LinkPageModal({ gameName, gamePath, onClose, onFetched, f95LoggedIn, on
           <span className="text-xs ml-auto" style={{ color: "var(--color-text-muted)" }}>Search engine:</span>
           <select
             value={selectedSearchEngine}
-            onChange={(e) => setSelectedSearchEngine(e.target.value as typeof selectedSearchEngine)}
+            onChange={(e) => setSelectedSearchEngine((e.target as HTMLSelectElement).value as typeof selectedSearchEngine)}
             className="px-2 py-1 rounded text-xs outline-none"
             style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
           >

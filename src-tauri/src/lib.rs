@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(windows)]
 use scraper::{Html, Selector};
 use std::collections::{HashMap, HashSet};
+#[cfg(windows)]
 use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -2894,6 +2896,7 @@ struct ExoticStoreCandidate {
     overview: Option<String>,
 }
 
+#[cfg(windows)]
 #[derive(Default)]
 struct CloudPageMetadata {
     title: Option<String>,

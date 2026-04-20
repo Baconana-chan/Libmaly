@@ -205,7 +205,7 @@ fn detect_renpy_saves(game_path: &str, _game_name: Option<&str>, paths: &mut Vec
         let save_path = PathBuf::from(home).join(".renpy");
         
         if save_path.exists() {
-            if let Some(name) = game_name {
+            if let Some(name) = _game_name {
                 let game_save = save_path.join(name);
                 if game_save.exists() {
                     paths.push(SavePathInfo {

@@ -11,6 +11,7 @@ use crate::data_paths::app_data_root;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ITCH_BUTLER_INSTALL_URL: &str = "https://itch.io/app";
 const ITCH_API_KEY_PROVIDER: &str = "itch_io";

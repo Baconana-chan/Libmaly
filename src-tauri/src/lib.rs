@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use scraper::{Html, Selector};
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::AppHandle;
@@ -17,7 +20,17 @@ use rusqlite::Connection;
 #[cfg(windows)]
 use rusqlite::types::ValueRef;
 #[cfg(windows)]
+use std::fs::OpenOptions;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use winapi::um::winnt::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
+#[cfg(windows)]
+use winreg::RegKey;
+#[cfg(windows)]
+use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
 
 mod metadata;
 use metadata::{
@@ -29,8 +42,26 @@ use metadata::{
     set_api_key, get_api_key,
 };
 
+mod custom_metadata;
+use custom_metadata::{
+    custom_metadata_delete_template, custom_metadata_export_templates,
+    custom_metadata_export_templates_to_path, custom_metadata_import_templates,
+    custom_metadata_import_templates_from_path, custom_metadata_list_templates,
+    custom_metadata_match_source, fetch_custom_metadata, fetch_custom_metadata_command,
+    find_matching_template, find_template_by_source,
+};
+
+mod vault;
+use vault::{delete_secret as vault_delete_secret, get_secret as vault_get_secret, legacy_global_file_path, profile_file_path};
+
 mod updater;
 use updater::{preview_update, update_game};
+
+mod itch;
+use itch::{
+    itch_butler_apply_update, itch_butler_check_updates, itch_butler_install_game,
+    itch_butler_list_owned_games, itch_butler_status,
+};
 
 mod screenshot;
 use screenshot::{
@@ -41,7 +72,9 @@ use screenshot::{
 mod discord;
 mod data_paths;
 mod sync;
+mod save_transfer;
 use data_paths::{app_data_root, crash_report_path, is_portable_mode};
+use save_transfer::{is_valid_save_directory as check_valid_save_directory, SavePathInfo, TransferResult};
 use discord::{
     discord_clear_presence, discord_get_snapshot, discord_initialize, discord_open_connected_games_settings,
     discord_set_presence, discord_shutdown,
@@ -95,6 +128,107 @@ struct LibraryProfileInput {
     accent_color: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolvedMetadataSource {
+    source: String,
+    source_label: String,
+    is_custom: bool,
+}
+
+fn detect_builtin_metadata_source(url: &str) -> Option<ResolvedMetadataSource> {
+    let lower = url.trim().to_ascii_lowercase();
+    if lower.contains("f95zone.to") {
+        return Some(ResolvedMetadataSource { source: "f95".into(), source_label: "F95zone".into(), is_custom: false });
+    }
+    if lower.contains("dlsite.com") {
+        return Some(ResolvedMetadataSource { source: "dlsite".into(), source_label: "DLsite".into(), is_custom: false });
+    }
+    if lower.contains("vndb.org/v") {
+        return Some(ResolvedMetadataSource { source: "vndb".into(), source_label: "VNDB".into(), is_custom: false });
+    }
+    if lower.contains("mangagamer.com") {
+        return Some(ResolvedMetadataSource { source: "mangagamer".into(), source_label: "MangaGamer".into(), is_custom: false });
+    }
+    if lower.contains("johren.net") {
+        return Some(ResolvedMetadataSource { source: "johren".into(), source_label: "Johren".into(), is_custom: false });
+    }
+    if lower.contains("fakku.net") {
+        return Some(ResolvedMetadataSource { source: "fakku".into(), source_label: "FAKKU".into(), is_custom: false });
+    }
+    if lower.contains("igdb.com") {
+        return Some(ResolvedMetadataSource { source: "igdb".into(), source_label: "IGDB".into(), is_custom: false });
+    }
+    if lower.contains("rawg.io") {
+        return Some(ResolvedMetadataSource { source: "rawg".into(), source_label: "RAWG".into(), is_custom: false });
+    }
+    if lower.contains("mobygames.com") {
+        return Some(ResolvedMetadataSource { source: "mobygames".into(), source_label: "MobyGames".into(), is_custom: false });
+    }
+    None
+}
+
+async fn fetch_builtin_metadata_by_source(source: &str, url: &str) -> Result<metadata::GameMetadata, String> {
+    match source {
+        "f95" => fetch_f95_metadata(url.to_string()).await,
+        "dlsite" => fetch_dlsite_metadata(url.to_string()).await,
+        "vndb" => fetch_vndb_metadata(url.to_string()).await,
+        "mangagamer" => fetch_mangagamer_metadata(url.to_string()).await,
+        "johren" => fetch_johren_metadata(url.to_string()).await,
+        "fakku" => fetch_fakku_metadata(url.to_string()).await,
+        "igdb" => fetch_igdb_metadata(url.to_string()).await,
+        "rawg" => fetch_rawg_metadata(url.to_string()).await,
+        "mobygames" => fetch_mobygames_metadata(url.to_string()).await,
+        _ => Err(format!("Unsupported metadata source: {}", source)),
+    }
+}
+
+#[tauri::command]
+async fn resolve_metadata_source(url: String) -> Result<Option<ResolvedMetadataSource>, String> {
+    if let Some(template) = find_matching_template(&url, Some(true))? {
+        return Ok(Some(ResolvedMetadataSource {
+            source: format!("custom:{}", template.id),
+            source_label: template.name,
+            is_custom: true,
+        }));
+    }
+    if let Some(source) = detect_builtin_metadata_source(&url) {
+        return Ok(Some(source));
+    }
+    if let Some(template) = find_matching_template(&url, Some(false))? {
+        return Ok(Some(ResolvedMetadataSource {
+            source: format!("custom:{}", template.id),
+            source_label: template.name,
+            is_custom: true,
+        }));
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+async fn fetch_metadata_for_url(url: String) -> Result<metadata::GameMetadata, String> {
+    if let Some(template) = find_matching_template(&url, Some(true))? {
+        return fetch_custom_metadata(&url, &template).await;
+    }
+    if let Some(source) = detect_builtin_metadata_source(&url) {
+        return fetch_builtin_metadata_by_source(&source.source, &url).await;
+    }
+    if let Some(template) = find_matching_template(&url, Some(false))? {
+        return fetch_custom_metadata(&url, &template).await;
+    }
+    Err("No built-in or custom metadata source matched this URL".to_string())
+}
+
+#[tauri::command]
+async fn fetch_metadata_by_source(source: String, url: String) -> Result<metadata::GameMetadata, String> {
+    if source.starts_with("custom:") {
+        let template = find_template_by_source(&source)?
+            .ok_or_else(|| format!("Custom metadata source '{}' is unavailable", source))?;
+        return fetch_custom_metadata(&url, &template).await;
+    }
+    fetch_builtin_metadata_by_source(&source, &url).await
+}
+
 struct LibraryProfilesState(std::sync::Mutex<LibraryProfileRegistry>);
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -118,6 +252,16 @@ struct SaveBackupResult {
     zip_path: String,
     files: usize,
     directories: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncSaveBackupResult {
+    zip_path: String,
+    files: usize,
+    directories: Vec<String>,
+    remote_path: String,
+    provider_type: sync::SyncProviderType,
 }
 
 #[derive(Deserialize, Clone)]
@@ -297,6 +441,10 @@ struct SyncConflictItem {
     local_count: usize,
     remote_count: usize,
     base_count: usize,
+    local_value: Option<String>,
+    remote_value: Option<String>,
+    base_value: Option<String>,
+    requires_manual: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -307,6 +455,28 @@ struct SyncConflictResolutionReport {
     conflict_count: usize,
     changed_keys: Vec<String>,
 }
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ReliabilityScenarioResult {
+    key: String,
+    passed: bool,
+    message: String,
+    details: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ReliabilityScenarioReport {
+    completed_at: u64,
+    platform: String,
+    scenarios: Vec<ReliabilityScenarioResult>,
+}
+
+const TEST_STORAGE_KEY_GAMES: &str = "games-list-v2";
+const TEST_STORAGE_KEY_FOLDERS: &str = "library-folders-v1";
+const TEST_STORAGE_KEY_STATS: &str = "game-stats";
+const TEST_STORAGE_KEY_NOTES: &str = "game-notes-v1";
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -493,6 +663,36 @@ fn append_recent_file_op(entry: RecentFileOp) {
     }
 }
 
+#[cfg(windows)]
+fn read_text_file_with_shared_access(path: &Path) -> Result<String, String> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[cfg(not(windows))]
+fn read_text_file_with_shared_access(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+fn read_text_file_resilient(path: &Path) -> Result<String, String> {
+    let mut last_error = None;
+    for attempt in 0..4 {
+        match read_text_file_with_shared_access(path) {
+            Ok(raw) if !raw.is_empty() || attempt == 3 => return Ok(raw),
+            Ok(_) => {}
+            Err(error) => last_error = Some(error),
+        }
+        thread::sleep(Duration::from_millis(35));
+    }
+    Err(last_error.unwrap_or_else(|| format!("Failed to read {}", path.display())))
+}
+
 fn atomic_write_string(path: &Path, contents: &str, operation: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -531,6 +731,546 @@ fn atomic_write_string(path: &Path, contents: &str, operation: &str) -> Result<(
         let _ = std::fs::remove_file(&tmp_path);
     }
     result
+}
+
+fn reliability_result(
+    key: &str,
+    passed: bool,
+    message: impl Into<String>,
+    details: Vec<String>,
+) -> ReliabilityScenarioResult {
+    ReliabilityScenarioResult {
+        key: key.to_string(),
+        passed,
+        message: message.into(),
+        details,
+    }
+}
+
+fn release_test_temp_dir(name: &str) -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join(format!(
+        "libmaly-release-{}-{}-{}",
+        name,
+        now_ms(),
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn release_test_executable_name(stem: &str) -> String {
+    if cfg!(windows) {
+        format!("{}.exe", stem)
+    } else {
+        format!("{}.sh", stem)
+    }
+}
+
+fn write_release_test_executable(path: &Path, minimum_size_bytes: usize) -> Result<(), String> {
+    let seed = b"LIBMALY release reliability fixture\n";
+    let mut payload = Vec::with_capacity(minimum_size_bytes.max(seed.len()));
+    while payload.len() < minimum_size_bytes {
+        payload.extend_from_slice(seed);
+    }
+    payload.truncate(minimum_size_bytes.max(seed.len()));
+    std::fs::write(path, payload).map_err(|e| e.to_string())
+}
+
+fn create_release_test_game(root: &Path, game_name: &str, executable_stem: &str) -> Result<String, String> {
+    let game_dir = root.join(game_name);
+    std::fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
+    let executable_path = game_dir.join(release_test_executable_name(executable_stem));
+    write_release_test_executable(&executable_path, 4096)?;
+    Ok(executable_path.to_string_lossy().to_string())
+}
+
+fn create_release_test_scan_candidate(root: &Path, game_name: &str, executable_stem: &str) -> Result<String, String> {
+    let game_dir = root.join(game_name);
+    std::fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
+    let executable_path = game_dir.join(format!("{}.exe", executable_stem));
+    write_release_test_executable(&executable_path, 128 * 1024)?;
+    Ok(executable_path.to_string_lossy().to_string())
+}
+
+fn build_release_sample_entries(root: &Path) -> Result<HashMap<String, String>, String> {
+    let game_path = create_release_test_game(root, "Crimson Echo", "CrimsonEcho")?;
+    let mut entries = HashMap::<String, String>::new();
+    entries.insert(
+        TEST_STORAGE_KEY_FOLDERS.to_string(),
+        serde_json::to_string(&vec![serde_json::json!({
+            "path": root.to_string_lossy().to_string(),
+        })])
+        .map_err(|e| e.to_string())?,
+    );
+    entries.insert(
+        TEST_STORAGE_KEY_GAMES.to_string(),
+        serde_json::to_string(&vec![serde_json::json!({
+            "name": "Crimson Echo",
+            "path": game_path.clone(),
+            "uninstalled": false,
+        })])
+        .map_err(|e| e.to_string())?,
+    );
+    entries.insert(
+        TEST_STORAGE_KEY_STATS.to_string(),
+        serde_json::to_string(&serde_json::json!({
+            game_path.clone(): {
+                "playtimeMinutes": 45,
+                "launchCount": 3,
+            }
+        }))
+        .map_err(|e| e.to_string())?,
+    );
+    entries.insert(
+        TEST_STORAGE_KEY_NOTES.to_string(),
+        serde_json::to_string(&serde_json::json!({
+            game_path: "Recovery note survives snapshot restore",
+        }))
+        .map_err(|e| e.to_string())?,
+    );
+    Ok(entries)
+}
+
+fn run_release_crash_during_write_test() -> ReliabilityScenarioResult {
+    let dir = match release_test_temp_dir("crash-write") {
+        Ok(dir) => dir,
+        Err(error) => {
+            return reliability_result(
+                "crash_during_write",
+                false,
+                "Failed to create isolated crash-recovery test directory",
+                vec![error],
+            )
+        }
+    };
+
+    let outcome = (|| -> Result<Vec<String>, String> {
+        let library_root = dir.join("library");
+        std::fs::create_dir_all(&library_root).map_err(|e| e.to_string())?;
+        let baseline_entries = build_release_sample_entries(&library_root)?;
+        let state_path = dir.join(STATE_STORAGE_FILE);
+        let baseline_raw = serde_json::to_string(&StateStore {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            entries: baseline_entries.clone(),
+        })
+        .map_err(|e| e.to_string())?;
+        atomic_write_string(&state_path, &baseline_raw, "release_test_crash_baseline")?;
+
+        let interrupted_tmp = state_path.with_file_name(".state.json.libmaly-tmp-crash-test");
+        std::fs::write(&interrupted_tmp, b"{\"schemaVersion\":1,\"entries\":")
+            .map_err(|e| e.to_string())?;
+
+        let recovered_raw = read_text_file_resilient(&state_path)?;
+        let recovered_store = parse_state_store(&recovered_raw)?;
+        if recovered_store.entries != baseline_entries {
+            return Err("Committed state changed after leaving behind an interrupted temp file".to_string());
+        }
+
+        Ok(vec![
+            format!("Recovered {} committed entries after simulating an interrupted temp write.", recovered_store.entries.len()),
+            format!("Primary file remained readable at {}.", state_path.to_string_lossy()),
+            format!("Interrupted payload stayed isolated in {}.", interrupted_tmp.to_string_lossy()),
+        ])
+    })();
+
+    let result = match outcome {
+        Ok(details) => reliability_result(
+            "crash_during_write",
+            true,
+            "Interrupted writes leave the last committed state recoverable",
+            details,
+        ),
+        Err(error) => reliability_result(
+            "crash_during_write",
+            false,
+            "Interrupted write simulation lost the committed state",
+            vec![error],
+        ),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+fn run_release_root_folder_rename_test() -> ReliabilityScenarioResult {
+    let dir = match release_test_temp_dir("root-rename") {
+        Ok(dir) => dir,
+        Err(error) => {
+            return reliability_result(
+                "root_folder_rename",
+                false,
+                "Failed to create isolated auto-heal test directory",
+                vec![error],
+            )
+        }
+    };
+
+    let outcome = (|| -> Result<Vec<String>, String> {
+        let old_root = dir.join("LibraryRootOld");
+        std::fs::create_dir_all(&old_root).map_err(|e| e.to_string())?;
+        let first_old_path = create_release_test_scan_candidate(&old_root, "Moonlight Story", "MoonlightStory")?;
+        let second_old_path = create_release_test_scan_candidate(&old_root, "Velvet Lesson", "VelvetLesson")?;
+        let new_root = dir.join("LibraryRootRenamed");
+        std::fs::rename(&old_root, &new_root).map_err(|e| e.to_string())?;
+
+        let report = suggest_auto_heal_paths(
+            vec![IntegrityLibraryFolderInput {
+                path: new_root.to_string_lossy().to_string(),
+            }],
+            vec![
+                IntegrityGameInput {
+                    name: "Moonlight Story".to_string(),
+                    path: first_old_path,
+                    uninstalled: Some(false),
+                },
+                IntegrityGameInput {
+                    name: "Velvet Lesson".to_string(),
+                    path: second_old_path,
+                    uninstalled: Some(false),
+                },
+            ],
+        )?;
+
+        if report.total_broken_games != 2 || report.suggestion_count != 2 || !report.unresolved_paths.is_empty() {
+            return Err(format!(
+                "Expected 2 healed paths but got {} suggestions and {} unresolved paths",
+                report.suggestion_count,
+                report.unresolved_paths.len()
+            ));
+        }
+
+        let mut details = vec![format!(
+            "Recovered {}/{} broken game paths after renaming the library root.",
+            report.suggestion_count,
+            report.total_broken_games
+        )];
+        for suggestion in report.suggestions.iter() {
+            details.push(format!(
+                "{} -> {} ({}% confidence, {})",
+                suggestion.old_path,
+                suggestion.new_path,
+                suggestion.confidence,
+                suggestion.reason
+            ));
+        }
+        Ok(details)
+    })();
+
+    let result = match outcome {
+        Ok(details) => reliability_result(
+            "root_folder_rename",
+            true,
+            "Auto-heal successfully remapped games after a library root rename",
+            details,
+        ),
+        Err(error) => reliability_result(
+            "root_folder_rename",
+            false,
+            "Auto-heal did not recover renamed library paths reliably",
+            vec![error],
+        ),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+fn run_release_local_vs_cloud_conflict_test() -> ReliabilityScenarioResult {
+    let outcome = (|| -> Result<Vec<String>, String> {
+        let base_entries = HashMap::from([
+            (
+                TEST_STORAGE_KEY_STATS.to_string(),
+                serde_json::json!({ "playtimeMinutes": 10, "launchCount": 1 }).to_string(),
+            ),
+            (
+                TEST_STORAGE_KEY_NOTES.to_string(),
+                serde_json::json!({ "body": "Base note" }).to_string(),
+            ),
+        ]);
+        let local_entries = HashMap::from([
+            (
+                TEST_STORAGE_KEY_STATS.to_string(),
+                serde_json::json!({ "playtimeMinutes": 25, "launchCount": 2 }).to_string(),
+            ),
+            (
+                TEST_STORAGE_KEY_NOTES.to_string(),
+                serde_json::json!({ "body": "Base note" }).to_string(),
+            ),
+        ]);
+        let remote_entries = HashMap::from([
+            (
+                TEST_STORAGE_KEY_STATS.to_string(),
+                serde_json::json!({ "playtimeMinutes": 10, "launchCount": 1 }).to_string(),
+            ),
+            (
+                TEST_STORAGE_KEY_NOTES.to_string(),
+                serde_json::json!({ "body": "Remote note wins deterministically" }).to_string(),
+            ),
+        ]);
+
+        let report = resolve_sync_conflicts(SyncConflictRequest {
+            local_entries,
+            remote_entries,
+            base_entries: Some(base_entries),
+        });
+        if report.conflict_count != 0 {
+            return Err(format!("Expected a conflict-free deterministic merge but found {} manual conflicts", report.conflict_count));
+        }
+
+        let merged_stats: Value = serde_json::from_str(
+            report
+                .resolved_entries
+                .get(TEST_STORAGE_KEY_STATS)
+                .ok_or_else(|| "Merged stats entry is missing".to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let merged_notes: Value = serde_json::from_str(
+            report
+                .resolved_entries
+                .get(TEST_STORAGE_KEY_NOTES)
+                .ok_or_else(|| "Merged notes entry is missing".to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+
+        if merged_stats
+            .get("playtimeMinutes")
+            .and_then(|value| value.as_i64())
+            != Some(25)
+        {
+            return Err("Merged playtime did not keep the local progress".to_string());
+        }
+        if merged_notes
+            .get("body")
+            .and_then(|value| value.as_str())
+            != Some("Remote note wins deterministically")
+        {
+            return Err("Merged notes did not keep the remote note update".to_string());
+        }
+
+        Ok(vec![
+            format!("Merged keys: {}.", report.changed_keys.join(", ")),
+            "Playtime preserved the local delta while notes preserved the remote delta.".to_string(),
+            "No manual conflict resolution was required for this mixed local/cloud update.".to_string(),
+        ])
+    })();
+
+    match outcome {
+        Ok(details) => reliability_result(
+            "local_vs_cloud_conflict",
+            true,
+            "Three-way sync merge kept playtime and notes deterministically",
+            details,
+        ),
+        Err(error) => reliability_result(
+            "local_vs_cloud_conflict",
+            false,
+            "Three-way sync merge produced a non-deterministic result",
+            vec![error],
+        ),
+    }
+}
+
+fn run_release_broken_metadata_source_test() -> ReliabilityScenarioResult {
+    let outcome = (|| -> Result<Vec<String>, String> {
+        let import_error = custom_metadata_import_templates(
+            serde_json::json!([
+                {
+                    "id": "broken-source",
+                    "name": "Broken Source",
+                    "urlPatterns": ["("],
+                    "fields": {
+                        "title": [
+                            { "type": "css", "selector": "h1" }
+                        ]
+                    }
+                }
+            ])
+            .to_string(),
+        )
+        .err()
+        .ok_or_else(|| "Invalid metadata template unexpectedly imported without validation errors".to_string())?;
+
+        let templates = custom_metadata_list_templates()?;
+        let health = get_scraper_health_snapshot();
+        if !import_error.to_ascii_lowercase().contains("invalid url pattern") {
+            return Err(format!("Unexpected metadata validation error: {}", import_error));
+        }
+
+        Ok(vec![
+            format!("Broken source failed fast with validation error: {}", import_error),
+            format!("Template registry remained readable with {} configured templates.", templates.len()),
+            format!("Scraper diagnostics still returned {} source snapshots after the failure.", health.len()),
+        ])
+    })();
+
+    match outcome {
+        Ok(details) => reliability_result(
+            "broken_metadata_source",
+            true,
+            "Broken metadata sources degrade cleanly without blocking diagnostics",
+            details,
+        ),
+        Err(error) => reliability_result(
+            "broken_metadata_source",
+            false,
+            "Broken metadata source handling was not graceful",
+            vec![error],
+        ),
+    }
+}
+
+fn run_release_backup_restore_test() -> ReliabilityScenarioResult {
+    let dir = match release_test_temp_dir("backup-restore") {
+        Ok(dir) => dir,
+        Err(error) => {
+            return reliability_result(
+                "cross_platform_backup_restore",
+                false,
+                "Failed to create isolated backup/restore test directory",
+                vec![error],
+            )
+        }
+    };
+
+    let outcome = (|| -> Result<Vec<String>, String> {
+        let library_root = dir.join("library");
+        std::fs::create_dir_all(&library_root).map_err(|e| e.to_string())?;
+        let entries = build_release_sample_entries(&library_root)?;
+        let snapshot_path = dir.join("release-backup-restore.json");
+        let snapshot_json = serde_json::json!({
+            "id": "release-backup-restore",
+            "createdAt": now_ms(),
+            "label": "Release Reliability",
+            "reason": "Cross-platform backup/restore dry run",
+            "entries": entries,
+        });
+        std::fs::write(
+            &snapshot_path,
+            serde_json::to_string_pretty(&snapshot_json).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+
+        let preview = preview_restore_snapshot(
+            snapshot_path.to_string_lossy().to_string(),
+            HashMap::new(),
+        )?;
+        let restored = restore_snapshot(snapshot_path.to_string_lossy().to_string())?;
+        let restored_folders: Vec<IntegrityLibraryFolderInput> = serde_json::from_str(
+            restored
+                .entries
+                .get(TEST_STORAGE_KEY_FOLDERS)
+                .ok_or_else(|| "Restored snapshot is missing library folders".to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let restored_games: Vec<IntegrityGameInput> = serde_json::from_str(
+            restored
+                .entries
+                .get(TEST_STORAGE_KEY_GAMES)
+                .ok_or_else(|| "Restored snapshot is missing games".to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let integrity = run_integrity_check(
+            restored_folders,
+            restored_games,
+            HashMap::new(),
+            HashMap::new(),
+        );
+        if preview.changed_count == 0 {
+            return Err("Snapshot preview did not detect any restorable entries".to_string());
+        }
+        if integrity.error_count > 0 {
+            return Err(format!("Integrity check found {} errors after restore", integrity.error_count));
+        }
+
+        Ok(vec![
+            format!("Restored {} snapshot entries on {}.", restored.entry_count, std::env::consts::OS),
+            format!("Preview detected {} changes before restore.", preview.changed_count),
+            format!("Integrity check finished with {} warnings and {} errors.", integrity.warning_count, integrity.error_count),
+        ])
+    })();
+
+    let result = match outcome {
+        Ok(details) => reliability_result(
+            "cross_platform_backup_restore",
+            true,
+            "Backup snapshot round-trip restored a clean library state on the current platform",
+            details,
+        ),
+        Err(error) => reliability_result(
+            "cross_platform_backup_restore",
+            false,
+            "Backup snapshot round-trip failed integrity verification",
+            vec![error],
+        ),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+#[tauri::command]
+fn run_release_reliability_checks() -> ReliabilityScenarioReport {
+    ReliabilityScenarioReport {
+        completed_at: now_ms(),
+        platform: std::env::consts::OS.to_string(),
+        scenarios: vec![
+            run_release_crash_during_write_test(),
+            run_release_root_folder_rename_test(),
+            run_release_local_vs_cloud_conflict_test(),
+            run_release_broken_metadata_source_test(),
+            run_release_backup_restore_test(),
+        ],
+    }
+}
+
+#[cfg(test)]
+mod reliability_tests {
+    use super::*;
+
+    #[test]
+    fn auto_heal_detects_root_rename_for_release_fixture() {
+        let dir = release_test_temp_dir("unit-root-rename").expect("temp dir");
+
+        let outcome = (|| -> Result<(), String> {
+            let old_root = dir.join("LibraryRootOld");
+            std::fs::create_dir_all(&old_root).map_err(|e| e.to_string())?;
+            let first_old_path = create_release_test_scan_candidate(&old_root, "Moonlight Story", "MoonlightStory")?;
+            let second_old_path = create_release_test_scan_candidate(&old_root, "Velvet Lesson", "VelvetLesson")?;
+            let new_root = dir.join("LibraryRootRenamed");
+            std::fs::rename(&old_root, &new_root).map_err(|e| e.to_string())?;
+
+            let report = suggest_auto_heal_paths(
+                vec![IntegrityLibraryFolderInput {
+                    path: new_root.to_string_lossy().to_string(),
+                }],
+                vec![
+                    IntegrityGameInput {
+                        name: "Moonlight Story".to_string(),
+                        path: first_old_path,
+                        uninstalled: Some(false),
+                    },
+                    IntegrityGameInput {
+                        name: "Velvet Lesson".to_string(),
+                        path: second_old_path,
+                        uninstalled: Some(false),
+                    },
+                ],
+            )?;
+
+            if report.total_broken_games != 2 {
+                return Err(format!("expected 2 broken games, got {}", report.total_broken_games));
+            }
+            if report.suggestion_count != 2 {
+                return Err(format!("expected 2 suggestions, got {}", report.suggestion_count));
+            }
+            if !report.unresolved_paths.is_empty() {
+                return Err(format!("expected no unresolved paths, got {}", report.unresolved_paths.len()));
+            }
+            Ok(())
+        })();
+
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Err(error) = outcome {
+            panic!("{}", error);
+        }
+    }
 }
 
 #[tauri::command]
@@ -1574,8 +2314,15 @@ fn backup_save_files(
     game_path: String,
     output_path: Option<String>,
 ) -> Result<SaveBackupResult, String> {
+    build_save_backup_zip(&game_path, output_path.as_deref())
+}
+
+fn build_save_backup_zip(
+    game_path: &str,
+    output_path: Option<&str>,
+) -> Result<SaveBackupResult, String> {
     let game = PathBuf::from(&game_path);
-    let dirs = detect_save_dirs(&game_path);
+    let dirs = detect_save_dirs(game_path);
     if dirs.is_empty() {
         return Err("No common save directories were detected for this game.".to_string());
     }
@@ -1645,6 +2392,30 @@ fn backup_save_files(
             .map(|d| d.to_string_lossy().to_string())
             .collect(),
     })
+}
+
+#[tauri::command]
+fn detect_save_paths(
+    game_path: String,
+    engine: Option<String>,
+    company_name: Option<String>,
+    game_name: Option<String>,
+) -> Vec<SavePathInfo> {
+    save_transfer::detect_save_paths(&game_path, engine.as_deref(), company_name.as_deref(), game_name.as_deref())
+}
+
+#[tauri::command]
+fn transfer_saves(
+    source_path: String,
+    target_path: String,
+    create_backup: bool,
+) -> Result<TransferResult, String> {
+    save_transfer::transfer_saves(&source_path, &target_path, create_backup)
+}
+
+#[tauri::command]
+fn is_valid_save_directory(path: String) -> bool {
+    check_valid_save_directory(&path)
 }
 
 pub(crate) fn push_rust_log(app: Option<&AppHandle>, level: &str, message: impl Into<String>) {
@@ -2081,12 +2852,54 @@ struct LutrisGameEntry {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct InteropGameEntry {
     name: String,
     game_id: String,
     exe: String,
     args: Option<String>,
     source: String, // "playnite" | "gog-galaxy"
+    store_uri: Option<String>,
+    source_url: Option<String>,
+    cover_url: Option<String>,
+    developer: Option<String>,
+    version: Option<String>,
+    overview: Option<String>,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Default)]
+struct ProtocolStoreCandidate {
+    name: String,
+    game_id: String,
+    exe: Option<String>,
+    install_dir: Option<String>,
+    args: Option<String>,
+    source: String,
+    store_uri: Option<String>,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Default)]
+struct ExoticStoreCandidate {
+    name: String,
+    game_id: String,
+    exe: Option<String>,
+    install_dir: Option<String>,
+    source: String,
+    source_url: Option<String>,
+    cover_url: Option<String>,
+    developer: Option<String>,
+    version: Option<String>,
+    overview: Option<String>,
+}
+
+#[derive(Default)]
+struct CloudPageMetadata {
+    title: Option<String>,
+    cover_url: Option<String>,
+    overview: Option<String>,
+    developer: Option<String>,
 }
 
 #[cfg(windows)]
@@ -2178,6 +2991,1049 @@ fn candidate_from_paths(primary: Option<String>, install_dir: Option<String>) ->
         }
     }
     install_dir.and_then(|dir| find_best_exe_in_install_dir(&dir))
+}
+
+#[cfg(windows)]
+fn clean_candidate_path(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_icon_suffix = trimmed.split(',').next().unwrap_or(trimmed).trim();
+    let normalized = normalize_windows_path(without_icon_suffix);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+#[cfg(windows)]
+fn is_allowed_store_uri(uri: &str) -> bool {
+    let lower = uri.trim().to_lowercase();
+    [
+        "origin://",
+        "origin2://",
+        "uplay://",
+        "ubisoftconnect://",
+        "rockstar-games-launcher://",
+        "rockstargameslauncher://",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+}
+
+fn open_uri_target(target: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", target])
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        return Err("Opening launcher protocols is not supported on this platform".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn fallback_protocol_game_id(source: &str, name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in name.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() {
+            prev_dash = false;
+            Some(ch.to_ascii_lowercase())
+        } else if !prev_dash {
+            prev_dash = true;
+            Some('-')
+        } else {
+            None
+        };
+        if let Some(value) = mapped {
+            out.push(value);
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        format!("{}-game", source)
+    } else {
+        out
+    }
+}
+
+#[cfg(windows)]
+fn extract_case_insensitive_segment<'a>(haystack: &'a str, needle: &str) -> Option<&'a str> {
+    let lower = haystack.to_lowercase();
+    let idx = lower.find(needle)?;
+    Some(&haystack[idx + needle.len()..])
+}
+
+#[cfg(windows)]
+fn take_token_while<F: Fn(char) -> bool>(text: &str, allow: F) -> String {
+    text.chars().take_while(|ch| allow(*ch)).collect()
+}
+
+#[cfg(windows)]
+fn build_protocol_store_uri(source: &str, game_id: &str) -> Option<String> {
+    let game_id = game_id.trim();
+    if game_id.is_empty() {
+        return None;
+    }
+    match source {
+        "ea-app" => Some(format!("origin2://game/launch?offerIds={}", game_id)),
+        "ubisoft-connect" => Some(format!("uplay://launch/{}/0", game_id)),
+        "rockstar" => Some(format!("rockstar-games-launcher://launch?gameId={}", game_id)),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn extract_ea_offer_id(text: &str) -> Option<String> {
+    for needle in [
+        "origin2://game/launch?offerids=",
+        "origin2://launchgame/",
+        "origin://launchgame/",
+    ] {
+        if let Some(rest) = extract_case_insensitive_segment(text, needle) {
+            let token = take_token_while(rest, |ch| {
+                ch.is_ascii_alphanumeric() || matches!(ch, ':' | '-' | '_' | '.')
+            });
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn extract_uplay_game_id(text: &str) -> Option<String> {
+    for needle in ["uplay://launch/", "uplay://install/"] {
+        if let Some(rest) = extract_case_insensitive_segment(text, needle) {
+            let token = take_token_while(rest, |ch| ch.is_ascii_digit());
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn extract_rockstar_game_id(text: &str) -> Option<String> {
+    for needle in [
+        "rockstar-games-launcher://launch?gameid=",
+        "rockstargameslauncher://launch?gameid=",
+        "rockstar-games-launcher://launch/",
+        "rockstargameslauncher://launch/",
+    ] {
+        if let Some(rest) = extract_case_insensitive_segment(text, needle) {
+            let token = take_token_while(rest, |ch| {
+                ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
+            });
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn detect_protocol_store_source(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    if lower.contains("uplay://") || lower.contains("ubisoft") {
+        return Some("ubisoft-connect");
+    }
+    if lower.contains("origin://")
+        || lower.contains("origin2://")
+        || lower.contains("electronic arts")
+        || lower.contains("ea desktop")
+    {
+        return Some("ea-app");
+    }
+    if lower.contains("rockstar") {
+        return Some("rockstar");
+    }
+    None
+}
+
+#[cfg(windows)]
+fn extract_protocol_store_reference(text: &str) -> Option<(String, String, String)> {
+    if let Some(game_id) = extract_uplay_game_id(text) {
+        let uri = build_protocol_store_uri("ubisoft-connect", &game_id)?;
+        return Some(("ubisoft-connect".to_string(), game_id, uri));
+    }
+    if let Some(game_id) = extract_ea_offer_id(text) {
+        let uri = build_protocol_store_uri("ea-app", &game_id)?;
+        return Some(("ea-app".to_string(), game_id, uri));
+    }
+    if let Some(game_id) = extract_rockstar_game_id(text) {
+        let uri = build_protocol_store_uri("rockstar", &game_id)?;
+        return Some(("rockstar".to_string(), game_id, uri));
+    }
+    None
+}
+
+#[cfg(windows)]
+fn reg_value_string(key: &RegKey, value_name: &str) -> Option<String> {
+    key.get_value::<String, _>(value_name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(windows)]
+fn insert_protocol_store_candidate(
+    out: &mut HashMap<String, ProtocolStoreCandidate>,
+    mut candidate: ProtocolStoreCandidate,
+) {
+    if candidate.source.is_empty() {
+        return;
+    }
+    if candidate.game_id.trim().is_empty() {
+        candidate.game_id = fallback_protocol_game_id(&candidate.source, &candidate.name);
+    }
+    let key = format!(
+        "{}:{}",
+        candidate.source,
+        candidate.game_id.trim().to_lowercase()
+    );
+    let entry = out.entry(key).or_default();
+    if entry.source.is_empty() {
+        entry.source = candidate.source.clone();
+    }
+    if entry.name.is_empty() && !candidate.name.is_empty() {
+        entry.name = candidate.name.clone();
+    }
+    if entry.game_id.is_empty() && !candidate.game_id.is_empty() {
+        entry.game_id = candidate.game_id.clone();
+    }
+    if entry.exe.is_none() {
+        entry.exe = candidate.exe.take();
+    }
+    if entry.install_dir.is_none() {
+        entry.install_dir = candidate.install_dir.take();
+    }
+    if entry.args.is_none() {
+        entry.args = candidate.args.take();
+    }
+    if entry.store_uri.is_none() {
+        entry.store_uri = candidate.store_uri.take();
+    }
+}
+
+#[cfg(windows)]
+fn finalize_protocol_store_candidate(candidate: ProtocolStoreCandidate) -> Option<InteropGameEntry> {
+    let exe = candidate_from_paths(candidate.exe, candidate.install_dir)?;
+    let name = if candidate.name.trim().is_empty() {
+        Path::new(&exe)
+            .file_stem()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| candidate.game_id.clone())
+    } else {
+        candidate.name
+    };
+    Some(InteropGameEntry {
+        name,
+        game_id: candidate.game_id,
+        exe,
+        args: candidate.args,
+        source: candidate.source,
+        store_uri: candidate.store_uri,
+        source_url: None,
+        cover_url: None,
+        developer: None,
+        version: None,
+        overview: None,
+    })
+}
+
+#[cfg(windows)]
+fn extract_meta_content(document: &Html, attribute: &str, key: &str) -> Option<String> {
+    let selector = Selector::parse("meta").ok()?;
+    document.select(&selector).find_map(|node| {
+        let value = node.value().attr(attribute)?;
+        if !value.eq_ignore_ascii_case(key) {
+            return None;
+        }
+        node.value()
+            .attr("content")
+            .map(str::trim)
+            .filter(|content| !content.is_empty())
+            .map(str::to_string)
+    })
+}
+
+#[cfg(windows)]
+fn extract_html_title(document: &Html) -> Option<String> {
+    let selector = Selector::parse("title").ok()?;
+    let text = document
+        .select(&selector)
+        .next()?
+        .text()
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+#[cfg(windows)]
+fn normalize_lookup_token(raw: &str) -> String {
+    raw.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
+}
+
+#[cfg(windows)]
+async fn fetch_cloud_page_metadata(url: &str) -> Result<CloudPageMetadata, String> {
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch {url}: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Metadata request failed for {url}: {}", response.status()));
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read metadata body for {url}: {e}"))?;
+    let document = Html::parse_document(&body);
+    Ok(CloudPageMetadata {
+        title: extract_meta_content(&document, "property", "og:title")
+            .or_else(|| extract_meta_content(&document, "name", "twitter:title"))
+            .or_else(|| extract_html_title(&document)),
+        cover_url: extract_meta_content(&document, "property", "og:image")
+            .or_else(|| extract_meta_content(&document, "name", "twitter:image")),
+        overview: extract_meta_content(&document, "property", "og:description")
+            .or_else(|| extract_meta_content(&document, "name", "description")),
+        developer: extract_meta_content(&document, "name", "author"),
+    })
+}
+
+#[cfg(windows)]
+fn insert_exotic_store_candidate(
+    out: &mut HashMap<String, ExoticStoreCandidate>,
+    candidate: ExoticStoreCandidate,
+) {
+    let Some(exe) = candidate_from_paths(candidate.exe.clone(), candidate.install_dir.clone()) else {
+        return;
+    };
+    let key = format!(
+        "{}:{}",
+        candidate.source.trim().to_lowercase(),
+        normalize_windows_path(&exe).to_lowercase()
+    );
+    let entry = out.entry(key).or_default();
+    if entry.source.is_empty() {
+        entry.source = candidate.source.clone();
+    }
+    if entry.name.is_empty() && !candidate.name.trim().is_empty() {
+        entry.name = candidate.name.clone();
+    }
+    if entry.game_id.is_empty() && !candidate.game_id.trim().is_empty() {
+        entry.game_id = candidate.game_id.clone();
+    }
+    if entry.exe.is_none() {
+        entry.exe = Some(exe);
+    }
+    if entry.install_dir.is_none() {
+        entry.install_dir = candidate.install_dir.clone();
+    }
+    if entry.source_url.is_none() {
+        entry.source_url = candidate.source_url.clone();
+    }
+    if entry.cover_url.is_none() {
+        entry.cover_url = candidate.cover_url.clone();
+    }
+    if entry.developer.is_none() {
+        entry.developer = candidate.developer.clone();
+    }
+    if entry.version.is_none() {
+        entry.version = candidate.version.clone();
+    }
+    if entry.overview.is_none() {
+        entry.overview = candidate.overview.clone();
+    }
+}
+
+#[cfg(windows)]
+fn finalize_exotic_store_candidate(candidate: ExoticStoreCandidate) -> Option<InteropGameEntry> {
+    let exe = candidate_from_paths(candidate.exe, candidate.install_dir)?;
+    let name = if candidate.name.trim().is_empty() {
+        Path::new(&exe)
+            .file_stem()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| candidate.game_id.clone())
+    } else {
+        candidate.name
+    };
+    Some(InteropGameEntry {
+        name,
+        game_id: if candidate.game_id.trim().is_empty() {
+            fallback_protocol_game_id(&candidate.source, &exe)
+        } else {
+            candidate.game_id
+        },
+        exe,
+        args: None,
+        source: candidate.source,
+        store_uri: None,
+        source_url: candidate.source_url,
+        cover_url: candidate.cover_url,
+        developer: candidate.developer,
+        version: candidate.version,
+        overview: candidate.overview,
+    })
+}
+
+#[cfg(windows)]
+fn battle_net_page_url_from_hint(game_id: &str, name: &str, install_dir: Option<&str>) -> Option<String> {
+    let lookup = normalize_lookup_token(&format!("{} {} {}", game_id, name, install_dir.unwrap_or_default()));
+    let known: &[(&[&str], &str)] = &[
+        (&["overwatch", "pro"], "https://overwatch.blizzard.com/"),
+        (&["diablo4", "diabloiv", "fen"], "https://diablo4.blizzard.com/"),
+        (&["diablo3", "d3"], "https://diablo3.blizzard.com/"),
+        (&["diablo2", "diabloii", "resurrected", "d2r", "rtro"], "https://diablo2.blizzard.com/"),
+        (&["worldofwarcraft", "wow"], "https://worldofwarcraft.blizzard.com/"),
+        (&["warcraft3", "warcraftiii", "w3"], "https://warcraft3.blizzard.com/"),
+        (&["starcraft2", "starcraftii", "s2"], "https://starcraft2.blizzard.com/"),
+        (&["starcraftremastered", "starcraft", "s1"], "https://starcraft.blizzard.com/"),
+        (&["hearthstone", "wtcg"], "https://hearthstone.blizzard.com/"),
+        (&["heroesofthestorm", "hero"], "https://heroesofthestorm.blizzard.com/"),
+        (&["callofduty", "cod"], "https://www.callofduty.com/"),
+    ];
+    known.iter().find_map(|(aliases, url)| aliases.iter().any(|alias| lookup.contains(alias)).then(|| (*url).to_string()))
+}
+
+#[cfg(windows)]
+fn guess_battle_net_game_id(name: &str, install_dir: Option<&str>, exe: Option<&str>) -> Option<String> {
+    let lookup = normalize_lookup_token(&format!(
+        "{} {} {}",
+        name,
+        install_dir.unwrap_or_default(),
+        exe.unwrap_or_default()
+    ));
+    let known: &[(&[&str], &str)] = &[
+        (&["overwatch"], "pro"),
+        (&["diablo4", "diabloiv"], "fen"),
+        (&["diablo3"], "d3"),
+        (&["diablo2", "resurrected", "d2r"], "rtro"),
+        (&["worldofwarcraft", "wow"], "wow"),
+        (&["warcraft3", "warcraftiii"], "w3"),
+        (&["starcraft2", "starcraftii"], "s2"),
+        (&["starcraftremastered", "starcraft"], "s1"),
+        (&["hearthstone"], "wtcg"),
+        (&["heroesofthestorm"], "hero"),
+        (&["callofduty"], "cod"),
+    ];
+    known.iter().find_map(|(aliases, code)| aliases.iter().any(|alias| lookup.contains(alias)).then(|| (*code).to_string()))
+}
+
+#[cfg(windows)]
+fn find_build_info_near_install(install_dir: &str) -> Option<PathBuf> {
+    let dir = PathBuf::from(install_dir);
+    let primary = dir.join(".build.info");
+    if primary.is_file() {
+        return Some(primary);
+    }
+    dir.parent()
+        .map(|parent| parent.join(".build.info"))
+        .filter(|path| path.is_file())
+}
+
+#[cfg(windows)]
+fn parse_pipe_manifest_map(path: &Path) -> Option<HashMap<String, String>> {
+    let raw = read_text_file_resilient(path).ok()?;
+    let mut lines = raw.lines().filter(|line| line.contains('|'));
+    let headers: Vec<String> = lines
+        .next()?
+        .split('|')
+        .map(|value| value.trim().to_string())
+        .collect();
+    if headers.is_empty() {
+        return None;
+    }
+    let values: Vec<String> = lines
+        .find(|line| line.split('|').count() >= headers.len())?
+        .split('|')
+        .map(|value| value.trim().to_string())
+        .collect();
+    let mut out = HashMap::new();
+    for (idx, header) in headers.iter().enumerate() {
+        if let Some(value) = values.get(idx) {
+            out.insert(header.clone(), value.clone());
+        }
+    }
+    Some(out)
+}
+
+#[cfg(windows)]
+fn manifest_value_ci(map: &HashMap<String, String>, key: &str) -> Option<String> {
+    map.iter().find_map(|(candidate, value)| {
+        candidate
+            .eq_ignore_ascii_case(key)
+            .then(|| value.trim().to_string())
+            .filter(|text| !text.is_empty())
+    })
+}
+
+#[cfg(windows)]
+fn collect_battle_net_registry_candidates(out: &mut HashMap<String, ExoticStoreCandidate>) {
+    let roots = [
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ];
+    for (root, path) in roots {
+        let Ok(key) = RegKey::predef(root).open_subkey_with_flags(path, KEY_READ) else {
+            continue;
+        };
+        for subkey_name in key.enum_keys().flatten() {
+            let Ok(subkey) = key.open_subkey_with_flags(&subkey_name, KEY_READ) else {
+                continue;
+            };
+            let display_name = reg_value_string(&subkey, "DisplayName").unwrap_or_default();
+            let publisher = reg_value_string(&subkey, "Publisher").unwrap_or_default();
+            let name_lc = display_name.to_lowercase();
+            let publisher_lc = publisher.to_lowercase();
+            let matches_bnet = publisher_lc.contains("blizzard")
+                || name_lc.contains("diablo")
+                || name_lc.contains("warcraft")
+                || name_lc.contains("starcraft")
+                || name_lc.contains("overwatch")
+                || name_lc.contains("hearthstone")
+                || name_lc.contains("heroes of the storm")
+                || name_lc.contains("call of duty");
+            if !matches_bnet || (name_lc.contains("battle.net") && !name_lc.contains("call of duty")) {
+                continue;
+            }
+            let install_dir = reg_value_string(&subkey, "InstallLocation")
+                .map(|value| normalize_windows_path(&value))
+                .filter(|value| !value.is_empty());
+            let exe = reg_value_string(&subkey, "DisplayIcon").and_then(|value| clean_candidate_path(&value));
+            let manifest = install_dir
+                .as_deref()
+                .and_then(find_build_info_near_install)
+                .and_then(|path| parse_pipe_manifest_map(&path));
+            let game_id = manifest
+                .as_ref()
+                .and_then(|map| manifest_value_ci(map, "Product"))
+                .or_else(|| manifest.as_ref().and_then(|map| manifest_value_ci(map, "ProductCode")))
+                .or_else(|| guess_battle_net_game_id(&display_name, install_dir.as_deref(), exe.as_deref()))
+                .unwrap_or_else(|| fallback_protocol_game_id("battle-net", &display_name));
+            let version = manifest
+                .as_ref()
+                .and_then(|map| manifest_value_ci(map, "Version"))
+                .or_else(|| manifest.as_ref().and_then(|map| manifest_value_ci(map, "Build Key")));
+            let source_url = battle_net_page_url_from_hint(&game_id, &display_name, install_dir.as_deref());
+            insert_exotic_store_candidate(
+                out,
+                ExoticStoreCandidate {
+                    name: display_name,
+                    game_id: game_id.clone(),
+                    exe,
+                    install_dir: install_dir.clone(),
+                    source: "battle-net".to_string(),
+                    source_url,
+                    cover_url: None,
+                    developer: if publisher.trim().is_empty() { None } else { Some(publisher) },
+                    version,
+                    overview: None,
+                },
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+fn gamejolt_manifest_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        roots.push(PathBuf::from(&local).join("GameJolt"));
+        roots.push(PathBuf::from(&local).join("gamejolt-client"));
+    }
+    if let Some(roaming) = std::env::var_os("APPDATA") {
+        roots.push(PathBuf::from(&roaming).join("GameJolt"));
+        roots.push(PathBuf::from(&roaming).join("gamejolt-client"));
+    }
+    roots.into_iter().filter(|path| path.exists()).collect()
+}
+
+#[cfg(windows)]
+fn looks_like_gamejolt_manifest_file(path: &Path) -> bool {
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let extension = path
+        .extension()
+        .map(|value| value.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    extension == "json"
+        && ["game", "library", "install", "manifest", "package", "state"]
+            .iter()
+            .any(|needle| file_name.contains(needle))
+}
+
+#[cfg(windows)]
+fn derive_gamejolt_source_url(value: &Value) -> Option<String> {
+    let explicit = json_string_field(value, &["url", "web_url", "webUrl", "source_url", "sourceUrl"])
+        .or_else(|| json_nested_string_field(value, &["game", "url"]));
+    if let Some(url) = explicit {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Some(url);
+        }
+    }
+    let slug = json_string_field(value, &["slug", "game_slug", "gameSlug"])
+        .or_else(|| json_nested_string_field(value, &["game", "slug"]));
+    let game_id = json_string_field(value, &["game_id", "gameId", "id"])
+        .or_else(|| json_nested_string_field(value, &["game", "id"]));
+    match (slug, game_id) {
+        (Some(slug), Some(game_id)) => Some(format!("https://gamejolt.com/games/{}/{}", slug.trim(), game_id.trim())),
+        (Some(slug), None) => Some(format!("https://gamejolt.com/games/{}", slug.trim())),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn parse_gamejolt_candidate(value: &Value) -> Option<ExoticStoreCandidate> {
+    let title = json_string_field(value, &["title", "name", "gameTitle", "game_name"])
+        .or_else(|| json_nested_string_field(value, &["game", "title"]))
+        .or_else(|| json_nested_string_field(value, &["game", "name"]));
+    let install_dir = json_string_field(value, &["install_dir", "installDir", "install_path", "installPath", "path", "installLocation"])
+        .or_else(|| json_nested_string_field(value, &["install", "path"]))
+        .or_else(|| json_nested_string_field(value, &["path", "absolute"]))
+        .map(|value| normalize_windows_path(&value))
+        .filter(|value| !value.is_empty());
+    let exe_hint = json_string_field(value, &["exe", "executable", "launchExe", "launchExecutable", "executablePath"])
+        .or_else(|| json_nested_string_field(value, &["install", "executable"]));
+    let resolved_exe = candidate_from_paths(exe_hint, install_dir.clone());
+    if resolved_exe.is_none() {
+        return None;
+    }
+    let game_id = json_string_field(value, &["game_id", "gameId", "id"])
+        .or_else(|| json_nested_string_field(value, &["game", "id"]))
+        .or_else(|| json_string_field(value, &["slug", "game_slug", "gameSlug"]))
+        .or_else(|| title.clone().map(|value| fallback_protocol_game_id("gamejolt", &value)))?;
+    Some(ExoticStoreCandidate {
+        name: title.unwrap_or_else(|| format!("GameJolt {}", game_id)),
+        game_id,
+        exe: resolved_exe,
+        install_dir,
+        source: "gamejolt".to_string(),
+        source_url: derive_gamejolt_source_url(value),
+        cover_url: json_string_field(value, &["cover_url", "coverUrl", "thumbnail", "image"])
+            .or_else(|| json_nested_string_field(value, &["game", "thumbnail"])),
+        developer: json_string_field(value, &["developer", "author", "studio"])
+            .or_else(|| json_nested_string_field(value, &["game", "developer"])),
+        version: json_string_field(value, &["version", "buildVersion", "build_version"]),
+        overview: json_string_field(value, &["description", "summary", "overview"]),
+    })
+}
+
+#[cfg(windows)]
+fn collect_gamejolt_candidates_from_value(value: &Value, out: &mut HashMap<String, ExoticStoreCandidate>) {
+    if let Some(candidate) = parse_gamejolt_candidate(value) {
+        insert_exotic_store_candidate(out, candidate);
+    }
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_gamejolt_candidates_from_value(item, out);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values() {
+                collect_gamejolt_candidates_from_value(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(windows)]
+fn collect_gamejolt_manifest_candidates(out: &mut HashMap<String, ExoticStoreCandidate>) {
+    for root in gamejolt_manifest_roots() {
+        for entry in WalkDir::new(root)
+            .max_depth(6)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
+            if !entry.file_type().is_file() || !looks_like_gamejolt_manifest_file(entry.path()) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.len() > 8 * 1024 * 1024 {
+                continue;
+            }
+            let Ok(raw) = read_text_file_resilient(entry.path()) else {
+                continue;
+            };
+            let trimmed = raw.trim_start();
+            if !trimmed.starts_with('{') && !trimmed.starts_with('[') {
+                continue;
+            }
+            let Ok(json) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
+            collect_gamejolt_candidates_from_value(&json, out);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn collect_protocol_store_uninstall_candidates() -> HashMap<String, ProtocolStoreCandidate> {
+    let mut out = HashMap::new();
+    let roots = [
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ];
+    for (root, path) in roots {
+        let Ok(key) = RegKey::predef(root).open_subkey_with_flags(path, KEY_READ) else {
+            continue;
+        };
+        for subkey_name in key.enum_keys().flatten() {
+            let Ok(subkey) = key.open_subkey_with_flags(&subkey_name, KEY_READ) else {
+                continue;
+            };
+            let display_name = reg_value_string(&subkey, "DisplayName").unwrap_or_default();
+            let publisher = reg_value_string(&subkey, "Publisher").unwrap_or_default();
+            let install_location = reg_value_string(&subkey, "InstallLocation");
+            let display_icon = reg_value_string(&subkey, "DisplayIcon");
+            let uninstall_string = reg_value_string(&subkey, "UninstallString").unwrap_or_default();
+            let combined = format!(
+                "{}\n{}\n{}\n{}\n{}",
+                display_name,
+                publisher,
+                install_location.clone().unwrap_or_default(),
+                display_icon.clone().unwrap_or_default(),
+                uninstall_string
+            );
+            let source = extract_protocol_store_reference(&combined)
+                .map(|(source, _, _)| source)
+                .or_else(|| detect_protocol_store_source(&combined).map(str::to_string));
+            let Some(source) = source else {
+                continue;
+            };
+            let (game_id, store_uri) = match extract_protocol_store_reference(&combined) {
+                Some((_, game_id, uri)) => (game_id, Some(uri)),
+                None => (fallback_protocol_game_id(&source, &display_name), None),
+            };
+            let exe = display_icon.as_deref().and_then(clean_candidate_path);
+            let install_dir = install_location.and_then(|value| {
+                let cleaned = normalize_windows_path(&value);
+                if cleaned.is_empty() {
+                    None
+                } else {
+                    Some(cleaned)
+                }
+            });
+            insert_protocol_store_candidate(
+                &mut out,
+                ProtocolStoreCandidate {
+                    name: display_name,
+                    game_id,
+                    exe,
+                    install_dir,
+                    args: None,
+                    source,
+                    store_uri,
+                },
+            );
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+fn collect_ubisoft_registry_candidates(out: &mut HashMap<String, ProtocolStoreCandidate>) {
+    let roots = [
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs"),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Ubisoft\Launcher\Installs"),
+        (HKEY_CURRENT_USER, r"SOFTWARE\Ubisoft\Launcher\Installs"),
+    ];
+    for (root, path) in roots {
+        let Ok(key) = RegKey::predef(root).open_subkey_with_flags(path, KEY_READ) else {
+            continue;
+        };
+        for subkey_name in key.enum_keys().flatten() {
+            let Ok(subkey) = key.open_subkey_with_flags(&subkey_name, KEY_READ) else {
+                continue;
+            };
+            let install_dir = reg_value_string(&subkey, "InstallDir")
+                .or_else(|| reg_value_string(&subkey, "InstallLocation"))
+                .map(|value| normalize_windows_path(&value));
+            let name = reg_value_string(&subkey, "DisplayName")
+                .or_else(|| reg_value_string(&subkey, "GameName"))
+                .unwrap_or_else(|| format!("Ubisoft {}", subkey_name));
+            insert_protocol_store_candidate(
+                out,
+                ProtocolStoreCandidate {
+                    name,
+                    game_id: subkey_name.clone(),
+                    exe: None,
+                    install_dir,
+                    args: None,
+                    source: "ubisoft-connect".to_string(),
+                    store_uri: build_protocol_store_uri("ubisoft-connect", &subkey_name),
+                },
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+fn extract_xml_tag_text(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let lower = xml.to_lowercase();
+    let start = lower.find(&open.to_lowercase())? + open.len();
+    let end = lower[start..].find(&close.to_lowercase())? + start;
+    let value = xml[start..end].trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+#[cfg(windows)]
+fn extract_xml_attribute_value(xml: &str, attribute: &str) -> Option<String> {
+    let lower = xml.to_lowercase();
+    for quote in ['"', '\''] {
+        let needle = format!("{}=", attribute);
+        let Some(idx) = lower.find(&needle.to_lowercase()) else {
+            continue;
+        };
+        let tail = &xml[idx + needle.len()..].trim_start();
+        if !tail.starts_with(quote) {
+            continue;
+        }
+        let end = tail[1..].find(quote)? + 1;
+        let value = tail[1..end].trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn collect_origin_local_content_candidates(out: &mut HashMap<String, ProtocolStoreCandidate>) {
+    let Some(program_data) = std::env::var_os("ProgramData") else {
+        return;
+    };
+    let root = PathBuf::from(program_data).join("Origin").join("LocalContent");
+    if !root.is_dir() {
+        return;
+    }
+    for entry in WalkDir::new(&root)
+        .max_depth(4)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        if !entry.file_type().is_file() || entry.file_name().to_string_lossy().to_lowercase() != "local.xml" {
+            continue;
+        }
+        let Ok(xml) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let game_id = extract_xml_tag_text(&xml, "contentid")
+            .or_else(|| extract_xml_attribute_value(&xml, "offerId"))
+            .or_else(|| extract_ea_offer_id(&xml));
+        let Some(game_id) = game_id else {
+            continue;
+        };
+        let name = extract_xml_tag_text(&xml, "displayname")
+            .or_else(|| extract_xml_tag_text(&xml, "title"))
+            .unwrap_or_else(|| {
+                entry
+                    .path()
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .map(|value| value.to_string_lossy().to_string())
+                    .unwrap_or_else(|| game_id.clone())
+            });
+        let install_dir = extract_xml_tag_text(&xml, "installedpath")
+            .or_else(|| extract_xml_tag_text(&xml, "installpath"))
+            .map(|value| normalize_windows_path(&value));
+        insert_protocol_store_candidate(
+            out,
+            ProtocolStoreCandidate {
+                name,
+                game_id: game_id.clone(),
+                exe: None,
+                install_dir,
+                args: None,
+                source: "ea-app".to_string(),
+                store_uri: build_protocol_store_uri("ea-app", &game_id),
+            },
+        );
+    }
+}
+
+#[cfg(windows)]
+fn collect_rockstar_registry_candidates(out: &mut HashMap<String, ProtocolStoreCandidate>) {
+    let roots = [
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Rockstar Games"),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Rockstar Games"),
+        (HKEY_CURRENT_USER, r"SOFTWARE\Rockstar Games"),
+    ];
+    for (root, path) in roots {
+        let Ok(key) = RegKey::predef(root).open_subkey_with_flags(path, KEY_READ) else {
+            continue;
+        };
+        for subkey_name in key.enum_keys().flatten() {
+            let lower_name = subkey_name.to_lowercase();
+            if lower_name.contains("launcher") || lower_name.contains("social club") {
+                continue;
+            }
+            let Ok(subkey) = key.open_subkey_with_flags(&subkey_name, KEY_READ) else {
+                continue;
+            };
+            let name = reg_value_string(&subkey, "Title")
+                .or_else(|| reg_value_string(&subkey, "DisplayName"))
+                .unwrap_or_else(|| subkey_name.clone());
+            let exe = reg_value_string(&subkey, "Executable")
+                .or_else(|| reg_value_string(&subkey, "ExePath"))
+                .and_then(|value| clean_candidate_path(&value));
+            let install_dir = reg_value_string(&subkey, "InstallFolder")
+                .or_else(|| reg_value_string(&subkey, "InstallDir"))
+                .or_else(|| reg_value_string(&subkey, "Path"))
+                .map(|value| normalize_windows_path(&value));
+            let combined = format!(
+                "{}\n{}\n{}",
+                name,
+                exe.clone().unwrap_or_default(),
+                install_dir.clone().unwrap_or_default()
+            );
+            let (game_id, store_uri) = match extract_protocol_store_reference(&combined) {
+                Some((_, game_id, uri)) => (game_id, Some(uri)),
+                None => (fallback_protocol_game_id("rockstar", &name), None),
+            };
+            insert_protocol_store_candidate(
+                out,
+                ProtocolStoreCandidate {
+                    name,
+                    game_id,
+                    exe,
+                    install_dir,
+                    args: None,
+                    source: "rockstar".to_string(),
+                    store_uri,
+                },
+            );
+        }
+    }
+}
+
+#[tauri::command]
+#[cfg(windows)]
+fn import_protocol_store_games() -> Result<Vec<InteropGameEntry>, String> {
+    let mut candidates = collect_protocol_store_uninstall_candidates();
+    collect_ubisoft_registry_candidates(&mut candidates);
+    collect_origin_local_content_candidates(&mut candidates);
+    collect_rockstar_registry_candidates(&mut candidates);
+
+    let mut entries: Vec<InteropGameEntry> = candidates
+        .into_values()
+        .filter_map(finalize_protocol_store_candidate)
+        .collect();
+    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    entries.dedup_by(|a, b| {
+        a.source == b.source
+            && a.game_id.eq_ignore_ascii_case(&b.game_id)
+            && a.exe.eq_ignore_ascii_case(&b.exe)
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+#[cfg(not(windows))]
+fn import_protocol_store_games() -> Result<Vec<InteropGameEntry>, String> {
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn import_exotic_store_games() -> Result<Vec<InteropGameEntry>, String> {
+    let mut candidates = HashMap::<String, ExoticStoreCandidate>::new();
+    collect_battle_net_registry_candidates(&mut candidates);
+    collect_gamejolt_manifest_candidates(&mut candidates);
+
+    let mut entries: Vec<InteropGameEntry> = candidates
+        .into_values()
+        .filter_map(finalize_exotic_store_candidate)
+        .collect();
+
+    for entry in &mut entries {
+        let Some(url) = entry.source_url.clone() else {
+            continue;
+        };
+        if let Ok(page) = fetch_cloud_page_metadata(&url).await {
+            if let Some(title) = page.title {
+                if entry.name.trim().is_empty()
+                    || entry.name.eq_ignore_ascii_case(&entry.game_id)
+                    || entry.name.starts_with("GameJolt ")
+                    || entry.name.starts_with("Battle.net ")
+                {
+                    entry.name = title;
+                }
+            }
+            if entry.cover_url.is_none() {
+                entry.cover_url = page.cover_url;
+            }
+            if entry.overview.is_none() {
+                entry.overview = page.overview;
+            }
+            if entry.developer.is_none() {
+                entry.developer = page.developer;
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        a.source
+            .to_lowercase()
+            .cmp(&b.source.to_lowercase())
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    entries.dedup_by(|a, b| a.source == b.source && a.exe.eq_ignore_ascii_case(&b.exe));
+    Ok(entries)
+}
+
+#[tauri::command]
+#[cfg(not(windows))]
+async fn import_exotic_store_games() -> Result<Vec<InteropGameEntry>, String> {
+    Ok(Vec::new())
 }
 
 #[cfg(not(windows))]
@@ -3176,6 +5032,12 @@ fn import_playnite_games() -> Vec<InteropGameEntry> {
                 exe,
                 args: args.filter(|s| !s.trim().is_empty()),
                 source: "playnite".to_string(),
+                store_uri: None,
+                source_url: None,
+                cover_url: None,
+                developer: None,
+                version: None,
+                overview: None,
             });
         }
         out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -3309,6 +5171,12 @@ fn import_gog_galaxy_games() -> Vec<InteropGameEntry> {
                 exe,
                 args: args.filter(|s| !s.trim().is_empty()),
                 source: "gog-galaxy".to_string(),
+                store_uri: None,
+                source_url: None,
+                cover_url: None,
+                developer: None,
+                version: None,
+                overview: None,
             });
         }
         out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -4369,6 +6237,69 @@ struct SteamLibraryEntry {
     exe: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct SteamOwnedGame {
+    app_id: String,
+    name: String,
+    played_minutes: u64,
+    installed: bool,
+    install_dir: Option<String>,
+    library_dir: Option<String>,
+    manifest_path: Option<String>,
+    exe: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct EpicLegendaryStatus {
+    available: bool,
+    authenticated: bool,
+    executable_path: Option<String>,
+    version: Option<String>,
+    display_name: Option<String>,
+    install_url: String,
+    last_error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct EpicOwnedGame {
+    app_name: String,
+    title: String,
+    installed: bool,
+    install_path: Option<String>,
+    exe: Option<String>,
+    version: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SteamResolveVanityResponse {
+    response: SteamResolveVanityPayload,
+}
+
+#[derive(Deserialize)]
+struct SteamResolveVanityPayload {
+    success: u32,
+    steamid: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SteamOwnedGamesResponse {
+    response: SteamOwnedGamesPayload,
+}
+
+#[derive(Deserialize)]
+struct SteamOwnedGamesPayload {
+    games: Option<Vec<SteamOwnedGamePayload>>,
+}
+
+#[derive(Deserialize)]
+struct SteamOwnedGamePayload {
+    appid: u64,
+    name: Option<String>,
+    playtime_forever: Option<u64>,
+}
+
 fn steam_root_paths() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
@@ -4411,12 +6342,169 @@ fn steam_root_paths() -> Vec<PathBuf> {
     }
 }
 
+fn legendary_install_url() -> String {
+    "https://github.com/derrod/legendary/releases/latest".to_string()
+}
+
+#[cfg(windows)]
+fn find_legendary_executable() -> Option<String> {
+    let output = Command::new("where")
+        .arg("legendary")
+        .creation_flags(0x08000000)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string())
+}
+
+#[cfg(not(windows))]
+fn find_legendary_executable() -> Option<String> {
+    let output = Command::new("which").arg("legendary").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string())
+}
+
+fn legendary_command_path() -> String {
+    find_legendary_executable().unwrap_or_else(|| "legendary".to_string())
+}
+
+fn run_legendary_capture(args: &[&str]) -> Result<std::process::Output, String> {
+    let executable = legendary_command_path();
+    let mut command = Command::new(&executable);
+    command.args(args);
+    #[cfg(windows)]
+    {
+        command.creation_flags(0x08000000);
+    }
+    command
+        .output()
+        .map_err(|e| format!("Failed to run Legendary ({}): {}", executable, e))
+}
+
+fn run_legendary_json(args: &[&str]) -> Result<Value, String> {
+    let output = run_legendary_capture(args)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        return Err(if detail.is_empty() {
+            format!("Legendary exited with status {}", output.status)
+        } else {
+            detail
+        });
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse Legendary JSON output: {}", e))
+}
+
+fn json_string_field(value: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(text) = value.get(*key).and_then(Value::as_str) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn json_nested_string_field(value: &Value, path: &[&str]) -> Option<String> {
+    let mut cursor = value;
+    for segment in path {
+        cursor = cursor.get(*segment)?;
+    }
+    cursor
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn json_bool_field(value: &Value, keys: &[&str]) -> Option<bool> {
+    for key in keys {
+        if let Some(flag) = value.get(*key).and_then(Value::as_bool) {
+            return Some(flag);
+        }
+    }
+    None
+}
+
+fn parse_legendary_status(value: &Value) -> (bool, Option<String>) {
+    let authenticated = json_bool_field(value, &["logged_in", "loggedIn", "authenticated", "is_authenticated"])
+        .or_else(|| value.get("account").filter(|entry| !entry.is_null()).map(|_| true))
+        .or_else(|| value.get("user").filter(|entry| !entry.is_null()).map(|_| true))
+        .unwrap_or(false);
+    let display_name = json_string_field(value, &["display_name", "displayName", "account_name", "accountName"])
+        .or_else(|| json_nested_string_field(value, &["account", "displayName"]))
+        .or_else(|| json_nested_string_field(value, &["account", "name"]))
+        .or_else(|| json_nested_string_field(value, &["user", "displayName"]))
+        .or_else(|| json_nested_string_field(value, &["user", "name"]));
+    (authenticated, display_name)
+}
+
+#[cfg(windows)]
+fn resolve_epic_installed_exe(exe: Option<String>, install_path: Option<String>) -> Option<String> {
+    candidate_from_paths(exe, install_path)
+}
+
+#[cfg(not(windows))]
+fn resolve_epic_installed_exe(exe: Option<String>, install_path: Option<String>) -> Option<String> {
+    exe.filter(|value| Path::new(value).is_file()).or(install_path)
+}
+
+fn parse_legendary_owned_entry(value: &Value) -> Option<EpicOwnedGame> {
+    let app_name = json_string_field(value, &["app_name", "appName"])?;
+    let title = json_string_field(value, &["app_title", "title", "name"])
+        .or_else(|| json_nested_string_field(value, &["metadata", "title"]))
+        .or_else(|| json_nested_string_field(value, &["metadata", "app_title"]))
+        .unwrap_or_else(|| app_name.clone());
+    Some(EpicOwnedGame {
+        app_name,
+        title,
+        installed: false,
+        install_path: None,
+        exe: None,
+        version: json_string_field(value, &["version", "app_version", "build_version"]),
+    })
+}
+
+fn parse_legendary_installed_entry(value: &Value) -> Option<EpicOwnedGame> {
+    let app_name = json_string_field(value, &["app_name", "appName"])?;
+    let install_path = json_string_field(value, &["install_path", "installPath", "install_dir", "installDir"]);
+    let exe_hint = json_string_field(value, &["executable", "launch_executable", "launchExecutable", "main_executable"]);
+    let exe = resolve_epic_installed_exe(exe_hint, install_path.clone());
+    let title = json_string_field(value, &["title", "app_title", "name"])
+        .or_else(|| json_nested_string_field(value, &["metadata", "title"]))
+        .unwrap_or_else(|| app_name.clone());
+    Some(EpicOwnedGame {
+        app_name,
+        title,
+        installed: true,
+        install_path,
+        exe,
+        version: json_string_field(value, &["version", "app_version", "build_version"]),
+    })
+}
+
 fn steam_library_paths() -> Vec<PathBuf> {
     let mut roots = HashSet::<PathBuf>::new();
     for steam_root in steam_root_paths() {
         roots.insert(steam_root.clone());
         let library_vdf = steam_root.join("steamapps").join("libraryfolders.vdf");
-        let Ok(raw) = std::fs::read_to_string(&library_vdf) else {
+        let Ok(raw) = read_text_file_resilient(&library_vdf) else {
             continue;
         };
         for line in raw.lines() {
@@ -4478,7 +6566,7 @@ fn detect_game_executable(root: &Path) -> Option<String> {
 }
 
 fn parse_steam_manifest(path: &Path) -> Option<SteamLibraryEntry> {
-    let raw = std::fs::read_to_string(path).ok()?;
+    let raw = read_text_file_resilient(path).ok()?;
     let mut app_id = String::new();
     let mut name = String::new();
     let mut install_dir = String::new();
@@ -4509,6 +6597,66 @@ fn parse_steam_manifest(path: &Path) -> Option<SteamLibraryEntry> {
     })
 }
 
+fn parse_steam_profile_reference(profile_ref: &str) -> Result<String, String> {
+    let trimmed = profile_ref.trim();
+    if trimmed.is_empty() {
+        return Err("Steam profile / SteamID is required".to_string());
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(trimmed.to_string());
+    }
+    if let Ok(url) = reqwest::Url::parse(trimmed) {
+        let segments: Vec<String> = url
+            .path_segments()
+            .map(|items| items.filter(|item| !item.is_empty()).map(|item| item.to_string()).collect())
+            .unwrap_or_default();
+        if segments.len() >= 2 {
+            if segments[0].eq_ignore_ascii_case("profiles") && segments[1].chars().all(|c| c.is_ascii_digit()) {
+                return Ok(segments[1].clone());
+            }
+            if segments[0].eq_ignore_ascii_case("id") {
+                return Ok(segments[1].clone());
+            }
+        }
+    }
+    Ok(trimmed.to_string())
+}
+
+async fn resolve_steam_profile_id(api_key: &str, profile_ref: &str) -> Result<String, String> {
+    let candidate = parse_steam_profile_reference(profile_ref)?;
+    if candidate.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(candidate);
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/")
+        .query(&[("key", api_key), ("vanityurl", candidate.as_str())])
+        .send()
+        .await
+        .map_err(|e| format!("Failed to resolve Steam vanity URL: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Steam vanity lookup failed with status {}: {}", status, body));
+    }
+
+    let payload: SteamResolveVanityResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Steam vanity lookup response: {}", e))?;
+    if payload.response.success != 1 {
+        return Err(payload.response.message.unwrap_or_else(|| "Steam vanity lookup failed".to_string()));
+    }
+
+    payload
+        .response
+        .steamid
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "Steam vanity lookup did not return a SteamID".to_string())
+}
+
 /// Reads Steam's `localconfig.vdf` for every user directory found under the
 /// default Steam path and returns playtime data for all apps.
 /// Falls back gracefully if Steam is not installed or the file is unreadable.
@@ -4523,11 +6671,25 @@ fn import_steam_playtime() -> Vec<SteamEntry> {
         };
         for user_dir in user_dirs.filter_map(|e| e.ok()) {
             let cfg = user_dir.path().join("config").join("localconfig.vdf");
-            let Ok(content) = std::fs::read_to_string(&cfg) else {
+            let Ok(content) = read_text_file_resilient(&cfg) else {
                 continue;
             };
             // Simple line-based VDF parser (not full KV spec but covers localconfig)
             parse_localconfig_vdf(&content, &mut results);
+        }
+    }
+
+    let installed_names_by_app_id: HashMap<String, String> = import_steam_library()
+        .into_iter()
+        .map(|entry| (entry.app_id, entry.name))
+        .collect();
+    for entry in &mut results {
+        if entry.name.trim().is_empty() {
+            if let Some(name) = installed_names_by_app_id.get(&entry.app_id) {
+                entry.name = name.clone();
+            } else {
+                entry.name = format!("App {}", entry.app_id);
+            }
         }
     }
 
@@ -4581,107 +6743,336 @@ fn import_steam_library() -> Vec<SteamLibraryEntry> {
 }
 
 #[tauri::command]
+async fn fetch_steam_owned_games(api_key: String, profile_ref: String) -> Result<Vec<SteamOwnedGame>, String> {
+    let api_key_trimmed = api_key.trim();
+    if api_key_trimmed.is_empty() {
+        return Err("Steam Web API key cannot be empty".to_string());
+    }
+
+    let steam_id = resolve_steam_profile_id(api_key_trimmed, &profile_ref).await?;
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/")
+        .query(&[
+            ("key", api_key_trimmed),
+            ("steamid", steam_id.as_str()),
+            ("include_appinfo", "1"),
+            ("include_played_free_games", "1"),
+            ("format", "json"),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch Steam owned games: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Steam owned-games request failed with status {}: {}", status, body));
+    }
+
+    let payload: SteamOwnedGamesResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Steam owned-games response: {}", e))?;
+
+    let installed_by_app_id: HashMap<String, SteamLibraryEntry> = import_steam_library()
+        .into_iter()
+        .map(|entry| (entry.app_id.clone(), entry))
+        .collect();
+
+    let mut games: Vec<SteamOwnedGame> = payload
+        .response
+        .games
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            let app_id = entry.appid.to_string();
+            let installed = installed_by_app_id.get(&app_id);
+            SteamOwnedGame {
+                app_id: app_id.clone(),
+                name: entry
+                    .name
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| format!("App {}", app_id)),
+                played_minutes: entry.playtime_forever.unwrap_or(0),
+                installed: installed.is_some(),
+                install_dir: installed.map(|value| value.install_dir.clone()),
+                library_dir: installed.map(|value| value.library_dir.clone()),
+                manifest_path: installed.map(|value| value.manifest_path.clone()),
+                exe: installed.and_then(|value| value.exe.clone()),
+            }
+        })
+        .collect();
+
+    games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(games)
+}
+
+#[tauri::command]
+fn epic_legendary_status() -> EpicLegendaryStatus {
+    let install_url = legendary_install_url();
+    let executable_path = find_legendary_executable();
+    let Ok(version_output) = run_legendary_capture(&["--version"]) else {
+        return EpicLegendaryStatus {
+            available: false,
+            authenticated: false,
+            executable_path,
+            version: None,
+            display_name: None,
+            install_url,
+            last_error: Some("Legendary was not found in PATH. Install the standalone binary or legendary-gl first.".to_string()),
+        };
+    };
+    if !version_output.status.success() {
+        return EpicLegendaryStatus {
+            available: false,
+            authenticated: false,
+            executable_path,
+            version: None,
+            display_name: None,
+            install_url,
+            last_error: Some(String::from_utf8_lossy(&version_output.stderr).trim().to_string()),
+        };
+    }
+
+    let version = String::from_utf8_lossy(&version_output.stdout)
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string);
+
+    match run_legendary_json(&["status", "--json"]) {
+        Ok(status_json) => {
+            let (authenticated, display_name) = parse_legendary_status(&status_json);
+            EpicLegendaryStatus {
+                available: true,
+                authenticated,
+                executable_path,
+                version,
+                display_name,
+                install_url,
+                last_error: None,
+            }
+        }
+        Err(error) => EpicLegendaryStatus {
+            available: true,
+            authenticated: false,
+            executable_path,
+            version,
+            display_name: None,
+            install_url,
+            last_error: Some(error),
+        },
+    }
+}
+
+#[tauri::command]
+fn epic_legendary_auth() -> Result<(), String> {
+    let executable = legendary_command_path();
+    Command::new(executable)
+        .arg("auth")
+        .spawn()
+        .map_err(|e| format!("Failed to start Legendary authentication: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn fetch_epic_owned_games() -> Result<Vec<EpicOwnedGame>, String> {
+    let status = epic_legendary_status();
+    if !status.available {
+        return Err(status
+            .last_error
+            .unwrap_or_else(|| "Legendary is not installed.".to_string()));
+    }
+    if !status.authenticated {
+        return Err(status
+            .last_error
+            .unwrap_or_else(|| "Legendary is installed but not authenticated yet. Run Legendary auth first.".to_string()));
+    }
+
+    let owned_json = run_legendary_json(&["list", "--json"])?;
+    let installed_json = run_legendary_json(&["list-installed", "--json", "--show-dirs"])
+        .unwrap_or_else(|_| Value::Array(Vec::new()));
+
+    let mut by_app_name = HashMap::<String, EpicOwnedGame>::new();
+    if let Some(entries) = owned_json.as_array() {
+        for entry in entries {
+            if let Some(game) = parse_legendary_owned_entry(entry) {
+                by_app_name.insert(game.app_name.to_lowercase(), game);
+            }
+        }
+    }
+    if let Some(entries) = installed_json.as_array() {
+        for entry in entries {
+            if let Some(game) = parse_legendary_installed_entry(entry) {
+                let key = game.app_name.to_lowercase();
+                match by_app_name.get_mut(&key) {
+                    Some(existing) => {
+                        existing.installed = true;
+                        existing.install_path = game.install_path.clone().or(existing.install_path.clone());
+                        existing.exe = game.exe.clone().or(existing.exe.clone());
+                        existing.version = game.version.clone().or(existing.version.clone());
+                        if existing.title.trim().is_empty() {
+                            existing.title = game.title.clone();
+                        }
+                    }
+                    None => {
+                        by_app_name.insert(key, game);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut games: Vec<EpicOwnedGame> = by_app_name.into_values().collect();
+    games.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    Ok(games)
+}
+
+#[tauri::command]
 fn launch_steam_game(app_id: String) -> Result<(), String> {
     let app_id_trimmed = app_id.trim();
     if app_id_trimmed.is_empty() {
         return Err("Steam app ID cannot be empty".to_string());
     }
     let target = format!("steam://rungameid/{}", app_id_trimmed);
+    open_uri_target(&target)
+}
+
+#[tauri::command]
+fn install_steam_game(app_id: String) -> Result<(), String> {
+    let app_id_trimmed = app_id.trim();
+    if app_id_trimmed.is_empty() {
+        return Err("Steam app ID cannot be empty".to_string());
+    }
+    let target = format!("steam://install/{}", app_id_trimmed);
+    open_uri_target(&target)
+}
+
+#[tauri::command]
+fn launch_epic_game(app_name: String) -> Result<(), String> {
+    let trimmed = app_name.trim();
+    if trimmed.is_empty() {
+        return Err("Epic app name cannot be empty".to_string());
+    }
+    let executable = legendary_command_path();
+    let mut command = Command::new(executable);
+    command.args(["launch", trimmed]);
     #[cfg(windows)]
     {
-        Command::new("cmd")
-            .args(["/C", "start", "", &target])
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        command.creation_flags(0x08000000);
     }
-    #[cfg(target_os = "linux")]
-    {
-        Command::new("xdg-open")
-            .arg(&target)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(&target)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-    {
-        return Err("Steam launch is not supported on this platform".to_string());
-    }
+    command
+        .spawn()
+        .map_err(|e| format!("Failed to start Legendary launch: {}", e))?;
     Ok(())
 }
 
-/// Minimal VDF parser: extracts appid -> {name, playtime_forever} from localconfig.
+#[tauri::command]
+fn install_epic_game(app_name: String) -> Result<(), String> {
+    let trimmed = app_name.trim();
+    if trimmed.is_empty() {
+        return Err("Epic app name cannot be empty".to_string());
+    }
+    let executable = legendary_command_path();
+    Command::new(executable)
+        .args(["install", trimmed])
+        .spawn()
+        .map_err(|e| format!("Failed to start Legendary install: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn launch_store_uri(uri: String) -> Result<(), String> {
+    let trimmed = uri.trim();
+    if trimmed.is_empty() {
+        return Err("Store URI cannot be empty".to_string());
+    }
+    if !is_allowed_store_uri(trimmed) {
+        return Err("Unsupported store URI scheme".to_string());
+    }
+    open_uri_target(trimmed)
+}
+
+/// Extracts Steam app playtime from localconfig.vdf's Apps section.
 fn parse_localconfig_vdf(src: &str, out: &mut Vec<SteamEntry>) {
-    // We look for blocks like:
-    //   "1234567"
-    //   {
-    //       "name"  "Game Name"
-    //       "playtime_forever"  "120"
-    //   }
+    let mut pending_block_key: Option<String> = None;
+    let mut stack: Vec<String> = Vec::new();
+    let mut current_app: Option<(String, usize)> = None;
+    let mut collected: HashMap<String, SteamEntry> = HashMap::new();
+
     let mut lines = src.lines().peekable();
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
-        // An app block starts with a quoted numeric key
-        let Some(app_id) = quoted_value(trimmed) else {
-            continue;
-        };
-        if !app_id.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        // Next non-whitespace line should be "{"
-        let Some(brace) = lines.peek() else {
-            break;
-        };
-        if brace.trim() != "{" {
-            continue;
-        }
-        lines.next(); // consume "{"
 
-        let mut name = String::new();
-        let mut playtime: u64 = 0;
-        let mut depth = 1usize;
-        for inner in lines.by_ref() {
-            let t = inner.trim();
-            if t == "{" {
-                depth += 1;
-                continue;
-            }
-            if t == "}" {
-                depth -= 1;
-                if depth == 0 {
-                    break;
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed == "{" {
+            if let Some(key) = pending_block_key.take() {
+                stack.push(key.clone());
+                let parent_is_apps = stack
+                    .iter()
+                    .rev()
+                    .nth(1)
+                    .map(|segment| segment.eq_ignore_ascii_case("apps"))
+                    .unwrap_or(false);
+                if parent_is_apps && key.chars().all(|c| c.is_ascii_digit()) {
+                    current_app = Some((key.clone(), stack.len()));
+                    collected.entry(key.clone()).or_insert(SteamEntry {
+                        app_id: key,
+                        name: String::new(),
+                        played_minutes: 0,
+                    });
                 }
-                continue;
             }
-            if depth == 1 {
-                if let Some((k, v)) = kv_pair(t) {
-                    match k.to_lowercase().as_str() {
+            continue;
+        }
+
+        if trimmed == "}" {
+            pending_block_key = None;
+            if current_app
+                .as_ref()
+                .map(|(_, depth)| *depth == stack.len())
+                .unwrap_or(false)
+            {
+                current_app = None;
+            }
+            stack.pop();
+            continue;
+        }
+
+        if let Some((key, value)) = kv_pair(trimmed) {
+            pending_block_key = None;
+            if let Some((app_id, _)) = &current_app {
+                if let Some(entry) = collected.get_mut(app_id) {
+                    match key.to_ascii_lowercase().as_str() {
                         "name" => {
-                            if name.is_empty() {
-                                name = v.to_string();
+                            if entry.name.is_empty() && !value.trim().is_empty() {
+                                entry.name = value.to_string();
                             }
                         }
-                        "playtime_forever" => {
-                            playtime = v.parse().unwrap_or(0);
+                        "playtime" | "playtime_forever" => {
+                            let parsed = value.parse().unwrap_or(0);
+                            if parsed > entry.played_minutes {
+                                entry.played_minutes = parsed;
+                            }
                         }
                         _ => {}
                     }
                 }
             }
+            continue;
         }
-        if playtime > 0 {
-            out.push(SteamEntry {
-                app_id: app_id.to_string(),
-                name,
-                played_minutes: playtime,
-            });
+
+        if let Some(value) = quoted_value(trimmed) {
+            pending_block_key = Some(value.to_string());
         }
     }
+
+    out.extend(collected.into_values().filter(|entry| entry.played_minutes > 0));
 }
 
 fn quoted_value(s: &str) -> Option<&str> {
@@ -4847,36 +7238,48 @@ fn resolve_sync_conflicts(request: SyncConflictRequest) -> SyncConflictResolutio
         let local = local_entries.get(&key);
         let remote = remote_entries.get(&key);
         let base = base_entries.get(&key);
-        let (resolved, resolution, reason) = if local == remote {
-            (local.cloned().or_else(|| remote.cloned()), "same", "Local and remote already match")
+        let (resolved, resolution, reason, requires_manual) = if local == remote {
+            (local.cloned().or_else(|| remote.cloned()), "same", "Local and remote already match", false)
         } else if base.is_some() && local == base {
-            (remote.cloned(), "remote", "Remote changed while local stayed at base")
+            (remote.cloned(), "remote", "Remote changed while local stayed at base", false)
         } else if base.is_some() && remote == base {
-            (local.cloned(), "local", "Local changed while remote stayed at base")
+            (local.cloned(), "local", "Local changed while remote stayed at base", false)
         } else if local.is_none() && remote.is_some() {
-            (remote.cloned(), "remote", "Only remote has this entry")
+            (remote.cloned(), "remote", "Only remote has this entry", false)
         } else if remote.is_none() && local.is_some() {
-            (local.cloned(), "local", "Only local has this entry")
+            (local.cloned(), "local", "Only local has this entry", false)
         } else {
             conflict_count += 1;
-            (remote.cloned().or_else(|| local.cloned()), "conflict_remote", "Both local and remote changed; defaulting to remote")
+            (
+                remote.cloned().or_else(|| local.cloned()),
+                "remote",
+                "Both local and remote changed relative to base. Choose which version to keep.",
+                true,
+            )
         };
 
         if let Some(value) = resolved.clone() {
             resolved_entries.insert(key.clone(), value);
+        } else {
+            resolved_entries.remove(&key);
         }
-        if base != resolved.as_ref() {
+        let changed = local != remote || base != resolved.as_ref();
+        if changed {
             changed_keys.push(key.clone());
+            items.push(SyncConflictItem {
+                key: key.clone(),
+                label: snapshot_entry_label(&key),
+                resolution: resolution.to_string(),
+                reason: reason.to_string(),
+                local_count: count_snapshot_entry(local),
+                remote_count: count_snapshot_entry(remote),
+                base_count: count_snapshot_entry(base),
+                local_value: local.cloned(),
+                remote_value: remote.cloned(),
+                base_value: base.cloned(),
+                requires_manual,
+            });
         }
-        items.push(SyncConflictItem {
-            key: key.clone(),
-            label: snapshot_entry_label(&key),
-            resolution: resolution.to_string(),
-            reason: reason.to_string(),
-            local_count: count_snapshot_entry(local),
-            remote_count: count_snapshot_entry(remote),
-            base_count: count_snapshot_entry(base),
-        });
     }
 
     SyncConflictResolutionReport {
@@ -4885,6 +7288,30 @@ fn resolve_sync_conflicts(request: SyncConflictRequest) -> SyncConflictResolutio
         conflict_count,
         changed_keys,
     }
+}
+
+fn apply_sync_resolution_choice(
+    merged_entries: &mut HashMap<String, String>,
+    key: &str,
+    choice: &str,
+    local_value: Option<&String>,
+    remote_value: Option<&String>,
+    base_value: Option<&String>,
+) -> Result<(), String> {
+    let selected = match choice {
+        "local" => local_value.cloned(),
+        "remote" => remote_value.cloned(),
+        "base" => base_value.cloned(),
+        other => return Err(format!("Unsupported sync conflict resolution: {}", other)),
+    };
+
+    if let Some(value) = selected {
+        merged_entries.insert(key.to_string(), value);
+    } else {
+        merged_entries.remove(key);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -4942,6 +7369,13 @@ fn clear_last_crash_report(app: AppHandle) -> Result<(), String> {
 #[derive(Serialize, Deserialize, Clone)]
 struct StateStore {
     schema_version: u32,
+    entries: HashMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SyncBaseStore {
+    provider_type: sync::SyncProviderType,
     entries: HashMap<String, String>,
 }
 
@@ -5034,145 +7468,530 @@ fn persist_storage_snapshot(entries: HashMap<String, String>) -> Result<(), Stri
 }
 
 const SYNC_CONFIG_FILE: &str = "sync_config.json";
+const SYNC_BASE_STATE_FILE: &str = "sync_base_state.json";
+
+fn sync_config_path() -> PathBuf {
+    profile_file_path(SYNC_CONFIG_FILE)
+}
+
+fn sync_base_state_path() -> PathBuf {
+    profile_file_path(SYNC_BASE_STATE_FILE)
+}
+
+fn legacy_sync_config_path() -> PathBuf {
+    legacy_global_file_path(SYNC_CONFIG_FILE)
+}
+
+fn legacy_sync_base_state_path() -> PathBuf {
+    legacy_global_file_path(SYNC_BASE_STATE_FILE)
+}
+
+fn empty_state_store() -> StateStore {
+    StateStore {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        entries: HashMap::new(),
+    }
+}
+
+fn parse_state_store(raw: &str) -> Result<StateStore, String> {
+    if raw.trim().is_empty() {
+        return Ok(empty_state_store());
+    }
+
+    if let Ok(store) = serde_json::from_str::<StateStore>(raw) {
+        return Ok(store);
+    }
+
+    let entries = serde_json::from_str::<HashMap<String, String>>(raw)
+        .map_err(|e| format!("Invalid state payload: {}", e))?;
+    Ok(StateStore {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        entries,
+    })
+}
+
+fn load_sync_base_entries(provider_type: sync::SyncProviderType) -> Result<HashMap<String, String>, String> {
+    let path = sync_base_state_path();
+    if !path.exists() {
+        let legacy_path = legacy_sync_base_state_path();
+        if !legacy_path.exists() {
+            return Ok(HashMap::new());
+        }
+        let raw = std::fs::read_to_string(&legacy_path).map_err(|e| e.to_string())?;
+        let base_store = serde_json::from_str::<SyncBaseStore>(&raw).map_err(|e| e.to_string())?;
+        if base_store.provider_type != provider_type {
+            return Ok(HashMap::new());
+        }
+        persist_sync_base_entries(provider_type, &base_store.entries)?;
+        let _ = std::fs::remove_file(legacy_path);
+        return Ok(base_store.entries);
+    }
+
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let base_store = serde_json::from_str::<SyncBaseStore>(&raw).map_err(|e| e.to_string())?;
+    if base_store.provider_type != provider_type {
+        return Ok(HashMap::new());
+    }
+
+    Ok(base_store.entries)
+}
+
+fn persist_sync_base_entries(
+    provider_type: sync::SyncProviderType,
+    entries: &HashMap<String, String>,
+) -> Result<(), String> {
+    if let Some(parent) = sync_base_state_path().parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let raw = serde_json::to_string(&SyncBaseStore {
+        provider_type,
+        entries: entries.clone(),
+    })
+    .map_err(|e| e.to_string())?;
+    atomic_write_string(&sync_base_state_path(), &raw, "persist_sync_base_entries")
+}
+
+fn parse_sync_config(raw: &str) -> Result<sync::SyncProviderConfig, String> {
+    if let Ok(config) = serde_json::from_str::<sync::SyncProviderConfig>(raw) {
+        return Ok(config);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+    let provider = value
+        .get("provider")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| "Missing sync provider".to_string())?;
+
+    if value.get("config").is_some() {
+        return serde_json::from_value(value).map_err(|e| e.to_string());
+    }
+
+    let mut legacy_config = value.clone();
+    if let Some(obj) = legacy_config.as_object_mut() {
+        obj.remove("provider");
+    }
+
+    match provider {
+        "webdav" => serde_json::from_value::<sync::WebdavConfig>(legacy_config)
+            .map(sync::SyncProviderConfig::Webdav)
+            .map_err(|e| e.to_string()),
+        "nextcloud" => serde_json::from_value::<sync::NextcloudConfig>(legacy_config)
+            .map(sync::SyncProviderConfig::Nextcloud)
+            .map_err(|e| e.to_string()),
+        "s3" => serde_json::from_value::<sync::S3Config>(legacy_config)
+            .map(sync::SyncProviderConfig::S3)
+            .map_err(|e| e.to_string()),
+        "git" => serde_json::from_value::<sync::GitConfig>(legacy_config)
+            .map(sync::SyncProviderConfig::Git)
+            .map_err(|e| e.to_string()),
+        "google-drive" => serde_json::from_value::<sync::GoogleDriveConfig>(legacy_config)
+            .map(sync::SyncProviderConfig::GoogleDrive)
+            .map_err(|e| e.to_string()),
+        "dropbox" => serde_json::from_value::<sync::DropboxConfig>(legacy_config)
+            .map(sync::SyncProviderConfig::Dropbox)
+            .map_err(|e| e.to_string()),
+        other => Err(format!("Unsupported sync provider: {}", other)),
+    }
+}
+
+fn sync_secret_pairs(config: &sync::SyncProviderConfig) -> Vec<(&'static str, Option<String>)> {
+    match config {
+        sync::SyncProviderConfig::Webdav(cfg) => vec![("sync::webdav::password", Some(cfg.password.clone()))],
+        sync::SyncProviderConfig::Nextcloud(cfg) => vec![("sync::nextcloud::password", Some(cfg.password.clone()))],
+        sync::SyncProviderConfig::S3(cfg) => vec![
+            ("sync::s3::access_key", Some(cfg.access_key.clone())),
+            ("sync::s3::secret_key", Some(cfg.secret_key.clone())),
+        ],
+        sync::SyncProviderConfig::Git(cfg) => vec![("sync::git::password", cfg.password.clone())],
+        sync::SyncProviderConfig::GoogleDrive(cfg) => vec![
+            ("sync::google_drive::access_token", Some(cfg.access_token.clone())),
+            ("sync::google_drive::refresh_token", cfg.refresh_token.clone()),
+        ],
+        sync::SyncProviderConfig::Dropbox(cfg) => vec![
+            ("sync::dropbox::access_token", Some(cfg.access_token.clone())),
+            ("sync::dropbox::refresh_token", cfg.refresh_token.clone()),
+        ],
+    }
+}
+
+fn sync_config_without_secrets(config: &sync::SyncProviderConfig) -> sync::SyncProviderConfig {
+    match config {
+        sync::SyncProviderConfig::Webdav(cfg) => sync::SyncProviderConfig::Webdav(sync::WebdavConfig {
+            url: cfg.url.clone(),
+            username: cfg.username.clone(),
+            password: String::new(),
+            path: cfg.path.clone(),
+        }),
+        sync::SyncProviderConfig::Nextcloud(cfg) => sync::SyncProviderConfig::Nextcloud(sync::NextcloudConfig {
+            url: cfg.url.clone(),
+            username: cfg.username.clone(),
+            password: String::new(),
+            path: cfg.path.clone(),
+        }),
+        sync::SyncProviderConfig::S3(cfg) => sync::SyncProviderConfig::S3(sync::S3Config {
+            bucket: cfg.bucket.clone(),
+            region: cfg.region.clone(),
+            access_key: String::new(),
+            secret_key: String::new(),
+            endpoint: cfg.endpoint.clone(),
+            path: cfg.path.clone(),
+        }),
+        sync::SyncProviderConfig::Git(cfg) => sync::SyncProviderConfig::Git(sync::GitConfig {
+            url: cfg.url.clone(),
+            branch: cfg.branch.clone(),
+            username: cfg.username.clone(),
+            password: None,
+            ssh_key_path: cfg.ssh_key_path.clone(),
+        }),
+        sync::SyncProviderConfig::GoogleDrive(cfg) => sync::SyncProviderConfig::GoogleDrive(sync::GoogleDriveConfig {
+            access_token: String::new(),
+            file_name: cfg.file_name.clone(),
+            client_id: cfg.client_id.clone(),
+            refresh_token: None,
+        }),
+        sync::SyncProviderConfig::Dropbox(cfg) => sync::SyncProviderConfig::Dropbox(sync::DropboxConfig {
+            access_token: String::new(),
+            path: cfg.path.clone(),
+            client_id: cfg.client_id.clone(),
+            refresh_token: None,
+        }),
+    }
+}
+
+fn hydrate_sync_config_secrets(config: sync::SyncProviderConfig) -> Result<sync::SyncProviderConfig, String> {
+    Ok(match config {
+        sync::SyncProviderConfig::Webdav(mut cfg) => {
+            cfg.password = vault_get_secret("sync::webdav::password")?.unwrap_or_default();
+            sync::SyncProviderConfig::Webdav(cfg)
+        }
+        sync::SyncProviderConfig::Nextcloud(mut cfg) => {
+            cfg.password = vault_get_secret("sync::nextcloud::password")?.unwrap_or_default();
+            sync::SyncProviderConfig::Nextcloud(cfg)
+        }
+        sync::SyncProviderConfig::S3(mut cfg) => {
+            cfg.access_key = vault_get_secret("sync::s3::access_key")?.unwrap_or_default();
+            cfg.secret_key = vault_get_secret("sync::s3::secret_key")?.unwrap_or_default();
+            sync::SyncProviderConfig::S3(cfg)
+        }
+        sync::SyncProviderConfig::Git(mut cfg) => {
+            cfg.password = vault_get_secret("sync::git::password")?;
+            sync::SyncProviderConfig::Git(cfg)
+        }
+        sync::SyncProviderConfig::GoogleDrive(mut cfg) => {
+            cfg.access_token = vault_get_secret("sync::google_drive::access_token")?.unwrap_or_default();
+            cfg.refresh_token = vault_get_secret("sync::google_drive::refresh_token")?;
+            sync::SyncProviderConfig::GoogleDrive(cfg)
+        }
+        sync::SyncProviderConfig::Dropbox(mut cfg) => {
+            cfg.access_token = vault_get_secret("sync::dropbox::access_token")?.unwrap_or_default();
+            cfg.refresh_token = vault_get_secret("sync::dropbox::refresh_token")?;
+            sync::SyncProviderConfig::Dropbox(cfg)
+        }
+    })
+}
+
+fn persist_sync_config_secrets(config: &sync::SyncProviderConfig) -> Result<(), String> {
+    for (key, value) in sync_secret_pairs(config) {
+        if let Some(secret) = value {
+            if secret.trim().is_empty() {
+                vault_delete_secret(key)?;
+            } else {
+                vault::set_secret(key, &secret)?;
+            }
+        } else {
+            vault_delete_secret(key)?;
+        }
+    }
+    Ok(())
+}
 
 #[tauri::command]
 async fn sync_configure(config: sync::SyncProviderConfig) -> Result<(), String> {
-    let dir = app_data_root();
+    persist_sync_config_secrets(&config)?;
+    let dir = profile_file_path("");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(SYNC_CONFIG_FILE);
+    let path = sync_config_path();
     
-    let raw = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string(&sync_config_without_secrets(&config)).map_err(|e| e.to_string())?;
     atomic_write_string(&path, &raw, "sync_configure")
 }
 
 #[tauri::command]
 async fn sync_get_config() -> Result<Option<sync::SyncProviderConfig>, String> {
-    let dir = app_data_root();
-    let path = dir.join(SYNC_CONFIG_FILE);
+    let path = sync_config_path();
     
     if !path.exists() {
-        return Ok(None);
+        let legacy_path = legacy_sync_config_path();
+        if !legacy_path.exists() {
+            return Ok(None);
+        }
+        let raw = std::fs::read_to_string(&legacy_path).map_err(|e| e.to_string())?;
+        let config = parse_sync_config(&raw)?;
+        sync_configure(config.clone()).await?;
+        let _ = std::fs::remove_file(legacy_path);
+        return Ok(Some(config));
     }
     
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let config = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-    Ok(Some(config))
+    let config = parse_sync_config(&raw)?;
+    Ok(Some(hydrate_sync_config_secrets(config)?))
+}
+
+async fn load_effective_sync_config() -> Result<sync::SyncProviderConfig, String> {
+    let config = sync_get_config().await?.ok_or("No sync configuration found")?;
+    let refreshed = sync::refresh_oauth_config(config).await?;
+    sync_configure(refreshed.clone()).await?;
+    Ok(refreshed)
+}
+
+#[tauri::command]
+fn sync_start_oauth(provider: String, client_id: String) -> Result<sync::SyncOAuthStartResult, String> {
+    let provider = match provider.as_str() {
+        "google-drive" => sync::SyncProviderType::GoogleDrive,
+        "dropbox" => sync::SyncProviderType::Dropbox,
+        other => return Err(format!("Unsupported OAuth provider: {}", other)),
+    };
+    sync::start_oauth(provider, client_id)
+}
+
+#[tauri::command]
+async fn sync_complete_oauth_callback(callback_url: String) -> Result<sync::SyncProviderConfig, String> {
+    let oauth_config = sync::complete_oauth_callback(&callback_url).await?;
+    let merged_config = match (sync_get_config().await?, oauth_config) {
+        (Some(sync::SyncProviderConfig::GoogleDrive(existing)), sync::SyncProviderConfig::GoogleDrive(oauth)) => {
+            sync::SyncProviderConfig::GoogleDrive(sync::GoogleDriveConfig {
+                access_token: oauth.access_token,
+                file_name: if existing.file_name.trim().is_empty() { oauth.file_name } else { existing.file_name },
+                client_id: oauth.client_id.or(existing.client_id),
+                refresh_token: oauth.refresh_token.or(existing.refresh_token),
+            })
+        }
+        (Some(sync::SyncProviderConfig::Dropbox(existing)), sync::SyncProviderConfig::Dropbox(oauth)) => {
+            sync::SyncProviderConfig::Dropbox(sync::DropboxConfig {
+                access_token: oauth.access_token,
+                path: if existing.path.trim().is_empty() { oauth.path } else { existing.path },
+                client_id: oauth.client_id.or(existing.client_id),
+                refresh_token: oauth.refresh_token.or(existing.refresh_token),
+            })
+        }
+        (_, config) => config,
+    };
+    sync_configure(merged_config.clone()).await?;
+    Ok(merged_config)
+}
+
+#[tauri::command]
+async fn sync_preview_conflicts() -> Result<SyncConflictResolutionReport, String> {
+    let config = load_effective_sync_config().await?;
+    let provider = sync::create_provider(config)?;
+    let provider_type = provider.provider_type();
+
+    let dir = app_data_root();
+    let state_path = dir.join(STATE_STORAGE_FILE);
+    let local_raw = std::fs::read_to_string(&state_path).unwrap_or_default();
+    let local_store = parse_state_store(&local_raw)?;
+
+    let (remote_raw, _metadata) = provider.download().await?;
+    let remote_store = parse_state_store(&remote_raw)?;
+    let base_entries = load_sync_base_entries(provider_type.clone())?;
+
+    Ok(resolve_sync_conflicts(SyncConflictRequest {
+        local_entries: local_store.entries,
+        remote_entries: remote_store.entries,
+        base_entries: Some(base_entries),
+    }))
+}
+
+#[tauri::command]
+async fn sync_upload_save_backup(game_path: String) -> Result<SyncSaveBackupResult, String> {
+    let config = load_effective_sync_config().await?;
+    let provider = sync::create_provider(config)?;
+    let provider_type = provider.provider_type();
+
+    let backup = build_save_backup_zip(&game_path, None)?;
+    let zip_path = PathBuf::from(&backup.zip_path);
+    let file_name = zip_path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .ok_or_else(|| "Save backup zip path is missing a file name".to_string())?;
+    let zip_bytes = std::fs::read(&zip_path).map_err(|e| e.to_string())?;
+    let remote_path = provider.upload_save_backup(&file_name, &zip_bytes).await?;
+
+    Ok(SyncSaveBackupResult {
+        zip_path: backup.zip_path,
+        files: backup.files,
+        directories: backup.directories,
+        remote_path,
+        provider_type,
+    })
 }
 
 #[tauri::command]
 async fn sync_upload() -> Result<sync::SyncResult, String> {
-    let config = sync_get_config().await?.ok_or("No sync configuration found")?;
-    
-    // Read local state
+    let config = load_effective_sync_config().await?;
+    let provider = sync::create_provider(config)?;
+    let provider_type = provider.provider_type();
+
     let dir = app_data_root();
     let state_path = dir.join(STATE_STORAGE_FILE);
-    let raw = std::fs::read_to_string(&state_path).map_err(|e| e.to_string())?;
-    
-    // Create provider
-    let provider = sync::create_provider(config)?;
-    
-    // Create metadata
+    let local_raw = std::fs::read_to_string(&state_path).map_err(|e| e.to_string())?;
+    let local_store = parse_state_store(&local_raw)?;
+
+    let merged_entries = if provider.exists().await? {
+        let (remote_raw, _metadata) = provider.download().await?;
+        let remote_store = parse_state_store(&remote_raw)?;
+        let base_entries = load_sync_base_entries(provider_type.clone())?;
+        let report = resolve_sync_conflicts(SyncConflictRequest {
+            local_entries: local_store.entries.clone(),
+            remote_entries: remote_store.entries.clone(),
+            base_entries: Some(base_entries),
+        });
+        if report.conflict_count > 0 {
+            return Ok(sync::SyncResult {
+                success: false,
+                message: format!("Conflicts detected: {} entries need manual resolution", report.conflict_count),
+                conflicts_detected: true,
+                entries_synced: 0,
+            });
+        }
+        report.resolved_entries
+    } else {
+        local_store.entries.clone()
+    };
+
+    let merged_store = StateStore {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        entries: merged_entries,
+    };
+    let merged_raw = serde_json::to_string(&merged_store).map_err(|e| e.to_string())?;
     let metadata = sync::SyncMetadata {
         last_sync_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-        last_sync_hash: sync::compute_hash(&raw),
-        provider_type: provider.provider_type(),
+        last_sync_hash: sync::compute_hash(&merged_raw),
+        provider_type: provider_type.clone(),
     };
-    
-    // Upload
-    provider.upload(&raw, &metadata).await?;
+
+    if merged_raw != local_raw {
+        atomic_write_string(&state_path, &merged_raw, "sync_upload_merge_local")?;
+    }
+
+    provider.upload(&merged_raw, &metadata).await?;
+    persist_sync_base_entries(provider_type, &merged_store.entries)?;
     
     Ok(sync::SyncResult {
         success: true,
-        message: "State uploaded successfully".to_string(),
+        message: "State synced to remote successfully".to_string(),
         conflicts_detected: false,
-        entries_synced: 0,
+        entries_synced: merged_store.entries.len(),
     })
 }
 
 #[tauri::command]
 async fn sync_download() -> Result<sync::SyncResult, String> {
-    let config = sync_get_config().await?.ok_or("No sync configuration found")?;
-    
-    // Read local state
+    let config = load_effective_sync_config().await?;
+    let provider = sync::create_provider(config)?;
+    let provider_type = provider.provider_type();
+
     let dir = app_data_root();
     let state_path = dir.join(STATE_STORAGE_FILE);
     let local_raw = std::fs::read_to_string(&state_path).unwrap_or_default();
-    let local_store: StateStore = serde_json::from_str(&local_raw).unwrap_or_else(|_| StateStore {
-        schema_version: CURRENT_SCHEMA_VERSION,
-        entries: HashMap::new(),
-    });
-    
-    // Create provider
-    let provider = sync::create_provider(config)?;
-    
-    // Download
+    let local_store = parse_state_store(&local_raw)?;
+
     let (remote_raw, _metadata) = provider.download().await?;
-    let remote_store: StateStore = serde_json::from_str(&remote_raw).map_err(|e| format!("Invalid remote state: {}", e))?;
-    
-    // Detect conflicts
-    let conflicts = sync::detect_conflicts(&local_store.entries, &remote_store.entries);
-    
-    if !conflicts.is_empty() {
+    let remote_store = parse_state_store(&remote_raw)?;
+    let base_entries = load_sync_base_entries(provider_type.clone())?;
+    let report = resolve_sync_conflicts(SyncConflictRequest {
+        local_entries: local_store.entries.clone(),
+        remote_entries: remote_store.entries.clone(),
+        base_entries: Some(base_entries),
+    });
+
+    if report.conflict_count > 0 {
         return Ok(sync::SyncResult {
             success: false,
-            message: format!("Conflicts detected: {} entries differ", conflicts.len()),
+            message: format!("Conflicts detected: {} entries need manual resolution", report.conflict_count),
             conflicts_detected: true,
             entries_synced: 0,
         });
     }
-    
-    // Apply remote state
-    atomic_write_string(&state_path, &remote_raw, "sync_download")?;
+
+    let merged_store = StateStore {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        entries: report.resolved_entries,
+    };
+    let merged_raw = serde_json::to_string(&merged_store).map_err(|e| e.to_string())?;
+
+    if merged_raw != local_raw {
+        atomic_write_string(&state_path, &merged_raw, "sync_download")?;
+    }
+
+    if merged_raw != remote_raw {
+        let metadata = sync::SyncMetadata {
+            last_sync_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            last_sync_hash: sync::compute_hash(&merged_raw),
+            provider_type: provider_type.clone(),
+        };
+        provider.upload(&merged_raw, &metadata).await?;
+    }
+
+    persist_sync_base_entries(provider_type, &merged_store.entries)?;
     
     Ok(sync::SyncResult {
         success: true,
-        message: "State downloaded successfully".to_string(),
+        message: "State downloaded and merged successfully".to_string(),
         conflicts_detected: false,
-        entries_synced: remote_store.entries.len(),
+        entries_synced: merged_store.entries.len(),
     })
 }
 
 #[tauri::command]
 async fn sync_resolve_conflicts(resolution: HashMap<String, String>) -> Result<sync::SyncResult, String> {
-    let config = sync_get_config().await?.ok_or("No sync configuration found")?;
-    
-    // Read local state
+    let config = load_effective_sync_config().await?;
+    let provider = sync::create_provider(config)?;
+    let provider_type = provider.provider_type();
+
     let dir = app_data_root();
     let state_path = dir.join(STATE_STORAGE_FILE);
     let local_raw = std::fs::read_to_string(&state_path).map_err(|e| e.to_string())?;
-    let local_store: StateStore = serde_json::from_str(&local_raw).map_err(|e| format!("Invalid local state: {}", e))?;
-    
-    // Create provider
-    let provider = sync::create_provider(config)?;
-    
-    // Download remote state
+    let local_store = parse_state_store(&local_raw)?;
+
     let (remote_raw, _metadata) = provider.download().await?;
-    let remote_store: StateStore = serde_json::from_str(&remote_raw).map_err(|e| format!("Invalid remote state: {}", e))?;
-    
-    // Detect conflicts
-    let conflicts = sync::detect_conflicts(&local_store.entries, &remote_store.entries);
-    
-    // Merge with resolution
-    let merged_entries = sync::merge_state(local_store.entries, remote_store.entries, &conflicts, &resolution);
-    
-    // Create merged state
+    let remote_store = parse_state_store(&remote_raw)?;
+    let base_entries = load_sync_base_entries(provider_type.clone())?;
+    let report = resolve_sync_conflicts(SyncConflictRequest {
+        local_entries: local_store.entries.clone(),
+        remote_entries: remote_store.entries.clone(),
+        base_entries: Some(base_entries.clone()),
+    });
+
+    let mut merged_entries = report.resolved_entries.clone();
+    for item in &report.items {
+        if let Some(choice) = resolution.get(&item.key) {
+            apply_sync_resolution_choice(
+                &mut merged_entries,
+                &item.key,
+                choice,
+                local_store.entries.get(&item.key),
+                remote_store.entries.get(&item.key),
+                base_entries.get(&item.key),
+            )?;
+        }
+    }
+
     let merged_store = StateStore {
         schema_version: CURRENT_SCHEMA_VERSION,
         entries: merged_entries,
     };
-    
     let merged_raw = serde_json::to_string(&merged_store).map_err(|e| e.to_string())?;
-    
-    // Save locally
+
     atomic_write_string(&state_path, &merged_raw, "sync_resolve_conflicts")?;
-    
-    // Upload to remote
+
     let metadata = sync::SyncMetadata {
         last_sync_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
         last_sync_hash: sync::compute_hash(&merged_raw),
-        provider_type: provider.provider_type(),
+        provider_type: provider_type.clone(),
     };
     provider.upload(&merged_raw, &metadata).await?;
+    persist_sync_base_entries(provider_type, &merged_store.entries)?;
     
     Ok(sync::SyncResult {
         success: true,
@@ -5184,7 +8003,7 @@ async fn sync_resolve_conflicts(resolution: HashMap<String, String>) -> Result<s
 
 #[tauri::command]
 async fn sync_check_remote() -> Result<bool, String> {
-    let config = sync_get_config().await?.ok_or("No sync configuration found")?;
+    let config = load_effective_sync_config().await?;
     let provider = sync::create_provider(config)?;
     provider.exists().await
 }
@@ -5228,13 +8047,24 @@ pub fn run() {
             import_lutris_games,
             import_playnite_games,
             import_gog_galaxy_games,
+            import_protocol_store_games,
+            import_exotic_store_games,
+            itch_butler_status,
+            itch_butler_list_owned_games,
+            itch_butler_install_game,
+            itch_butler_check_updates,
+            itch_butler_apply_update,
             launch_game,
             launch_steam_game,
+            launch_store_uri,
             kill_game,
             delete_game,
             set_recent_games,
             check_app_update,
             apply_update,
+            resolve_metadata_source,
+            fetch_metadata_for_url,
+            fetch_metadata_by_source,
             fetch_f95_metadata,
             fetch_dlsite_metadata,
             fetch_vndb_metadata,
@@ -5244,6 +8074,14 @@ pub fn run() {
             fetch_igdb_metadata,
             fetch_rawg_metadata,
             fetch_mobygames_metadata,
+            fetch_custom_metadata_command,
+            custom_metadata_list_templates,
+            custom_metadata_export_templates,
+            custom_metadata_export_templates_to_path,
+            custom_metadata_import_templates,
+            custom_metadata_import_templates_from_path,
+            custom_metadata_delete_template,
+            custom_metadata_match_source,
             search_suggest_links,
             set_api_key,
             get_api_key,
@@ -5276,6 +8114,13 @@ pub fn run() {
             import_steam_playtime,
             get_steam_playtime_minutes,
             import_steam_library,
+            fetch_steam_owned_games,
+            install_steam_game,
+            epic_legendary_status,
+            epic_legendary_auth,
+            fetch_epic_owned_games,
+            launch_epic_game,
+            install_epic_game,
             get_library_profiles,
             save_library_profile,
             switch_library_profile,
@@ -5299,12 +8144,22 @@ pub fn run() {
             clear_last_crash_report,
             get_storage_bootstrap,
             persist_storage_snapshot,
+            run_release_reliability_checks,
             sync_configure,
             sync_get_config,
+            sync_start_oauth,
+            sync_complete_oauth_callback,
+            vault::vault_list_entries,
+            vault::vault_delete_entry,
+            sync_preview_conflicts,
+            sync_upload_save_backup,
             sync_upload,
             sync_download,
             sync_resolve_conflicts,
             sync_check_remote,
+            detect_save_paths,
+            transfer_saves,
+            is_valid_save_directory,
         ])
         .setup(|app| {
             push_rust_log(Some(app.handle()), "info", "LIBMALY started");

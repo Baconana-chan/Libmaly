@@ -34,6 +34,7 @@ interface RssItem {
 
 interface GameMetadata {
   source: string;
+  source_label?: string;
   source_url: string;
   title?: string;
   version?: string;
@@ -44,17 +45,6 @@ interface GameMetadata {
   screenshots: string[];
   tags: string[];
   release_date?: string;
-}
-
-function detectMetadataSource(url: string): "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku" | null {
-  const lower = url.toLowerCase();
-  if (lower.includes("f95zone.to")) return "f95";
-  if (lower.includes("dlsite.com")) return "dlsite";
-  if (lower.includes("vndb.org")) return "vndb";
-  if (lower.includes("mangagamer.com")) return "mangagamer";
-  if (lower.includes("johren.net")) return "johren";
-  if (lower.includes("fakku.net")) return "fakku";
-  return null;
 }
 
 export function FeedView({
@@ -136,27 +126,13 @@ export function FeedView({
     setPreviewShot(0);
 
     const reqId = ++previewReqIdRef.current;
-    const source = detectMetadataSource(item.link);
-    if (!source) {
-      setPreviewLoading(false);
-      setPreviewError(t('feed_view.preview_support_error'));
-      return;
-    }
-
-    const cmd =
-      source === "f95" ? "fetch_f95_metadata"
-        : source === "dlsite" ? "fetch_dlsite_metadata"
-          : source === "vndb" ? "fetch_vndb_metadata"
-            : source === "mangagamer" ? "fetch_mangagamer_metadata"
-              : source === "johren" ? "fetch_johren_metadata"
-                : "fetch_fakku_metadata";
     try {
-      const meta = await invoke<GameMetadata>(cmd, { url: item.link });
+      const meta = await invoke<GameMetadata>("fetch_metadata_for_url", { url: item.link });
       if (previewReqIdRef.current !== reqId) return;
       setPreviewMeta(meta);
     } catch (e: any) {
       if (previewReqIdRef.current !== reqId) return;
-      setPreviewError(e?.toString?.() || t('feed_view.load_error'));
+      setPreviewError(e?.toString?.() || t('feed_view.preview_support_error'));
     } finally {
       if (previewReqIdRef.current === reqId) setPreviewLoading(false);
     }

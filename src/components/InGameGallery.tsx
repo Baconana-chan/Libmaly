@@ -1,10 +1,12 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useMemo, useState } from "preact/hooks";
 import { useTranslation } from "react-i18next";
+import { ScreenshotComparisonModal } from "./modals/ScreenshotComparisonModal";
 
 interface ScreenshotItem {
   path: string;
   filename: string;
+  timestamp: number;
   tags: string[];
 }
 
@@ -24,6 +26,7 @@ export function InGameGallery({
   onUpdateTags: (filename: string, tags: string[]) => void;
 }) {
   const [lightbox, setLightbox] = useState<ScreenshotItem | null>(null);
+  const [comparisonSelection, setComparisonSelection] = useState<{ leftFilename: string; rightFilename: string } | null>(null);
   const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
   const { t } = useTranslation();
 
@@ -36,6 +39,32 @@ export function InGameGallery({
     shots.forEach((s) => s.tags?.forEach((t) => tags.add(t)));
     return Array.from(tags).sort();
   }, [shots]);
+
+  const defaultComparisonPair = useMemo(() => {
+    const source = filteredShots.length >= 2 ? filteredShots : shots;
+    if (source.length < 2) return null;
+    return {
+      leftFilename: source[0].filename,
+      rightFilename: source.find((shot) => shot.filename !== source[0].filename)?.filename ?? source[1].filename,
+    };
+  }, [filteredShots, shots]);
+
+  const openComparison = (anchor?: ScreenshotItem | null) => {
+    if (shots.length < 2) return;
+    const source = filteredShots.length >= 2 ? filteredShots : shots;
+    if (source.length < 2) return;
+    if (anchor) {
+      const anchorIndex = source.findIndex((shot) => shot.filename === anchor.filename);
+      const counterpart = source[anchorIndex + 1] ?? source[anchorIndex - 1] ?? source.find((shot) => shot.filename !== anchor.filename) ?? null;
+      if (counterpart) {
+        setComparisonSelection({ leftFilename: anchor.filename, rightFilename: counterpart.filename });
+        return;
+      }
+    }
+    if (defaultComparisonPair) {
+      setComparisonSelection(defaultComparisonPair);
+    }
+  };
 
   return (
     <section>
@@ -152,6 +181,32 @@ export function InGameGallery({
             </svg>
             {t('game.gallery.export_zip')}
           </button>
+          <button
+            onClick={() => openComparison()}
+            disabled={shots.length < 2}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-accent-muted)" }}
+            onMouseEnter={(e) => {
+              if (shots.length > 1) {
+                e.currentTarget.style.background = "var(--color-accent-deep)";
+                e.currentTarget.style.color = "var(--color-accent)";
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (shots.length > 1) {
+                e.currentTarget.style.background = "var(--color-panel-3)";
+                e.currentTarget.style.color = "var(--color-text-muted)";
+              }
+            }}
+            title={t('game.gallery.compare_button_hint')}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="5" width="7" height="14" rx="1" />
+              <rect x="14" y="5" width="7" height="14" rx="1" />
+              <path d="M10 12h4" />
+            </svg>
+            {t('game.gallery.compare_button')}
+          </button>
         </div>
 
         {allShotTags.length > 0 && (
@@ -240,15 +295,27 @@ export function InGameGallery({
                 <span className="text-sm font-mono" style={{ color: "var(--color-accent-soft)" }}>
                   {lightbox.filename}
                 </span>
-                <button
-                  onClick={() => setLightbox(null)}
-                  className="text-xs px-4 py-1.5 rounded font-semibold transition-colors"
-                  style={{ background: "var(--color-border)", color: "var(--color-white)" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-border-strong)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-border)")}
-                >
-                  CLOSE
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      openComparison(lightbox);
+                    }}
+                    disabled={shots.length < 2}
+                    className="text-xs px-4 py-1.5 rounded font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                  >
+                    {t('game.gallery.compare_button')}
+                  </button>
+                  <button
+                    onClick={() => setLightbox(null)}
+                    className="text-xs px-4 py-1.5 rounded font-semibold transition-colors"
+                    style={{ background: "var(--color-border)", color: "var(--color-white)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-border-strong)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-border)")}
+                  >
+                    {t('common.close').toUpperCase()}
+                  </button>
+                </div>
               </div>
 
               <div className="bg-[var(--color-bg-elev)] p-3 rounded-lg border border-[var(--color-panel-3)]">
@@ -303,6 +370,15 @@ export function InGameGallery({
             </div>
           </div>
         </div>
+      )}
+
+      {comparisonSelection && (
+        <ScreenshotComparisonModal
+          shots={shots}
+          initialLeftFilename={comparisonSelection.leftFilename}
+          initialRightFilename={comparisonSelection.rightFilename}
+          onClose={() => setComparisonSelection(null)}
+        />
       )}
     </section>
   );

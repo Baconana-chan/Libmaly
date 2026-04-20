@@ -7,36 +7,20 @@
 
 ## 🎨 UI / UX
 
-- [x] **Custom CSS / User Styles** — allow power users to inject custom CSS to override any part of the UI
-- [ ] **Layout Presets Manager** — save and switch between global layout configurations (e.g. "Minimalist", "Data-heavy", "Console-mode")
-- [x] **Advanced Backdrop FX** — dynamic blur and glassmorphism levels based on the current game's cover art colors
 - [ ] **Theme Marketplace/Gallery** — browse and install community-made JSON themes from a trusted relay
 ---
 
 ## 📊 Stats & Tracking
 
-- [x] **Year-in-Review generator** — automated summary card of the year's gaming habits, favorite developers, and milestones
-- [x] **Activity Heatmaps** — GitHub-style 365-day play activity grid in the Stats view
-- [x] **Productivity Correlation** — optional "Time well spent" vs "Binge" detection based on session length and frequency
 ---
 
 ## 📸 Screenshots 
 
 - [ ] **Instant Replay (Short Clips)** — capture the last 15–30 seconds of gameplay as a GIF or MP4 (experimental Rust-side buffer)
-- [ ] **Screenshot Comparison Tool** — dual-pane view to compare visual differences between game versions or session moments
 
 ---
 
 ## 🌐 Sources & Extensibility
-
-- [ ] **Universal data-source engine** — allow adding custom metadata scrapers via JSON templates (URL patterns, CSS selectors, regex, or simple JS hooks)
-- [ ] **Multi-source metadata aggregation** — fetch and merge data from multiple sources for a single game (e.g. F95 version tags + VNDB media + DLsite descriptions)
-- [x] **Local-only "Ghost" mode** — per-game or per-profile setting to disable all outbound metadata/update checks for high-privacy games
-- [x] **Third-party store integration** — metadata providers for generic stores (IGDB, RAWG, MobyGames) to cover games not on F95/DLsite
-- [x] **Provider-agnostic library sync** — add WebDAV, Nextcloud, and generic S3/Git backends for state/save sync beyond Google Drive/Dropbox
-
----
-
 
 ---
 
@@ -81,48 +65,7 @@
 
 ---
 
-## 🧰 Background Jobs (Completed)
-
-- [x] **Database Vacuum/Optimize** — periodic background task to prune old logs and optimize local state storage
----
-
-## 🛡️ Reliability & Recovery
-
-- [x] **Unified storage with schema migrations** — move to a versioned state store with forward migrations and rollback on migration failure
-
----
-
-## ☁️ Sync & Backup
-
-- [ ] **Google Drive / Dropbox auto-backup** — optional periodic upload of library JSON to a cloud folder
-- [ ] **Save-file cloud sync** — upload save zips to a configured folder (Google Drive, local NAS, etc.)
-- [ ] **Cloud sync conflict resolver** — 3-way merge for local/remote/base snapshots to avoid silent data loss
-
----
-
-## 🍷 Wine / Proton (Linux & macOS) (Completed)
-
-- [x] All core diagnostic and compatibility features implemented (see Completed section)
-
----
-
-## 📥 Import & Interop (Completed)
-
-- [x] All major launcher imports (Steam/GOG/Playnite) implemented (see Completed section)
-
----
-
 ## 🛒 Launcher & Store Integrations
-
-- [ ] **Unified Cloud Library Sync** — fetch complete ownership lists (including uninstalled titles) from major storefronts:
-  - [ ] **Enhanced Steam Integration** — list all library titles via Web API / ID hunting; trigger `steam://install/<id>` for uninstalled games.
-  - [ ] **Epic Games Store** — cloud-based library listing and Legendary-style launch integration.
-  - [ ] **itch.io Butler Integration** — browse, download, and auto-update itch.io purchases directly within Libmaly.
-  - [ ] **EA App / Ubisoft Connect / Rockstar** — protocol-based library discovery and "Launch from Store" support.
-  - [ ] **GameJolt & Battle.net** — experimental manifests reading for installed titles and cloud metadata sync.
-- [ ] **Cross-Store Ownership Grouping** — automatically merge multiple entries for the same game owned on different platforms into a single UI card with a "Launch via..." provider selector.
-- [ ] **Remote Install Flow** — trigger game installation in external launchers directly from the Libmaly detail page.
-- [ ] **OAuth & API Vault** — secure centralized manager for storefront tokens and cookies (integrated with Libmaly Profile persistence).
 
 ---
 
@@ -134,7 +77,6 @@
   - [ ] **State Access** — read library metadata, stats, and notes for external dashboards/sidecar apps
   - [ ] **Extension hooks** — allow external scripts to "push" notifications or widgets into the Libmaly overlay
 - [ ] **SDK / Reference implementation** — provide a boilerplate for third-party developers to build fan-made tools on top of Libmaly
-- [x] **Data consistency tests** — integration scenarios for scan → launch → crash → recovery across Windows/Linux/macOS
 
 
 ### Internal Interfaces / Types (planned)
@@ -142,11 +84,7 @@
 
 
 ### Reliability Test Scenarios (planned)
-- [ ] **Crash during write** — verify state remains recoverable and library is not fully lost
-- [ ] **Root folder rename** — verify automatic path healing restores most mapped games
-- [ ] **Local vs cloud conflict** — verify merge keeps playtime and notes deterministically
-- [ ] **Broken metadata source** — verify graceful degradation without blocking core UI
-- [ ] **Cross-platform backup/restore** — validate backup restore and integrity check on Windows/Linux/macOS
+Automated dry-run checks now live in Settings -> Consistency Tests. Run them on each target OS before shipping a release candidate.
 
 ---
 
@@ -170,6 +108,40 @@
 ---
 
 ## ✅ Completed
+
+### Recently Completed / Moved From Active Roadmap
+- [x] **Custom CSS / User Styles** — allow power users to inject custom CSS to override any part of the UI
+- [x] **Layout Presets Manager** — save and switch between global layout configurations (e.g. "Minimalist", "Data-heavy", "Console-mode")
+- [x] **Advanced Backdrop FX** — dynamic blur and glassmorphism levels based on the current game's cover art colors
+- [x] **Year-in-Review generator** — automated summary card of the year's gaming habits, favorite developers, and milestones
+- [x] **Activity Heatmaps** — GitHub-style 365-day play activity grid in the Stats view
+- [x] **Productivity Correlation** — optional "Time well spent" vs "Binge" detection based on session length and frequency
+- [x] **Screenshot Comparison Tool** — dual-pane view to compare visual differences between game versions or session moments
+- [x] **Universal data-source engine** — allow adding custom metadata scrapers via JSON templates (URL patterns, CSS selectors, regex, or simple JS hooks)
+- [x] **Multi-source metadata aggregation** — fetch and merge data from multiple sources for a single game (e.g. F95 version tags + VNDB media + DLsite descriptions)
+- [x] **Local-only "Ghost" mode** — per-game or per-profile setting to disable all outbound metadata/update checks for high-privacy games
+- [x] **Third-party store integration** — metadata providers for generic stores (IGDB, RAWG, MobyGames) to cover games not on F95/DLsite
+- [x] **Provider-agnostic library sync** — add WebDAV, Nextcloud, and generic S3/Git backends for state/save sync beyond Google Drive/Dropbox
+- [x] **Database Vacuum/Optimize** — periodic background task to prune old logs and optimize local state storage
+- [x] **Unified storage with schema migrations** — move to a versioned state store with forward migrations and rollback on migration failure
+- [x] **Google Drive / Dropbox auto-backup** — optional periodic upload of library JSON to a cloud folder
+- [x] **Save-file cloud sync** — upload save zips to a configured folder (Google Drive, local NAS, etc.)
+- [x] **Cloud sync conflict resolver** — 3-way merge for local/remote/base snapshots to avoid silent data loss
+- [x] **Unified Cloud Library Sync** — fetch complete ownership lists (including uninstalled titles) from major storefronts
+- [x] **Enhanced Steam Integration** — list all library titles via Web API / ID hunting; trigger `steam://install/<id>` for uninstalled games
+- [x] **Epic Games Store** — cloud-based library listing and Legendary-style launch integration
+- [x] **itch.io Butler Integration** — browse, download, and auto-update itch.io purchases directly within Libmaly
+- [x] **EA App / Ubisoft Connect / Rockstar** — protocol-based library discovery and "Launch from Store" support
+- [x] **GameJolt & Battle.net** — experimental manifests reading for installed titles and cloud metadata sync
+- [x] **Cross-Store Ownership Grouping** — automatically merge multiple entries for the same game owned on different platforms into a single UI card with a "Launch via..." provider selector
+- [x] **Remote Install Flow** — trigger game installation in external launchers directly from the Libmaly detail page
+- [x] **OAuth & API Vault** — secure centralized manager for storefront tokens and cookies (integrated with Libmaly Profile persistence)
+- [x] **Data consistency tests** — integration scenarios for scan → launch → crash → recovery across Windows/Linux/macOS
+- [x] **Crash during write** — verify state remains recoverable and library is not fully lost
+- [x] **Root folder rename** — verify automatic path healing restores most mapped games
+- [x] **Local vs cloud conflict** — verify merge keeps playtime and notes deterministically
+- [x] **Broken metadata source** — verify graceful degradation without blocking core UI
+- [x] **Cross-platform backup/restore** — validate backup restore and integrity check on Windows/Linux/macOS
 
 ### Library & Scanning
 - [x] **Multi-folder library** — scan multiple root directories instead of one; each shown as a separate section or merged

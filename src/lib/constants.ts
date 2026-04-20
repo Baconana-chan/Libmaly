@@ -19,6 +19,11 @@ export const SK_SESSION_LOG = "session-log-v1";
 export const SK_WISHLIST = "wishlist-v1";
 export const SK_HISTORY = "game-history-v1";
 export const SK_SETTINGS = "libmaly_app_settings-v1";
+export const SK_VIEW_MODE = "libmaly_view_mode";
+export const SK_SIDEBAR_WIDTH = "libmaly_sidebar_w";
+export const SK_LAYOUT_PRESETS = "layout-presets-v1";
+export const SK_STEAM_WEB_API_KEY = "steam-web-api-key-v1";
+export const SK_STEAM_PROFILE_REF = "steam-profile-ref-v1";
 
 // ─── Background Job Constants ─────────────────────────────────────────────────
 export const BACKGROUND_JOB_BUSY_STATUSES = ["queued", "running", "retrying"] as const;
@@ -31,6 +36,7 @@ export const JOB_UPDATE_CHECKER = "update-checker";
 export const JOB_AUTO_HEAL_PATHS = "auto-heal-paths";
 export const JOB_BACKUP_RETENTION = "backup-retention";
 export const JOB_DB_VACUUM = "db-vacuum";
+export const JOB_AUTO_CLOUD_BACKUP = "auto-cloud-backup";
 export const DEFAULT_METADATA_QUEUE_CONCURRENCY = 2;
 export const DEFAULT_METADATA_QUEUE_MAX_ATTEMPTS = 3;
 export const DEFAULT_METADATA_QUEUE_BACKOFF_MS = 1500;
@@ -90,6 +96,9 @@ export const DEFAULT_SETTINGS = {
   metadataAutoRefetchDays: 0,
   autoScreenshotInterval: 0,
   saveBackupOnExit: false,
+  cloudAutoBackupEnabled: false,
+  cloudAutoBackupIntervalMinutes: 60,
+  cloudAutoBackupLastSuccessAt: 0,
   sidebarMinimalMode: false,
   sidebarShowNews: true,
   sidebarShowStats: true,

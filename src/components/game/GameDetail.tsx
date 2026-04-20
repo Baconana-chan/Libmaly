@@ -70,7 +70,10 @@ const RATING_CATEGORIES: { key: RatingCategoryKey; labelKey: string }[] = [
 
 interface GameMetadata {
   source: string;
+  source_label?: string;
   source_url: string;
+  source_links?: { source: string; source_label?: string; source_url: string; fetchedAt?: number }[];
+  aggregated_sources?: string[];
   title?: string;
   version?: string;
   developer?: string;
@@ -173,6 +176,80 @@ function heroGradient(name: string) {
   return `linear-gradient(135deg,hsl(${hue},40%,15%) 0%,hsl(${(hue + 50) % 360},55%,25%) 100%)`;
 }
 
+const VNDB_RELATION_LABELS: Record<string, string> = {
+  seq: "Sequel",
+  preq: "Prequel",
+  side: "Side story",
+  alt: "Alternative version",
+  fan: "Fan disc",
+  set: "Same setting",
+  ser: "Same series",
+  char: "Shared cast",
+};
+
+interface ParsedRelation {
+  raw: string;
+  relationKey: string;
+  relationLabel: string;
+  title: string;
+  linkText?: string;
+  url?: string;
+}
+
+function relationHostLabel(url: string) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host.includes("vndb.org")) return "VNDB";
+    if (host.includes("igdb.com")) return "IGDB";
+    if (host.includes("rawg.io")) return "RAWG";
+    return host.replace(/^www\./, "");
+  } catch {
+    return "Link";
+  }
+}
+
+function parseRelationItem(raw: string): ParsedRelation {
+  const trimmed = raw.trim();
+  const match = trimmed.match(/^([^:]+):\s*(.+?)(?:\s+\(([^()]+)\))?$/i);
+  if (!match) {
+    return {
+      raw,
+      relationKey: "related",
+      relationLabel: "Related",
+      title: trimmed,
+    };
+  }
+
+  const relationKey = match[1].trim().toLowerCase();
+  const title = match[2].trim();
+  const token = match[3]?.trim();
+  const fallbackLabel = relationKey
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || "Related";
+
+  const resolved = (() => {
+    if (!token) return { linkText: undefined, url: undefined };
+    if (/^v\d+$/i.test(token)) {
+      return { linkText: token, url: `https://vndb.org/${token}` };
+    }
+    if (/^https?:\/\//i.test(token)) {
+      return { linkText: relationHostLabel(token), url: token };
+    }
+    return { linkText: token, url: undefined };
+  })();
+
+  return {
+    raw,
+    relationKey,
+    relationLabel: VNDB_RELATION_LABELS[relationKey] || fallbackLabel,
+    title,
+    linkText: resolved.linkText,
+    url: resolved.url,
+  };
+}
+
 function TagBadge({ text }: { text: string }) {
   return (
     <span className="inline-block text-xs px-2 py-0.5 rounded" style={{ background: "var(--color-border-soft)", color: "var(--color-accent-soft)", border: "1px solid #264d68" }}>
@@ -191,13 +268,18 @@ function MetaRow({ label, value }: { label: string; value?: string }) {
   );
 }
 
-function sourceLabel(source?: string) {
+function sourceLabel(source?: string, explicitLabel?: string) {
+  if (explicitLabel?.trim()) return explicitLabel.trim();
   if (source === "f95") return "F95zone";
   if (source === "dlsite") return "DLsite";
   if (source === "vndb") return "VNDB";
   if (source === "mangagamer") return "MangaGamer";
   if (source === "johren") return "Johren";
   if (source === "fakku") return "FAKKU";
+  if (source === "igdb") return "IGDB";
+  if (source === "rawg") return "RAWG";
+  if (source === "mobygames") return "MobyGames";
+  if (source?.startsWith("custom:")) return source.slice("custom:".length).replace(/[-_]+/g, " ").trim() || "Custom Source";
   return "Metadata";
 }
 
@@ -208,7 +290,33 @@ function sourceBadgeBg(source?: string) {
   if (source === "mangagamer") return "#7c5cff";
   if (source === "johren") return "#5a6bff";
   if (source === "fakku") return "#da4c96";
+  if (source === "igdb") return "#5bc4a5";
+  if (source === "rawg") return "#ff7f50";
+  if (source === "mobygames") return "#6a89cc";
   return "var(--color-border)";
+}
+
+function resolvedMetadataSources(meta?: GameMetadata | null) {
+  if (!meta) return [];
+  const sourceEntries = meta.source_links?.map((entry) => ({ source: entry.source, sourceLabel: entry.source_label }))
+    ?? (meta.source ? [{ source: meta.source, sourceLabel: meta.source_label }] : []);
+  const rawSources = meta.aggregated_sources?.length
+    ? meta.aggregated_sources.map((source) => ({ source, sourceLabel: sourceEntries.find((entry) => entry.source === source)?.sourceLabel }))
+    : sourceEntries;
+  const deduped = new Map<string, { source: string; sourceLabel?: string }>();
+  for (const entry of rawSources) {
+    const normalized = entry.source.trim().toLowerCase();
+    if (!normalized || deduped.has(normalized)) continue;
+    deduped.set(normalized, { source: normalized, sourceLabel: entry.sourceLabel });
+  }
+  return Array.from(deduped.values());
+}
+
+function resolvedMetadataLinks(meta?: GameMetadata | null) {
+  if (!meta) return [];
+  const links = meta.source_links?.filter((entry) => entry.source && entry.source_url) ?? [];
+  if (links.length > 0) return links;
+  return meta.source && meta.source_url ? [{ source: meta.source, source_url: meta.source_url }] : [];
 }
 
 function MenuEntry({ icon, label, color, onClick }: { icon: string; label: string; color?: string; onClick: () => void }) {
@@ -235,6 +343,7 @@ function SettingsMenu({
   onToggleFav,
   onCustomize,
   onManageCollections,
+  onTransferSaves,
 }: {
   isHidden: boolean;
   isFav: boolean;
@@ -243,6 +352,7 @@ function SettingsMenu({
   onToggleFav: () => void;
   onCustomize: () => void;
   onManageCollections: () => void;
+  onTransferSaves: () => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -286,6 +396,7 @@ function SettingsMenu({
           <MenuEntry icon={isHidden ? "👁" : "🙈"} label={isHidden ? t('game.menu.unhide') : t('game.menu.hide')} onClick={() => { setOpen(false); onToggleHide(); }} />
           <MenuEntry icon="🎨" label={t('game.menu.customize')} onClick={() => { setOpen(false); onCustomize(); }} />
           <MenuEntry icon="📁" label={t('game.menu.collections')} onClick={() => { setOpen(false); onManageCollections(); }} />
+          <MenuEntry icon="💾" label={t('game.menu.transfer_saves')} onClick={() => { setOpen(false); onTransferSaves(); }} />
           <div style={{ borderTop: "1px solid var(--color-panel-3)", margin: "3px 0" }} />
           <MenuEntry icon="🗑" label={t('game.menu.uninstall')} color="var(--color-danger)" onClick={() => { setOpen(false); onDelete(); }} />
         </div>
@@ -480,6 +591,9 @@ export function GameDetail({
   screenshots,
   isHidden,
   isFav,
+  launchOptions,
+  currentLaunchOptionPath,
+  onSelectLaunchOption,
   onPlay,
   onStop,
   isRunning,
@@ -489,7 +603,12 @@ export function GameDetail({
   onOpenF95Login,
   onClearMeta,
   onUpdate,
+  onLaunchStoreGame,
+  launchStoreLabel,
+  onRemoteInstall,
+  remoteInstallLabel,
   onBackupSaves,
+  onBackupSavesToCloud,
   onTakeScreenshot,
   onAnnotateScreenshot,
   onOpenScreenshotsFolder,
@@ -505,6 +624,7 @@ export function GameDetail({
   achievementSummary,
   achievementHasOpenGoals,
   onManageCollections,
+  onTransferSaves,
   onInstallMediaFixes,
   wineIntroVideoAssessment,
   shaderCachePanel,
@@ -524,6 +644,9 @@ export function GameDetail({
   screenshots: Screenshot[];
   isHidden: boolean;
   isFav: boolean;
+  launchOptions?: { path: string; label: string }[];
+  currentLaunchOptionPath?: string;
+  onSelectLaunchOption?: (path: string) => void;
   onPlay: (overridePath?: string, overrideArgs?: string) => void;
   onStop: () => void;
   isRunning: boolean;
@@ -533,7 +656,12 @@ export function GameDetail({
   onOpenF95Login: () => void;
   onClearMeta: () => void;
   onUpdate: () => void;
+  onLaunchStoreGame?: (() => void) | null;
+  launchStoreLabel?: string | null;
+  onRemoteInstall?: (() => void) | null;
+  remoteInstallLabel?: string | null;
   onBackupSaves: () => void;
+  onBackupSavesToCloud: () => void;
   onTakeScreenshot: () => void;
   onAnnotateScreenshot: () => void;
   onOpenScreenshotsFolder: () => void;
@@ -551,6 +679,7 @@ export function GameDetail({
   /** true when some checklist rows exist and not all are done */
   achievementHasOpenGoals: boolean;
   onManageCollections: () => void;
+  onTransferSaves: () => void;
   onInstallMediaFixes?: () => void;
   /** Combined prefix scan + engine/path heuristics (non-Windows + configured prefix only) */
   wineIntroVideoAssessment?: PerGameMediaPlaybackAssessment | null;
@@ -575,6 +704,8 @@ export function GameDetail({
   const [activeShot, setActiveShot] = useState(0);
   const [metaLightboxShot, setMetaLightboxShot] = useState<string | null>(null);
   const [reviewDraft, setReviewDraft] = useState(customization.personalReview ?? "");
+  const sourceBadges = useMemo(() => resolvedMetadataSources(meta), [meta]);
+  const sourceLinks = useMemo(() => resolvedMetadataLinks(meta), [meta]);
   const cover = customization.coverUrl ?? meta?.cover_url;
   const heroBg = customization.backgroundUrl ?? cover;
   const displayTitle = customization.displayName ?? meta?.title ?? game.name;
@@ -662,11 +793,11 @@ export function GameDetail({
           <div className="flex items-end justify-between">
             <div>
               <div className="flex gap-2 mb-1.5">
-                {meta?.source && (
-                  <span className="inline-block text-xs px-2 py-0.5 rounded font-semibold" style={{ background: sourceBadgeBg(meta.source), color: meta.source === "f95" ? "var(--color-black-strong)" : "var(--color-white)" }}>
-                    {sourceLabel(meta.source)}
+                {sourceBadges.map((entry) => (
+                  <span key={entry.source} className="inline-block text-xs px-2 py-0.5 rounded font-semibold" style={{ background: sourceBadgeBg(entry.source), color: entry.source === "f95" ? "var(--color-black-strong)" : "var(--color-white)" }}>
+                    {sourceLabel(entry.source, entry.sourceLabel)}
                   </span>
-                )}
+                ))}
                 {isHidden && (
                   <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-semibold" style={{ background: "rgba(0,0,0,0.6)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -691,16 +822,16 @@ export function GameDetail({
 
       <div className="flex items-center gap-2 px-8 py-3 flex-shrink-0" style={{ background: "var(--color-bg-elev)", borderBottom: "1px solid var(--color-bg-deep)" }}>
         <button
-          onClick={game.uninstalled ? undefined : isRunning ? onStop : () => onPlay()}
-          disabled={game.uninstalled}
-          title={game.uninstalled ? "Reinstall the game or check folder to play" : ""}
+          onClick={game.uninstalled ? (onLaunchStoreGame || undefined) : isRunning ? onStop : () => onPlay()}
+          disabled={game.uninstalled ? !onLaunchStoreGame : false}
+          title={game.uninstalled ? (onLaunchStoreGame ? launchStoreLabel || "Launch this title from its launcher" : "Reinstall the game or check folder to play") : ""}
           className="flex items-center gap-2 px-7 py-2 rounded font-bold text-sm uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: game.uninstalled ? "#3a3a3a" : isRunning ? "var(--color-stop-bg)" : "var(--color-play-bg)", color: game.uninstalled ? "var(--color-text-muted)" : isRunning ? "var(--color-danger-soft)" : "var(--color-play-text)" }}
           onMouseEnter={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "var(--color-stop-hover)" : "var(--color-play-hover)"; }}
           onMouseLeave={(e) => { if (!game.uninstalled) e.currentTarget.style.background = isRunning ? "var(--color-stop-bg)" : "var(--color-play-bg)"; }}
         >
           {game.uninstalled ? (
-            t('game.folder_missing')
+            onLaunchStoreGame ? launchStoreLabel || "Launch from Store" : t('game.folder_missing')
           ) : isRunning ? (
             <>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" /></svg>{t('game.stop')}
@@ -712,6 +843,39 @@ export function GameDetail({
             </>
           )}
         </button>
+        {launchOptions && launchOptions.length > 1 && onSelectLaunchOption && (
+          <label className="flex items-center gap-2 px-3 py-2 rounded text-sm"
+            style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}>
+            <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Launch via</span>
+            <select
+              value={currentLaunchOptionPath ?? game.path}
+              onChange={(e) => onSelectLaunchOption(e.currentTarget.value)}
+              className="bg-transparent outline-none text-sm"
+              style={{ color: "var(--color-text)" }}
+            >
+              {launchOptions.map((option) => (
+                <option key={option.path} value={option.path}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {onRemoteInstall && remoteInstallLabel && (
+          <button
+            onClick={onRemoteInstall}
+            className="flex items-center gap-1.5 px-3 py-2 rounded text-sm"
+            style={{ background: "var(--color-accent-bg)", color: "var(--color-accent-soft)", border: "1px solid var(--color-accent)" }}
+            title={remoteInstallLabel}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            {remoteInstallLabel}
+          </button>
+        )}
         {customization?.pinnedExes?.map((ex, i) => (
           <button
             key={i}
@@ -742,6 +906,14 @@ export function GameDetail({
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
           </svg>
           {t('game.backup_saves')}
+        </button>
+        <button onClick={onBackupSavesToCloud} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)", border: "1px solid var(--color-accent)" }} title="Create a save zip and upload it to the configured cloud sync provider">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M7 18a4.6 4.6 0 0 1 .88-9.12A6 6 0 0 1 19 11a4 4 0 0 1-1 7.87" />
+            <path d="M12 12v9" />
+            <path d="m8.5 15.5 3.5-3.5 3.5 3.5" />
+          </svg>
+          Cloud Save Zip
         </button>
         {onInstallMediaFixes && (
           <button onClick={onInstallMediaFixes} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-warning-bg)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }} title="Install media playback fixes for this game's Wine/Proton prefix">
@@ -779,14 +951,14 @@ export function GameDetail({
           {achievementSummary && <span className="text-[11px] font-mono opacity-90 ml-0.5">{achievementSummary}</span>}
           {achievementHasOpenGoals && <span className="w-1.5 h-1.5 rounded-full bg-current ml-0.5" />}
         </button>
-        {meta && (
-          <a href={meta.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "var(--color-panel-2)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}>
+        {sourceLinks.map((link) => (
+          <a key={`${link.source}:${link.source_url}`} href={link.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "var(--color-panel-2)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
             </svg>
-            {t('common.open')} {sourceLabel(meta.source)}
+            {t('common.open')} {sourceLabel(link.source, link.source_label)}
           </a>
-        )}
+        ))}
         {!f95LoggedIn && (
           <button onClick={onOpenF95Login} className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "var(--color-warning-bg-2)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -797,7 +969,7 @@ export function GameDetail({
         )}
         <div className="flex-1" />
         {meta && <button onClick={onClearMeta} className="px-3 py-2 rounded text-xs" style={{ background: "transparent", color: "var(--color-text-dim)" }}>✕ {t('game.unlink')}</button>}
-        <SettingsMenu isHidden={isHidden} isFav={isFav} onDelete={onDelete} onToggleHide={onToggleHide} onToggleFav={onToggleFav} onCustomize={onOpenCustomize} onManageCollections={onManageCollections} />
+        <SettingsMenu isHidden={isHidden} isFav={isFav} onDelete={onDelete} onToggleHide={onToggleHide} onToggleFav={onToggleFav} onCustomize={onOpenCustomize} onManageCollections={onManageCollections} onTransferSaves={onTransferSaves} />
       </div>
 
       {wineIntroVideoAssessment && (
@@ -985,10 +1157,58 @@ export function GameDetail({
             {meta?.relations && meta.relations.length > 0 && (
               <section>
                 <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.relations')}</h2>
-                <div className="space-y-1">
-                  {meta.relations.map((r, i) => (
-                    <p key={`${r}-${i}`} className="text-xs" style={{ color: "var(--color-text-soft)" }}>{r}</p>
-                  ))}
+                <div className="space-y-2">
+                  {meta.relations.map((rawRelation, i) => {
+                    const relation = parseRelationItem(rawRelation);
+                    return (
+                      <div
+                        key={`${rawRelation}-${i}`}
+                        className="flex items-start gap-2.5 rounded-lg px-3 py-2"
+                        style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}
+                      >
+                        <span
+                          className="inline-flex flex-shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                          style={{ background: "#1d3446", color: "#9ed2ff", border: "1px solid #31536d" }}
+                          title={relation.relationKey}
+                        >
+                          {relation.relationLabel}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          {relation.url ? (
+                            <a
+                              href={relation.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-sm underline-offset-2 hover:underline"
+                              style={{ color: "var(--color-text)" }}
+                              title={`Open ${relation.title} on VNDB`}
+                            >
+                              {relation.title}
+                            </a>
+                          ) : (
+                            <p className="text-sm" style={{ color: "var(--color-text)" }}>{relation.title}</p>
+                          )}
+                          <div className="mt-1 flex items-center gap-2 flex-wrap">
+                            {relation.linkText && relation.url && (
+                              <a
+                                href={relation.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide"
+                                style={{ background: "var(--color-panel-2)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}
+                                title={`Open ${relation.title}`}
+                              >
+                                {relation.linkText}
+                              </a>
+                            )}
+                            {!relation.url && relation.raw !== relation.title && (
+                              <span className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>{relation.raw}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
             )}

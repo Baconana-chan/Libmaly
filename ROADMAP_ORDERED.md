@@ -28,17 +28,17 @@ This roadmap organizes remaining tasks from easiest ("Quick Wins") to most diffi
 
 ### ☁️ Cloud & Backup
 - [x] **Provider-agnostic library sync** — Add WebDAV, Nextcloud, S3/Git backends for state sync.
-- [ ] **Google Drive / Dropbox auto-backup** — Optional periodic upload of library state.
-- [ ] **Save-file cloud sync** — Upload save zips to configured cloud folders.
-- [ ] **Cloud sync conflict resolver** — UI and logic for 3-way merge (Local/Remote/Base).
+- [x] **Google Drive / Dropbox auto-backup** — Optional periodic upload of library state.
+- [x] **Save-file cloud sync** — Upload save zips to configured cloud folders.
+- [x] **Cloud sync conflict resolver** — UI and logic for 3-way merge (Local/Remote/Base).
 
 ### 🛠️ Technical Foundations
-- [ ] **OAuth & API Vault** — Secure centralized manager for storefront tokens/cookies.
+- [x] **OAuth & API Vault** — Secure centralized manager for storefront tokens/cookies.
 - [ ] **REST/WebSocket API Mode** — Internal API for state access and remote control (foundation for SDK).
 - [ ] **SDK / Reference implementation** — Boilerplate for third-party tools.
 
 > [!IMPORTANT]
-> **Path Dependency:** The **OAuth & API Vault** should be implemented *before* any cloud providers or storefront syncs to ensure secure credential handling.
+> **Status:** The **OAuth & API Vault** is complete; remaining API-mode and SDK work can build on the existing credential layer.
 
 ---
 
@@ -46,10 +46,10 @@ This roadmap organizes remaining tasks from easiest ("Quick Wins") to most diffi
 *Requires complex network interactions and external integrations.*
 
 ### 🛒 Storefront Integrations
-- [ ] **Enhanced Steam Integration** — List uninstalled titles via Web API / ID hunting.
-- [ ] **Epic Games Store** — Cloud library listing and Legendary-style integration.
-- [ ] **itch.io Butler Integration** — Direct purchase management and auto-updates.
-- [ ] **Cross-Store Ownership Grouping** — Merge multiple entries for the same game into one card.
+- [x] **Enhanced Steam Integration** — List owned titles via Web API / profile-ID resolution and trigger `steam://install/<id>` for uninstalled imports.
+- [x] **Epic Games Store** — Cloud library listing and Legendary-style integration.
+- [x] **itch.io Butler Integration** — Direct purchase management and auto-updates.
+- [x] **Cross-Store Ownership Grouping** — Merge multiple entries for the same game into one card.
 
 ### 📡 Connectivity (Social/P2P)
 - [ ] **Peer-to-Peer Activity "Pulse"** — Local-network broadcast of active games.

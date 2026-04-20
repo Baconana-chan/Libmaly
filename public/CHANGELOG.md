@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.8.0 - 2026-04-20
+
+### 🛒 Launcher & Store Integrations
+- **Expanded Steam import flow** — Steam import can now resolve owned libraries through the Steam Web API using a SteamID, vanity URL, or profile link, merge installed manifests with uninstalled owned titles, and keep placeholder entries that can later be upgraded into local installs.
+- **Epic Games Store via Legendary** — added Legendary status/auth detection, owned-library import, launch support for installed Epic titles, and install actions for uninstalled Epic placeholders directly from Libmaly.
+- **itch.io Butler integration** — added owned-library browsing, install/update actions, cave tracking, install-location support, and reuse of a stored itch.io API key from inside Libmaly.
+- **EA App / Ubisoft Connect / Rockstar import** — added Windows protocol-store discovery from registry/local launcher metadata and preserved launcher protocol URIs so imported titles can still open through their native launcher.
+- **GameJolt & Battle.net experimental import** — added best-effort manifest/registry detection for installed titles plus optional metadata enrichment from public store pages.
+- **Cross-store ownership grouping** — multiple owned entries for the same game are now merged into a single library card with provider-aware grouping and cleaner sidebar/detail-page presentation.
+- **Remote install flow** — added direct install triggers from the game detail page for supported launchers, including Steam, Epic, and Ubisoft Connect.
+
+### ☁️ Sync, Cloud & Recovery
+- **Google Drive and Dropbox sync** — added browser-based OAuth flows, token refresh support, provider configuration, and direct deep-link callback handling inside the app.
+- **Production-ready S3 sync backend** — replaced the previous stub with real S3/object-storage upload, download, existence checks, and save-backup upload support.
+- **Cloud auto-backup scheduling** — added periodic automatic library-state uploads for supported cloud providers plus manual “Run Backup Now” controls and background-job status reporting.
+- **Save backup uploads** — game save backups can now be zipped and uploaded to the configured sync provider, with provider-specific remote save-backup paths.
+- **Advanced conflict resolution** — sync now exposes previewable conflict details with local/remote/base values, manual resolution choices, and clearer conflict reporting in the UI.
+- **Profile-scoped sync state** — sync config, base snapshots, and pending OAuth state are now stored per Libmaly profile instead of sharing one global state file.
+
+### 🔐 Security & Account Storage
+- **OAuth & API Vault** — added a centralized secure vault backed by the OS credential store for storefront cookies, metadata API keys, OAuth tokens, and sync secrets.
+- **Profile-aware secret isolation** — vault entries are now namespaced by the active Libmaly profile so storefront sessions and sync credentials stay separated between profiles.
+- **Legacy secret migration** — plaintext cookie files, API-key files, and sync secrets are migrated into the secure vault on first use, with legacy files retained only as migration fallback.
+- **New Vault settings tab** — replaced the old API Keys screen with a profile-aware vault overview for storefront sessions, metadata APIs, itch.io access, and sync-secret status.
+
+### ⚙️ Settings & UX Refresh
+- **General settings redesign** — rebuilt the Settings modal into a wider dashboard-style workspace with a hero summary, grouped surfaces, clearer tab descriptions, and better separation between profile, account, appearance, system, sync, and maintenance controls.
+- **Layout Presets Manager** — added built-in layout presets plus custom saved presets for view mode, sidebar width, and sidebar visibility toggles so users can switch between different library navigation setups quickly.
+- **Expanded integrations workspace** — the Integrations tab now covers Steam playtime import, Steam owned-library import, Epic via Legendary, itch.io Butler, protocol-based launcher imports, and experimental exotic store bridges from one place.
+- **Richer sync settings UX** — cloud sync now includes provider-specific setup guides, OAuth launch flows for Google Drive and Dropbox, manual conflict preview before resolution, and clearer auto-backup status reporting.
+- **Custom metadata sources tab** — added import/export management for JSON-powered custom metadata templates directly from Settings, including enable/override state and installed-template summaries.
+
+### 💾 Saves, Metadata & Detail View
+- **Save transfer tool** — added a dedicated save-transfer modal that detects common save locations for engines like Unity, Unreal, Ren'Py, and RPG Maker, with optional backup before copy.
+- **Cloud Save Zip action** — the game detail page can now create a save backup zip and immediately upload it to the configured cloud provider.
+- **Richer metadata relations** — expanded IGDB and RAWG relation scraping and upgraded relation rendering in the detail page with labels and outbound links.
+- **Provider-aware launch controls** — the detail page now supports “Launch via…” provider selection, launcher-specific open/install labels, and grouped ownership-aware actions.
+- **Custom metadata templates** — added installable JSON scraper templates for unsupported storefronts/sites, with Rust-side extraction, optional JS hooks, and custom-source matching in the metadata pipeline.
+- **Multi-source metadata aggregation** — metadata records can now retain source snapshots, merge fields across providers, expose source badges/links in the detail page, and show cleaner combined source summaries in exports and feeds.
+- **Save transfer and recovery polish** — game pages now expose direct save-transfer actions alongside backup/export tools, making manual migration between installs or versions easier.
+
+### 📸 Screenshots & Media Workflow
+- **Screenshot Comparison Tool** — added a dual-pane comparison modal for in-game screenshots with left/right selection, swap, shared zoom, synchronized scrolling, difference overlay, and tag/time-gap summaries.
+- **Gallery workflow upgrades** — screenshot lightbox and gallery header now expose direct compare actions so visual regressions or session-to-session differences can be inspected without leaving the current game page.
+
+### 🛠️ Technical
+- **Resilient Windows file reads** — Steam/library and launcher metadata reads now use shared-access/retry logic so imports are more reliable while external clients are running.
+- **Expanded import surface in Settings** — the Integrations tab now exposes dedicated entry points for Epic, itch.io, protocol-store, and exotic-store import flows in addition to Steam/Lutris/Playnite/GOG.
+- **Improved sync UI guidance** — added provider-specific setup guidance, auto-backup explanations, and clearer status messaging for OAuth-based cloud sync.
+
 ## 1.7.1 - 2026-04-13
 
 ### 🛡️ Critical Fixes

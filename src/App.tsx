@@ -20,6 +20,7 @@ import { MediaInstallPreviewModal } from "./components/modals/MediaInstallPrevie
 import { NsfwOverlay } from "./components/common/NsfwOverlay";
 import { GameDetail } from "./components/game/GameDetail";
 import { AppUpdateModal } from "./components/modals/AppUpdateModal";
+import { SaveTransferModal } from "./components/modals/SaveTransferModal";
 import { WhatsNewModal } from "./components/modals/WhatsNewModal";
 import { CrashReportModal, IntegrityCheckModal, LogViewerModal, RecoveryModeModal, SnapshotRestoreModal } from "./components/modals/DiagnosticsModals";
 import { MigrationWizardModal, SettingsModal } from "./components/modals/SettingsModal";
@@ -32,9 +33,9 @@ import { appStorageGetItem, appStorageRemoveItem, appStorageSetItem, getAppStora
 import {
   SK_GAMES, SK_MTIMES, SK_PATH, SK_FOLDERS, SK_STATS, SK_META, SK_HIDDEN, SK_FAVS, SK_GHOST,
   SK_CUSTOM, SK_NOTES, SK_ACHIEVEMENTS, SK_COLLECTIONS, SK_LAUNCH, SK_RECENT, SK_ORDER, SK_SESSION_LOG,
-  SK_WISHLIST, SK_HISTORY, SK_SETTINGS,
+  SK_WISHLIST, SK_HISTORY, SK_SETTINGS, SK_VIEW_MODE, SK_SIDEBAR_WIDTH, SK_LAYOUT_PRESETS, SK_STEAM_WEB_API_KEY, SK_STEAM_PROFILE_REF,
   JOB_INCREMENTAL_SYNC, JOB_FULL_SCAN, JOB_INTEGRITY_CHECK, JOB_BATCH_METADATA_REFRESH,
-  JOB_AUTO_METADATA_REFRESH, JOB_UPDATE_CHECKER, JOB_AUTO_HEAL_PATHS, JOB_BACKUP_RETENTION, JOB_DB_VACUUM,
+  JOB_AUTO_METADATA_REFRESH, JOB_UPDATE_CHECKER, JOB_AUTO_HEAL_PATHS, JOB_BACKUP_RETENTION, JOB_DB_VACUUM, JOB_AUTO_CLOUD_BACKUP,
   DEFAULT_METADATA_QUEUE_CONCURRENCY, DEFAULT_METADATA_QUEUE_MAX_ATTEMPTS, DEFAULT_METADATA_QUEUE_BACKOFF_MS,
   COLLECTION_COLORS, SCREENSHOT_TOAST_TTL_MS, DEFAULT_SETTINGS, DEFAULT_LAUNCH_CONFIG,
   GENERIC_EXE_NAMES, RATING_CATEGORIES,
@@ -58,13 +59,14 @@ import {
 } from "./lib/shaderCache";
 import {
   normalizePathForMatch, normalizePathNoCase, pathDirname, pathBasename, remapPathByRoot, remapPathByPrefix,
-  pathSegmentsRelativeToRoot, deriveGameName, parseDeepLinkUrl, resolveSeasonFromDate,
-  detectMetadataSourceFromUrl, metadataFetchCommand, metadataSourceLabel,
+  pathSegmentsRelativeToRoot, deriveGameName, parseDeepLinkUrl, parseSyncOAuthCallbackUrl, resolveSeasonFromDate,
+  detectMetadataSourceFromUrl, metadataSourceLabel,
   normalizeHexColor, shiftHexColor, formatScoreForScale,
   resolveOverallScore100, mergeDefaultRssFeeds,
   formatTime, heroGradient, allowsNativeContextMenu,
   isBackgroundJobBusy, backgroundJobButtonLabel, sleep,
 } from "./lib/helpers";
+import { getSyncProviderLabel, isAutoBackupProvider, syncCompleteOAuthCallback, syncGetConfig, syncUpload, type SyncSaveBackupResult } from "./lib/sync";
 import "./App.css";
 
 // ─── Virtual list hook ────────────────────────────────────────────────────────
@@ -178,8 +180,146 @@ interface SteamLibraryEntry {
   manifest_path: string;
   exe?: string | null;
 }
+interface SteamOwnedGame {
+  app_id: string;
+  name: string;
+  played_minutes: number;
+  installed: boolean;
+  install_dir?: string | null;
+  library_dir?: string | null;
+  manifest_path?: string | null;
+  exe?: string | null;
+}
+interface EpicLegendaryStatus {
+  available: boolean;
+  authenticated: boolean;
+  executablePath?: string | null;
+  version?: string | null;
+  displayName?: string | null;
+  installUrl: string;
+  lastError?: string | null;
+}
+interface EpicOwnedGame {
+  app_name: string;
+  title: string;
+  installed: boolean;
+  install_path?: string | null;
+  exe?: string | null;
+  version?: string | null;
+}
+interface ItchButlerStatus {
+  available: boolean;
+  executablePath?: string | null;
+  version?: string | null;
+  installUrl: string;
+  apiKeyProvider: string;
+}
+interface ItchInstallLocation {
+  id: string;
+  path: string;
+}
+interface ItchProfile {
+  id: number;
+  user: {
+    id: number;
+    username: string;
+    displayName: string;
+    url?: string | null;
+    coverUrl?: string | null;
+    stillCoverUrl?: string | null;
+  };
+}
+interface ItchCave {
+  id: string;
+  upload?: { id: number } | null;
+  build?: { id: number } | null;
+}
+interface ItchLibraryEntry {
+  id: number;
+  title: string;
+  cover?: string | null;
+  owned: boolean;
+  installed: boolean;
+  installedAt?: string | null;
+  caveIds: string[];
+  primaryCaveId?: string | null;
+  installFolders: string[];
+}
+interface ItchOwnedLibrary {
+  profile: ItchProfile;
+  records: ItchLibraryEntry[];
+  caves: ItchCave[];
+  installLocations: ItchInstallLocation[];
+}
+interface ItchGameUpdateChoice {
+  upload: { id: number; displayName?: string | null; channelName?: string | null; build?: { id: number } | null };
+  build?: { id: number; userVersion?: string | null; version?: number | null } | null;
+  confidence: number;
+}
+interface ItchGameUpdate {
+  caveId: string;
+  game: { id: number; title: string };
+  direct: boolean;
+  choices: ItchGameUpdateChoice[];
+}
+interface ItchUpdateCheckResult {
+  updates: ItchGameUpdate[];
+  warnings: string[];
+}
+interface ItchInstallResult {
+  gameId: number;
+  title: string;
+  caveId: string;
+  installFolder: string;
+  uploadId: number;
+  buildId?: number | null;
+}
+interface MetadataSourceLink {
+  source: string;
+  source_label?: string;
+  source_url: string;
+  fetchedAt?: number;
+}
+
+interface MetadataSourceSnapshot {
+  source: string;
+  source_label?: string;
+  source_url: string;
+  fetchedAt?: number;
+  title?: string;
+  version?: string;
+  developer?: string;
+  publisher?: string;
+  genres?: string[];
+  overview?: string;
+  overview_html?: string;
+  cover_url?: string;
+  screenshots: string[];
+  tags: string[];
+  relations?: string[];
+  engine?: string;
+  os?: string;
+  language?: string;
+  censored?: string;
+  release_date?: string;
+  last_updated?: string;
+  rating?: string;
+  price?: string;
+  circle?: string;
+  series?: string;
+  author?: string;
+  illustration?: string;
+  voice_actor?: string;
+  music?: string;
+  age_rating?: string;
+  product_format?: string;
+  file_format?: string;
+  file_size?: string;
+}
+
 interface GameMetadata {
   source: string;
+  source_label?: string;
   source_url: string;
   fetchedAt?: number;
   title?: string;
@@ -213,6 +353,9 @@ interface GameMetadata {
   product_format?: string;
   file_format?: string;
   file_size?: string;
+  source_links?: MetadataSourceLink[];
+  source_snapshots?: Record<string, MetadataSourceSnapshot>;
+  aggregated_sources?: string[];
 }
 
 interface UpdatePreview {
@@ -424,6 +567,17 @@ interface GameCustomization {
   /** Optional Steam integration for imported Steam titles. */
   steamAppId?: string;
   launchViaSteam?: boolean;
+  /** Generic launcher protocol integration for store-managed games. */
+  storeProvider?: string;
+  storeGameId?: string;
+  storeLaunchUri?: string;
+  launchViaStore?: boolean;
+  /** Epic Games Store integration via Legendary. */
+  epicAppName?: string;
+  launchViaLegendary?: boolean;
+  /** itch.io butler integration metadata. */
+  itchCaveId?: string;
+  itchGameId?: string;
   /** Game completion status */
   status?: "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play";
   /** Daily/session time budget in minutes */
@@ -460,6 +614,317 @@ interface SearchResultItem {
   url: string;
   cover_url: string | null;
   source: string;
+}
+
+const METADATA_SOURCE_PRIORITY = [
+  "f95",
+  "dlsite",
+  "vndb",
+  "mangagamer",
+  "johren",
+  "fakku",
+  "igdb",
+  "rawg",
+  "mobygames",
+] as const;
+
+function metadataSourceRank(source?: string | null) {
+  const normalized = (source || "").trim().toLowerCase();
+  const idx = METADATA_SOURCE_PRIORITY.indexOf(normalized as typeof METADATA_SOURCE_PRIORITY[number]);
+  return idx === -1 ? METADATA_SOURCE_PRIORITY.length + 1 : idx;
+}
+
+async function invokeMetadataForUrl(url: string) {
+  return invoke<GameMetadata>("fetch_metadata_for_url", { url });
+}
+
+async function invokeMetadataBySource(source: string, url: string) {
+  return invoke<GameMetadata>("fetch_metadata_by_source", { source, url });
+}
+
+function isNonEmptyMetadataString(value?: string | null): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function sanitizeMetadataString(value?: string | null) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  if (/^\{\{[\s\S]+\}\}$/.test(normalized)) return undefined;
+  return normalized;
+}
+
+function sanitizeMetadataStringArray(values?: string[] | null) {
+  if (!values || values.length === 0) return [];
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const value of values) {
+    const normalized = sanitizeMetadataString(value);
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(normalized);
+  }
+  return next;
+}
+
+function normalizeMetadataSnapshot(snapshot: MetadataSourceSnapshot): MetadataSourceSnapshot {
+  return {
+    ...snapshot,
+    source: snapshot.source.trim().toLowerCase(),
+    source_label: snapshot.source_label?.trim() || undefined,
+    source_url: snapshot.source_url.trim(),
+    title: sanitizeMetadataString(snapshot.title),
+    version: sanitizeMetadataString(snapshot.version),
+    developer: sanitizeMetadataString(snapshot.developer),
+    publisher: sanitizeMetadataString(snapshot.publisher),
+    overview: sanitizeMetadataString(snapshot.overview),
+    overview_html: sanitizeMetadataString(snapshot.overview_html),
+    cover_url: sanitizeMetadataString(snapshot.cover_url),
+    engine: sanitizeMetadataString(snapshot.engine),
+    os: sanitizeMetadataString(snapshot.os),
+    language: sanitizeMetadataString(snapshot.language),
+    censored: sanitizeMetadataString(snapshot.censored),
+    release_date: sanitizeMetadataString(snapshot.release_date),
+    last_updated: sanitizeMetadataString(snapshot.last_updated),
+    rating: sanitizeMetadataString(snapshot.rating),
+    price: sanitizeMetadataString(snapshot.price),
+    circle: sanitizeMetadataString(snapshot.circle),
+    series: sanitizeMetadataString(snapshot.series),
+    author: sanitizeMetadataString(snapshot.author),
+    illustration: sanitizeMetadataString(snapshot.illustration),
+    voice_actor: sanitizeMetadataString(snapshot.voice_actor),
+    music: sanitizeMetadataString(snapshot.music),
+    age_rating: sanitizeMetadataString(snapshot.age_rating),
+    product_format: sanitizeMetadataString(snapshot.product_format),
+    file_format: sanitizeMetadataString(snapshot.file_format),
+    file_size: sanitizeMetadataString(snapshot.file_size),
+    screenshots: sanitizeMetadataStringArray(snapshot.screenshots),
+    tags: sanitizeMetadataStringArray(snapshot.tags),
+    genres: sanitizeMetadataStringArray(snapshot.genres),
+    relations: sanitizeMetadataStringArray(snapshot.relations),
+  };
+}
+
+function metadataSnapshotFromMeta(meta: GameMetadata): MetadataSourceSnapshot | null {
+  if (!isNonEmptyMetadataString(meta.source)) return null;
+  return normalizeMetadataSnapshot({
+    source: meta.source,
+    source_label: meta.source_label,
+    source_url: meta.source_url || "",
+    fetchedAt: meta.fetchedAt,
+    title: meta.title,
+    version: meta.version,
+    developer: meta.developer,
+    publisher: meta.publisher,
+    genres: meta.genres,
+    overview: meta.overview,
+    overview_html: meta.overview_html,
+    cover_url: meta.cover_url,
+    screenshots: meta.screenshots || [],
+    tags: meta.tags || [],
+    relations: meta.relations,
+    engine: meta.engine,
+    os: meta.os,
+    language: meta.language,
+    censored: meta.censored,
+    release_date: meta.release_date,
+    last_updated: meta.last_updated,
+    rating: meta.rating,
+    price: meta.price,
+    circle: meta.circle,
+    series: meta.series,
+    author: meta.author,
+    illustration: meta.illustration,
+    voice_actor: meta.voice_actor,
+    music: meta.music,
+    age_rating: meta.age_rating,
+    product_format: meta.product_format,
+    file_format: meta.file_format,
+    file_size: meta.file_size,
+  });
+}
+
+function metadataSnapshotsFromMeta(meta?: GameMetadata | null): MetadataSourceSnapshot[] {
+  if (!meta) return [];
+  const next = new Map<string, MetadataSourceSnapshot>();
+  const snapshots = meta.source_snapshots ? Object.values(meta.source_snapshots) : [];
+  for (const snapshot of snapshots) {
+    if (!isNonEmptyMetadataString(snapshot?.source)) continue;
+    const normalized = normalizeMetadataSnapshot(snapshot);
+    next.set(normalized.source, normalized);
+  }
+  if (next.size === 0) {
+    const fallback = metadataSnapshotFromMeta(meta);
+    if (fallback) next.set(fallback.source, fallback);
+  }
+  return Array.from(next.values()).sort((a, b) => metadataSourceRank(a.source) - metadataSourceRank(b.source));
+}
+
+function buildMetadataSourceLinks(snapshots: MetadataSourceSnapshot[]): MetadataSourceLink[] {
+  return snapshots
+    .filter((snapshot) => isNonEmptyMetadataString(snapshot.source_url))
+    .map((snapshot) => ({ source: snapshot.source, source_label: snapshot.source_label, source_url: snapshot.source_url, fetchedAt: snapshot.fetchedAt }))
+    .sort((a, b) => metadataSourceRank(a.source) - metadataSourceRank(b.source));
+}
+
+function pickMetadataStringField(
+  snapshotsBySource: Map<string, MetadataSourceSnapshot>,
+  field:
+    | "title"
+    | "version"
+    | "developer"
+    | "publisher"
+    | "overview"
+    | "overview_html"
+    | "cover_url"
+    | "engine"
+    | "os"
+    | "language"
+    | "censored"
+    | "release_date"
+    | "last_updated"
+    | "rating"
+    | "price"
+    | "circle"
+    | "series"
+    | "author"
+    | "illustration"
+    | "voice_actor"
+    | "music"
+    | "age_rating"
+    | "product_format"
+    | "file_format"
+    | "file_size",
+  preferredSources?: readonly string[],
+): string | undefined {
+  const order = [
+    ...(preferredSources ?? []),
+    ...METADATA_SOURCE_PRIORITY,
+    ...Array.from(snapshotsBySource.keys()),
+  ];
+  const seen = new Set<string>();
+  for (const source of order) {
+    if (seen.has(source)) continue;
+    seen.add(source);
+    const candidate = snapshotsBySource.get(source)?.[field];
+    if (isNonEmptyMetadataString(typeof candidate === "string" ? candidate : undefined)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function mergeMetadataArrayField(
+  snapshotsBySource: Map<string, MetadataSourceSnapshot>,
+  field: "screenshots" | "tags" | "genres" | "relations",
+  preferredSources?: readonly string[],
+) {
+  const order = [
+    ...(preferredSources ?? []),
+    ...METADATA_SOURCE_PRIORITY,
+    ...Array.from(snapshotsBySource.keys()),
+  ];
+  const seenSources = new Set<string>();
+  const seenValues = new Set<string>();
+  const next: string[] = [];
+  for (const source of order) {
+    if (seenSources.has(source)) continue;
+    seenSources.add(source);
+    const values = snapshotsBySource.get(source)?.[field];
+    if (!Array.isArray(values)) continue;
+    for (const rawValue of values) {
+      const value = (rawValue || "").trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seenValues.has(key)) continue;
+      seenValues.add(key);
+      next.push(value);
+    }
+  }
+  return next;
+}
+
+function mergeMetadataSnapshots(inputSnapshots: MetadataSourceSnapshot[]): GameMetadata {
+  const snapshots = inputSnapshots
+    .filter((snapshot) => isNonEmptyMetadataString(snapshot.source))
+    .map(normalizeMetadataSnapshot);
+  const snapshotsBySource = new Map<string, MetadataSourceSnapshot>();
+  for (const snapshot of snapshots) {
+    snapshotsBySource.set(snapshot.source, snapshot);
+  }
+  const aggregatedSources = Array.from(snapshotsBySource.keys()).sort((a, b) => metadataSourceRank(a) - metadataSourceRank(b));
+  const sourceLinks = buildMetadataSourceLinks(Array.from(snapshotsBySource.values()));
+  const primaryLink = sourceLinks[0] ?? null;
+  const fetchedAt = Array.from(snapshotsBySource.values()).reduce<number | undefined>((latest, snapshot) => {
+    if (!snapshot.fetchedAt) return latest;
+    return latest ? Math.max(latest, snapshot.fetchedAt) : snapshot.fetchedAt;
+  }, undefined);
+
+  return {
+    source: primaryLink?.source ?? aggregatedSources[0] ?? "",
+    source_label: primaryLink?.source_label ?? snapshotsBySource.get(primaryLink?.source ?? aggregatedSources[0] ?? "")?.source_label,
+    source_url: primaryLink?.source_url ?? "",
+    fetchedAt,
+    title: pickMetadataStringField(snapshotsBySource, "title", ["f95", "dlsite", "vndb"]),
+    version: pickMetadataStringField(snapshotsBySource, "version", ["f95", "dlsite", "mangagamer", "johren", "fakku", "vndb"]),
+    developer: pickMetadataStringField(snapshotsBySource, "developer", ["dlsite", "f95", "mangagamer", "johren", "fakku", "vndb"]),
+    publisher: pickMetadataStringField(snapshotsBySource, "publisher", ["dlsite", "vndb", "igdb", "rawg", "mobygames"]),
+    genres: mergeMetadataArrayField(snapshotsBySource, "genres", ["vndb", "igdb", "rawg", "mobygames"]),
+    overview: pickMetadataStringField(snapshotsBySource, "overview", ["dlsite", "f95", "fakku", "mangagamer", "johren", "vndb"]),
+    overview_html: pickMetadataStringField(snapshotsBySource, "overview_html", ["dlsite", "fakku", "mangagamer", "johren"]),
+    cover_url: pickMetadataStringField(snapshotsBySource, "cover_url", ["vndb", "dlsite", "f95", "fakku", "igdb", "rawg", "mobygames"]),
+    screenshots: mergeMetadataArrayField(snapshotsBySource, "screenshots", ["vndb", "dlsite", "f95", "igdb", "rawg", "mobygames"]),
+    tags: mergeMetadataArrayField(snapshotsBySource, "tags", ["f95", "dlsite", "vndb", "igdb", "rawg", "mobygames"]),
+    relations: mergeMetadataArrayField(snapshotsBySource, "relations", ["vndb", "igdb", "rawg", "mobygames"]),
+    engine: pickMetadataStringField(snapshotsBySource, "engine", ["f95", "vndb", "igdb", "rawg"]),
+    os: pickMetadataStringField(snapshotsBySource, "os", ["dlsite", "f95", "vndb"]),
+    language: pickMetadataStringField(snapshotsBySource, "language", ["dlsite", "vndb", "f95"]),
+    censored: pickMetadataStringField(snapshotsBySource, "censored", ["dlsite", "f95", "fakku"]),
+    release_date: pickMetadataStringField(snapshotsBySource, "release_date", ["vndb", "dlsite", "f95", "igdb", "rawg", "mobygames"]),
+    last_updated: pickMetadataStringField(snapshotsBySource, "last_updated", ["f95", "dlsite", "rawg", "mobygames"]),
+    rating: pickMetadataStringField(snapshotsBySource, "rating", ["dlsite", "f95", "igdb", "rawg", "mobygames"]),
+    price: pickMetadataStringField(snapshotsBySource, "price", ["dlsite", "fakku", "mangagamer", "johren", "rawg"]),
+    circle: pickMetadataStringField(snapshotsBySource, "circle", ["dlsite"]),
+    series: pickMetadataStringField(snapshotsBySource, "series", ["dlsite", "vndb"]),
+    author: pickMetadataStringField(snapshotsBySource, "author", ["dlsite"]),
+    illustration: pickMetadataStringField(snapshotsBySource, "illustration", ["dlsite"]),
+    voice_actor: pickMetadataStringField(snapshotsBySource, "voice_actor", ["dlsite"]),
+    music: pickMetadataStringField(snapshotsBySource, "music", ["dlsite"]),
+    age_rating: pickMetadataStringField(snapshotsBySource, "age_rating", ["dlsite", "fakku"]),
+    product_format: pickMetadataStringField(snapshotsBySource, "product_format", ["dlsite"]),
+    file_format: pickMetadataStringField(snapshotsBySource, "file_format", ["dlsite"]),
+    file_size: pickMetadataStringField(snapshotsBySource, "file_size", ["dlsite"]),
+    source_links: sourceLinks,
+    source_snapshots: Object.fromEntries(Array.from(snapshotsBySource.entries())),
+    aggregated_sources: aggregatedSources,
+  };
+}
+
+function mergeMetadataWithSnapshot(existing: GameMetadata | undefined, incoming: GameMetadata | MetadataSourceSnapshot) {
+  const existingSnapshots = metadataSnapshotsFromMeta(existing);
+  const incomingSnapshot = "source_snapshots" in incoming || "aggregated_sources" in incoming || "source_links" in incoming
+    ? metadataSnapshotFromMeta(incoming as GameMetadata)
+    : normalizeMetadataSnapshot(incoming as MetadataSourceSnapshot);
+  const nextSnapshots = incomingSnapshot ? [...existingSnapshots, incomingSnapshot] : existingSnapshots;
+  return mergeMetadataSnapshots(nextSnapshots);
+}
+
+function metadataHasLinkedSources(meta?: GameMetadata | null) {
+  return metadataSnapshotsFromMeta(meta).some((snapshot) => isNonEmptyMetadataString(snapshot.source_url));
+}
+
+function metadataUsesSource(meta: GameMetadata | undefined, source: string) {
+  if (!meta) return false;
+  return metadataSnapshotsFromMeta(meta).some((snapshot) => snapshot.source === source);
+}
+
+function metadataSourceSummary(meta?: GameMetadata | null) {
+  if (!meta) return "";
+  const snapshots = metadataSnapshotsFromMeta(meta);
+  const sources = meta.aggregated_sources?.length ? meta.aggregated_sources : snapshots.map((snapshot) => snapshot.source);
+  return Array.from(new Set(sources)).map((source) => snapshots.find((snapshot) => snapshot.source === source)?.source_label || metadataSourceLabel(source)).join(" + ");
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -544,6 +1009,12 @@ interface InteropGameEntry {
   exe: string;
   args?: string;
   source: string;
+  store_uri?: string | null;
+  source_url?: string | null;
+  cover_url?: string | null;
+  developer?: string | null;
+  version?: string | null;
+  overview?: string | null;
 }
 
 interface AppSettings {
@@ -566,6 +1037,9 @@ interface AppSettings {
   metadataAutoRefetchDays: number;
   autoScreenshotInterval: number;
   saveBackupOnExit: boolean;
+  cloudAutoBackupEnabled: boolean;
+  cloudAutoBackupIntervalMinutes: number;
+  cloudAutoBackupLastSuccessAt: number;
   sidebarMinimalMode?: boolean;
   sidebarShowNews?: boolean;
   sidebarShowStats?: boolean;
@@ -594,6 +1068,152 @@ interface AppSettings {
   preferredMetadataSource?: "all" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku";
   preferredSearchEngine?: "duckduckgo" | "google" | "bing" | "brave";
 }
+
+type LayoutViewMode = "list" | "compact" | "grid";
+
+type LayoutPresetConfig = {
+  viewMode: LayoutViewMode;
+  sidebarWidth: number;
+  sidebarMinimalMode: boolean;
+  sidebarShowNews: boolean;
+  sidebarShowStats: boolean;
+  sidebarShowSearchTools: boolean;
+  sidebarShowCollections: boolean;
+  sidebarShowDevelopers: boolean;
+  sidebarShowWishlist: boolean;
+  sidebarShowSurpriseButton: boolean;
+  sidebarShowAddButton: boolean;
+  sidebarShowSettingsButton: boolean;
+  sidebarShowLogsButton: boolean;
+};
+
+type LayoutPresetRecord = {
+  id: string;
+  name: string;
+  description?: string;
+  config: LayoutPresetConfig;
+};
+
+type LayoutPresetDescriptor = LayoutPresetRecord & {
+  readOnly?: boolean;
+};
+
+const LAYOUT_SIDEBAR_SETTING_KEYS = [
+  "sidebarShowNews",
+  "sidebarShowStats",
+  "sidebarShowSearchTools",
+  "sidebarShowCollections",
+  "sidebarShowDevelopers",
+  "sidebarShowWishlist",
+  "sidebarShowSurpriseButton",
+  "sidebarShowAddButton",
+  "sidebarShowSettingsButton",
+  "sidebarShowLogsButton",
+] as const;
+
+function clampSidebarWidthValue(value: number) {
+  return Math.max(200, Math.min(600, Math.round(value)));
+}
+
+function captureLayoutPresetConfig(viewMode: LayoutViewMode, sidebarWidth: number, appSettings: AppSettings): LayoutPresetConfig {
+  return {
+    viewMode,
+    sidebarWidth: clampSidebarWidthValue(sidebarWidth),
+    sidebarMinimalMode: !!appSettings.sidebarMinimalMode,
+    sidebarShowNews: appSettings.sidebarShowNews !== false,
+    sidebarShowStats: appSettings.sidebarShowStats !== false,
+    sidebarShowSearchTools: appSettings.sidebarShowSearchTools !== false,
+    sidebarShowCollections: appSettings.sidebarShowCollections !== false,
+    sidebarShowDevelopers: appSettings.sidebarShowDevelopers !== false,
+    sidebarShowWishlist: appSettings.sidebarShowWishlist !== false,
+    sidebarShowSurpriseButton: appSettings.sidebarShowSurpriseButton !== false,
+    sidebarShowAddButton: appSettings.sidebarShowAddButton !== false,
+    sidebarShowSettingsButton: appSettings.sidebarShowSettingsButton !== false,
+    sidebarShowLogsButton: appSettings.sidebarShowLogsButton !== false,
+  };
+}
+
+function layoutPresetConfigsEqual(left: LayoutPresetConfig, right: LayoutPresetConfig) {
+  if (left.viewMode !== right.viewMode || left.sidebarWidth !== right.sidebarWidth || left.sidebarMinimalMode !== right.sidebarMinimalMode) {
+    return false;
+  }
+  return LAYOUT_SIDEBAR_SETTING_KEYS.every((key) => left[key] === right[key]);
+}
+
+function slugifyLayoutPresetName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+const BUILTIN_LAYOUT_PRESETS: LayoutPresetDescriptor[] = [
+  {
+    id: "builtin:minimalist",
+    name: "Minimalist",
+    description: "Compact list, narrow sidebar, and only the high-frequency controls left visible.",
+    readOnly: true,
+    config: {
+      viewMode: "compact",
+      sidebarWidth: 220,
+      sidebarMinimalMode: true,
+      sidebarShowNews: false,
+      sidebarShowStats: false,
+      sidebarShowSearchTools: true,
+      sidebarShowCollections: false,
+      sidebarShowDevelopers: false,
+      sidebarShowWishlist: false,
+      sidebarShowSurpriseButton: false,
+      sidebarShowAddButton: true,
+      sidebarShowSettingsButton: true,
+      sidebarShowLogsButton: false,
+    },
+  },
+  {
+    id: "builtin:data-heavy",
+    name: "Data-heavy",
+    description: "Wide sidebar, full list mode, and every library section visible for scanning lots of metadata at once.",
+    readOnly: true,
+    config: {
+      viewMode: "list",
+      sidebarWidth: 340,
+      sidebarMinimalMode: false,
+      sidebarShowNews: true,
+      sidebarShowStats: true,
+      sidebarShowSearchTools: true,
+      sidebarShowCollections: true,
+      sidebarShowDevelopers: true,
+      sidebarShowWishlist: true,
+      sidebarShowSurpriseButton: true,
+      sidebarShowAddButton: true,
+      sidebarShowSettingsButton: true,
+      sidebarShowLogsButton: true,
+    },
+  },
+  {
+    id: "builtin:console-mode",
+    name: "Console-mode",
+    description: "Dense launcher-style layout with compact rows and a utility-first sidebar.",
+    readOnly: true,
+    config: {
+      viewMode: "compact",
+      sidebarWidth: 280,
+      sidebarMinimalMode: true,
+      sidebarShowNews: false,
+      sidebarShowStats: true,
+      sidebarShowSearchTools: true,
+      sidebarShowCollections: true,
+      sidebarShowDevelopers: false,
+      sidebarShowWishlist: false,
+      sidebarShowSurpriseButton: true,
+      sidebarShowAddButton: true,
+      sidebarShowSettingsButton: true,
+      sidebarShowLogsButton: true,
+    },
+  },
+];
 
 interface DiscordUserSnapshot {
   id: string;
@@ -671,6 +1291,139 @@ interface SteamLaunchBridge {
   sawIncrease: boolean;
   stalledPolls: number;
   pollCount: number;
+}
+
+const STEAM_PLACEHOLDER_PREFIX = "steam://owned/";
+const EPIC_PLACEHOLDER_PREFIX = "epic://owned/";
+
+const STORE_PROVIDER_LABELS: Record<string, string> = {
+  "epic-games": "Epic Games Store",
+  "ea-app": "EA App",
+  "ubisoft-connect": "Ubisoft Connect",
+  rockstar: "Rockstar Launcher",
+  "battle-net": "Battle.net",
+  gamejolt: "Game Jolt",
+  itch: "itch.io",
+};
+
+function steamPlaceholderPath(appId: string) {
+  return `${STEAM_PLACEHOLDER_PREFIX}${appId.trim()}`;
+}
+
+function epicPlaceholderPath(appName: string) {
+  return `${EPIC_PLACEHOLDER_PREFIX}${appName.trim()}`;
+}
+
+function isSteamPlaceholderPath(path: string) {
+  return normalizePathForMatch(path).startsWith(STEAM_PLACEHOLDER_PREFIX);
+}
+
+function isEpicPlaceholderPath(path: string) {
+  return normalizePathForMatch(path).startsWith(EPIC_PLACEHOLDER_PREFIX);
+}
+
+function storeProviderLabel(source?: string | null) {
+  if (!source) return "Store";
+  return STORE_PROVIDER_LABELS[source] ?? source;
+}
+
+function resolvedGameDisplayName(
+  game: Game,
+  customizations: Record<string, GameCustomization>,
+  metadata: Record<string, GameMetadata>,
+) {
+  return customizations[game.path]?.displayName ?? metadata[game.path]?.title ?? game.name;
+}
+
+function normalizeOwnershipToken(value?: string | null) {
+  return (value ?? "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/["'`’]/g, "")
+    .replace(/\b(the|edition|complete|definitive|ultimate|goty|game of the year)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function ownershipDeveloperToken(customization?: GameCustomization, meta?: GameMetadata) {
+  return normalizeOwnershipToken(
+    customization?.manualDeveloper
+    ?? meta?.developer
+    ?? meta?.circle
+    ?? meta?.author
+    ?? null
+  );
+}
+
+function ownershipGroupingKey(
+  game: Game,
+  customizations: Record<string, GameCustomization>,
+  metadata: Record<string, GameMetadata>,
+) {
+  const meta = metadata[game.path];
+  const customization = customizations[game.path];
+  const sourceUrl = normalizeOwnershipToken(meta?.source_url);
+  if (sourceUrl) return `url:${sourceUrl}`;
+  const title = normalizeOwnershipToken(resolvedGameDisplayName(game, customizations, metadata));
+  const developer = ownershipDeveloperToken(customization, meta);
+  if (title) {
+    return developer ? `title:${title}::dev:${developer}` : `title:${title}`;
+  }
+  return `path:${normalizePathForMatch(game.path)}`;
+}
+
+function launchProviderLabelForGame(game: Game, customization?: GameCustomization) {
+  if (customization?.steamAppId) return "Steam";
+  if (customization?.epicAppName) return "Epic Games Store";
+  if (customization?.itchGameId || customization?.itchCaveId) return "itch.io";
+  if (customization?.storeProvider) return storeProviderLabel(customization.storeProvider);
+  if (game.uninstalled) return "Library";
+  return "Local";
+}
+
+function remoteInstallLabelForCustomization(customization?: GameCustomization) {
+  if (!customization) return null;
+  if (customization.steamAppId?.trim()) return "Install via Steam";
+  if (customization.epicAppName?.trim()) return "Install via Epic Games Store";
+  if (customization.storeProvider === "ubisoft-connect" && customization.storeGameId?.trim()) {
+    return `Install via ${storeProviderLabel(customization.storeProvider)}`;
+  }
+  return null;
+}
+
+function openStoreLabelForCustomization(customization?: GameCustomization) {
+  if (!customization?.storeLaunchUri?.trim()) return null;
+  if (customization.storeProvider) {
+    return `Open in ${storeProviderLabel(customization.storeProvider)}`;
+  }
+  return "Open in Launcher";
+}
+
+function ownershipPrimaryRank(
+  game: Game,
+  customization: GameCustomization | undefined,
+  meta: GameMetadata | undefined,
+) {
+  let score = 0;
+  if (!game.uninstalled && !isSteamPlaceholderPath(game.path) && !isEpicPlaceholderPath(game.path)) score += 40;
+  if (!game.uninstalled) score += 20;
+  if (customization?.coverUrl || meta?.cover_url) score += 10;
+  if (customization?.displayName || meta?.title) score += 6;
+  if (meta?.overview || meta?.developer || meta?.version) score += 4;
+  if (customization?.steamAppId || customization?.epicAppName || customization?.storeLaunchUri || customization?.itchGameId) score += 2;
+  return score;
+}
+
+interface OwnershipGroup {
+  id: string;
+  displayName: string;
+  memberGames: Game[];
+  memberPaths: string[];
+  primaryGame: Game;
+  providerLabels: string[];
+  providerSummary: string;
 }
 
 interface Collection {
@@ -753,8 +1506,8 @@ function readProfileStorageSnapshot(): ProfileStorageSnapshot {
       rssFeeds: mergeDefaultRssFeeds(cachedSettings.rssFeeds),
     },
     dirMtimes: loadCache(SK_MTIMES, []),
-    viewMode: loadCache("libmaly_view_mode", "list"),
-    sidebarWidth: loadCache("libmaly_sidebar_w", 256),
+    viewMode: loadCache(SK_VIEW_MODE, "list"),
+    sidebarWidth: loadCache(SK_SIDEBAR_WIDTH, 256),
   };
 }
 
@@ -1116,13 +1869,9 @@ function LinkPageModal({ gameName, gamePath, onClose, onFetched, f95LoggedIn, on
       setError("Ghost mode is enabled for this game - no network requests allowed.");
       return;
     }
-    const targetSrc = detectMetadataSourceFromUrl(targetUrl);
-    if (!targetSrc) { setError("Paste a valid F95zone, DLsite, VNDB, MangaGamer, Johren or FAKKU URL."); return; }
     setLoading(true); setError("");
     try {
-      const cmd = metadataFetchCommand(targetSrc);
-      if (!cmd) throw new Error(`Unsupported source: ${targetSrc}`);
-      const meta = await invoke<GameMetadata>(cmd, { url: targetUrl.trim() });
+      const meta = await invokeMetadataForUrl(targetUrl.trim());
       onFetched(meta); onClose();
     } catch (e) { setError(String(e)); }
     finally { setLoading(false); }
@@ -2952,6 +3701,12 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
   const [error, setError] = useState("");
   const [matched, setMatched] = useState<{ path: string; name: string; steamName: string; addSecs: number; checked: boolean }[]>([]);
 
+  const gamesBySteamAppId = useMemo(() => new Map(
+    Object.entries(customizations)
+      .map(([path, customization]) => [customization.steamAppId?.trim(), path] as const)
+      .filter((entry): entry is [string, string] => !!entry[0]),
+  ), [customizations]);
+
   useEffect(() => {
     invoke<SteamEntry[]>("import_steam_playtime")
       .then((entries) => {
@@ -2959,6 +3714,20 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
         // Try to fuzzy-match by name
         const hits: typeof matched = [];
         for (const e of entries) {
+          const byAppIdPath = gamesBySteamAppId.get(e.app_id.trim());
+          if (byAppIdPath) {
+            const game = games.find((entry) => entry.path === byAppIdPath);
+            if (game) {
+              hits.push({
+                path: game.path,
+                name: customizations[game.path]?.displayName ?? metadata[game.path]?.title ?? game.name,
+                steamName: e.name,
+                addSecs: e.played_minutes * 60,
+                checked: true,
+              });
+              continue;
+            }
+          }
           const steamLower = e.name.toLowerCase();
           for (const g of games) {
             const gName = (customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name).toLowerCase();
@@ -2978,7 +3747,7 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [customizations, games, gamesBySteamAppId, metadata]);
 
   const toggle = (path: string) =>
     setMatched(prev => prev.map(m => m.path === path ? { ...m, checked: !m.checked } : m));
@@ -3002,8 +3771,8 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
             </svg>
           </div>
           <div>
-            <h2 className="font-bold text-base" style={{ color: "var(--color-white)" }}>Import from Steam</h2>
-            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Pre-fill playtime from localconfig.vdf</p>
+            <h2 className="font-bold text-base" style={{ color: "var(--color-white)" }}>Import Steam Playtime</h2>
+            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Read playtime from Steam userdata/localconfig.vdf</p>
           </div>
           <button onClick={onClose} className="ml-auto text-xl" style={{ color: "var(--color-text-dim)" }}>✕</button>
         </div>
@@ -3020,7 +3789,7 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
           {error && <p className="text-sm" style={{ color: "var(--color-danger)" }}>{error}</p>}
           {!loading && !error && steamEntries.length === 0 && (
             <p className="text-sm text-center py-8" style={{ color: "var(--color-text-muted)" }}>
-              No Steam data found. Make sure Steam is installed and you've launched at least one game.
+              No Steam playtime data was found. Make sure Steam is installed and that this Steam account has recorded playtime for at least one launched title.
             </p>
           )}
           {!loading && !error && matched.length > 0 && (
@@ -3069,41 +3838,127 @@ function SteamImportModal({ games, metadata, customizations, onImport, onClose }
   );
 }
 
-function SteamLibraryImportModal({ games, onImport, onClose }: {
+function SteamLibraryImportModal({ games, customizations, onImport, onClose }: {
   games: Game[];
-  onImport: (entries: SteamLibraryEntry[]) => void | Promise<void>;
+  customizations: Record<string, GameCustomization>;
+  onImport: (entries: SteamOwnedGame[]) => void | Promise<void>;
   onClose: () => void;
 }) {
   const [loading, setLoading] = useState(true);
-  const [entries, setEntries] = useState<SteamLibraryEntry[]>([]);
+  const [entries, setEntries] = useState<SteamOwnedGame[]>([]);
   const [error, setError] = useState("");
-  const [checkedPaths, setCheckedPaths] = useState<Record<string, boolean>>({});
+  const [checkedKeys, setCheckedKeys] = useState<Record<string, boolean>>({});
+  const [steamApiKey, setSteamApiKey] = useState(() => loadCache(SK_STEAM_WEB_API_KEY, ""));
+  const [steamProfileRef, setSteamProfileRef] = useState(() => loadCache(SK_STEAM_PROFILE_REF, ""));
+  const [fetchingOwned, setFetchingOwned] = useState(false);
+
+  const existingPaths = useMemo(
+    () => new Set(games.map((g) => normalizePathForMatch(g.path))),
+    [games],
+  );
+  const existingAppIds = useMemo(
+    () => new Set(
+      Object.values(customizations)
+        .map((value) => value.steamAppId?.trim())
+        .filter((value): value is string => !!value),
+    ),
+    [customizations],
+  );
+
+  const mergeEntries = useCallback((incoming: SteamOwnedGame[]) => {
+    setEntries((prev) => {
+      const byAppId = new Map(prev.map((entry) => [entry.app_id, entry]));
+      for (const entry of incoming) {
+        const previous = byAppId.get(entry.app_id);
+        byAppId.set(entry.app_id, {
+          ...previous,
+          ...entry,
+          name: entry.name || previous?.name || `App ${entry.app_id}`,
+          played_minutes: entry.played_minutes ?? previous?.played_minutes ?? 0,
+          installed: entry.installed || previous?.installed || false,
+          install_dir: entry.install_dir ?? previous?.install_dir ?? null,
+          library_dir: entry.library_dir ?? previous?.library_dir ?? null,
+          manifest_path: entry.manifest_path ?? previous?.manifest_path ?? null,
+          exe: entry.exe ?? previous?.exe ?? null,
+        });
+      }
+      return Array.from(byAppId.values()).sort((a, b) => a.name.localeCompare(b.name));
+    });
+  }, []);
 
   useEffect(() => {
     invoke<SteamLibraryEntry[]>("import_steam_library")
       .then((found) => {
-        setEntries(found);
-        const existing = new Set(games.map((g) => normalizePathForMatch(g.path)));
+        const mapped = found.map<SteamOwnedGame>((entry) => ({
+          app_id: entry.app_id,
+          name: entry.name,
+          played_minutes: 0,
+          installed: true,
+          install_dir: entry.install_dir,
+          library_dir: entry.library_dir,
+          manifest_path: entry.manifest_path,
+          exe: entry.exe,
+        }));
+        mergeEntries(mapped);
         const nextChecked: Record<string, boolean> = {};
-        for (const entry of found) {
-          if (entry.exe && !existing.has(normalizePathForMatch(entry.exe))) {
-            nextChecked[entry.exe] = true;
+        for (const entry of mapped) {
+          const selectionKey = entry.exe ? normalizePathForMatch(entry.exe) : `appid:${entry.app_id}`;
+          const existsByPath = !!entry.exe && existingPaths.has(normalizePathForMatch(entry.exe));
+          if (!existsByPath && !existingAppIds.has(entry.app_id)) {
+            nextChecked[selectionKey] = true;
           }
         }
-        setCheckedPaths(nextChecked);
+        setCheckedKeys((prev) => ({ ...nextChecked, ...prev }));
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [existingAppIds, existingPaths, mergeEntries]);
 
-  const visibleEntries = entries.filter((entry) => !!entry.exe);
-  const selected = visibleEntries.filter((entry) => entry.exe && checkedPaths[entry.exe]);
+  const fetchOwnedLibrary = async () => {
+    const trimmedKey = steamApiKey.trim();
+    const trimmedProfile = steamProfileRef.trim();
+    if (!trimmedKey || !trimmedProfile) {
+      setError("Enter both a Steam Web API key and a SteamID / profile URL first.");
+      return;
+    }
+    setFetchingOwned(true);
+    setError("");
+    try {
+      const owned = await invoke<SteamOwnedGame[]>("fetch_steam_owned_games", {
+        apiKey: trimmedKey,
+        profileRef: trimmedProfile,
+      });
+      saveCache(SK_STEAM_WEB_API_KEY, trimmedKey);
+      saveCache(SK_STEAM_PROFILE_REF, trimmedProfile);
+      mergeEntries(owned);
+      setCheckedKeys((prev) => {
+        const next = { ...prev };
+        for (const entry of owned) {
+          const selectionKey = entry.exe ? normalizePathForMatch(entry.exe) : `appid:${entry.app_id}`;
+          const existsByPath = !!entry.exe && existingPaths.has(normalizePathForMatch(entry.exe));
+          if (!existsByPath && !existingAppIds.has(entry.app_id) && !(selectionKey in next)) {
+            next[selectionKey] = true;
+          }
+        }
+        return next;
+      });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setFetchingOwned(false);
+    }
+  };
+
+  const selected = entries.filter((entry) => {
+    const selectionKey = entry.exe ? normalizePathForMatch(entry.exe) : `appid:${entry.app_id}`;
+    return !!checkedKeys[selectionKey];
+  });
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.82)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="rounded-xl shadow-2xl w-[680px] max-h-[82vh] flex flex-col"
+      <div className="rounded-xl shadow-2xl w-[760px] max-h-[82vh] flex flex-col"
         style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
         <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b flex-shrink-0" style={{ borderColor: "var(--color-border-card)" }}>
           <div className="w-9 h-9 rounded flex items-center justify-center" style={{ background: "var(--color-panel-2)" }}>
@@ -3112,9 +3967,9 @@ function SteamLibraryImportModal({ games, onImport, onClose }: {
             </svg>
           </div>
           <div>
-            <h2 className="font-bold text-base" style={{ color: "var(--color-white)" }}>Import Steam Library</h2>
+            <h2 className="font-bold text-base" style={{ color: "var(--color-white)" }}>Import Steam Library & Owned Games</h2>
             <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-              Import installed Steam games and route launches through Steam so it can keep tracking playtime.
+              Import installed Steam games from local manifests, and optionally fetch your owned Steam library via Web API for uninstalled titles.
             </p>
           </div>
           <button onClick={onClose} className="ml-auto text-xl" style={{ color: "var(--color-text-dim)" }}>✕</button>
@@ -3122,6 +3977,39 @@ function SteamLibraryImportModal({ games, onImport, onClose }: {
 
         <div className="flex-1 overflow-y-auto px-6 py-4"
           style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+          <div className="mb-4 rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+            <div>
+              <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Owned Library via Steam Web API</div>
+              <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                Optional: enter a Steam Web API key plus your SteamID64, vanity name, or Steam Community profile URL to import titles you own but have not installed locally yet.
+              </p>
+            </div>
+            <input
+              type="password"
+              value={steamApiKey}
+              onChange={(e) => setSteamApiKey((e.target as HTMLInputElement).value)}
+              placeholder="Steam Web API key"
+              className="w-full px-3 py-2 rounded text-sm outline-none"
+              style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+            />
+            <input
+              type="text"
+              value={steamProfileRef}
+              onChange={(e) => setSteamProfileRef((e.target as HTMLInputElement).value)}
+              placeholder="SteamID64, vanity name, or https://steamcommunity.com/id/..."
+              className="w-full px-3 py-2 rounded text-sm outline-none"
+              style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+            />
+            <button
+              onClick={() => { void fetchOwnedLibrary(); }}
+              disabled={fetchingOwned}
+              className="w-full py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+              style={{ background: "#16263c", color: "#9ed2ff", border: "1px solid #2f4f76" }}
+            >
+              {fetchingOwned ? "Loading owned Steam library..." : "Load Owned Steam Library"}
+            </button>
+          </div>
+
           {loading && (
             <div className="flex items-center justify-center h-24 gap-3">
               <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: "var(--color-accent)" }} />
@@ -3131,41 +4019,45 @@ function SteamLibraryImportModal({ games, onImport, onClose }: {
           {error && <p className="text-sm" style={{ color: "var(--color-danger)" }}>{error}</p>}
           {!loading && !error && entries.length === 0 && (
             <p className="text-sm text-center py-8" style={{ color: "var(--color-text-muted)" }}>
-              No installed Steam manifests were found.
+              No Steam titles found yet. Local manifests will appear automatically, or you can fetch your owned library above.
             </p>
           )}
-          {!loading && !error && entries.length > 0 && visibleEntries.length === 0 && (
-            <p className="text-sm text-center py-8" style={{ color: "var(--color-text-muted)" }}>
-              Steam games were found, but LIBMALY could not confidently detect launchable executables for them yet.
-            </p>
-          )}
-          {!loading && !error && visibleEntries.length > 0 && (
+          {!loading && !error && entries.length > 0 && (
             <div className="space-y-2">
               <p className="text-xs mb-2" style={{ color: "var(--color-text-muted)" }}>
-                {visibleEntries.length} importable Steam game{visibleEntries.length !== 1 ? "s" : ""} found.
+                {entries.length} Steam title{entries.length !== 1 ? "s" : ""} found.
               </p>
-              {visibleEntries.map((entry) => {
-                const exe = entry.exe!;
-                const exists = games.some((g) => normalizePathForMatch(g.path) === normalizePathForMatch(exe));
+              {entries.map((entry) => {
+                const selectionKey = entry.exe ? normalizePathForMatch(entry.exe) : `appid:${entry.app_id}`;
+                const exists = (!!entry.exe && existingPaths.has(normalizePathForMatch(entry.exe))) || existingAppIds.has(entry.app_id);
                 return (
                   <label key={entry.app_id} className="flex items-start gap-3 rounded-lg px-3 py-2 cursor-pointer"
                     style={{ background: "var(--color-panel-2)", opacity: exists ? 0.65 : 1 }}>
                     <input
                       type="checkbox"
-                      checked={!!checkedPaths[exe]}
+                      checked={!!checkedKeys[selectionKey]}
                       disabled={exists}
-                      onChange={() => setCheckedPaths((prev) => ({ ...prev, [exe]: !prev[exe] }))}
+                      onChange={() => setCheckedKeys((prev) => ({ ...prev, [selectionKey]: !prev[selectionKey] }))}
                       className="mt-1 rounded"
                       style={{ accentColor: "var(--color-accent)" }}
                     />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm truncate" style={{ color: "var(--color-text)" }}>{entry.name}</p>
                       <p className="text-[10px] break-all" style={{ color: "var(--color-text-dim)" }}>
-                        AppID {entry.app_id} · {exe}
+                        AppID {entry.app_id}{entry.exe ? ` · ${entry.exe}` : " · not installed locally"}
                       </p>
                       <p className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
-                        {exists ? "Already in your library" : "Will be imported with Steam launch bridge enabled"}
+                        {exists
+                          ? "Already in your library"
+                          : entry.installed
+                            ? "Will be imported with Steam launch bridge enabled"
+                            : "Will be imported as an uninstalled Steam title with an Install via Steam action"}
                       </p>
+                      {entry.played_minutes > 0 && (
+                        <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                          Steam playtime: {formatTime(entry.played_minutes * 60)}
+                        </p>
+                      )}
                     </div>
                   </label>
                 );
@@ -3174,7 +4066,7 @@ function SteamLibraryImportModal({ games, onImport, onClose }: {
           )}
         </div>
 
-        {!loading && visibleEntries.length > 0 && (
+        {!loading && entries.length > 0 && (
           <div className="flex gap-3 justify-end px-6 py-4 border-t flex-shrink-0" style={{ borderColor: "var(--color-border-card)" }}>
             <button onClick={onClose} className="px-4 py-2 rounded text-sm"
               style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
@@ -3187,10 +4079,612 @@ function SteamLibraryImportModal({ games, onImport, onClose }: {
               className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50"
               style={{ background: "#1a3050", color: "var(--color-accent)", border: "1px solid #2a5080" }}
             >
-              Import {selected.length} Steam game{selected.length !== 1 ? "s" : ""}
+              Import {selected.length} Steam title{selected.length !== 1 ? "s" : ""}
             </button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function EpicLegendaryImportModal({ games, customizations, onImport, onClose }: {
+  games: Game[];
+  customizations: Record<string, GameCustomization>;
+  onImport: (entries: EpicOwnedGame[]) => void | Promise<void>;
+  onClose: () => void;
+}) {
+  const [status, setStatus] = useState<EpicLegendaryStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [authing, setAuthing] = useState(false);
+  const [entries, setEntries] = useState<EpicOwnedGame[]>([]);
+  const [checkedKeys, setCheckedKeys] = useState<Record<string, boolean>>({});
+  const [error, setError] = useState("");
+
+  const existingPaths = useMemo(
+    () => new Set(games.map((g) => normalizePathForMatch(g.path))),
+    [games],
+  );
+  const existingAppNames = useMemo(
+    () => new Set(
+      Object.values(customizations)
+        .map((value) => value.epicAppName?.trim().toLowerCase())
+        .filter((value): value is string => !!value),
+    ),
+    [customizations],
+  );
+
+  const loadLibrary = useCallback(async () => {
+    setRefreshing(true);
+    setError("");
+    try {
+      const nextStatus = await invoke<EpicLegendaryStatus>("epic_legendary_status");
+      setStatus(nextStatus);
+      if (!nextStatus.available || !nextStatus.authenticated) {
+        setEntries([]);
+        if (nextStatus.lastError) setError(nextStatus.lastError);
+        return;
+      }
+
+      const owned = await invoke<EpicOwnedGame[]>("fetch_epic_owned_games");
+      setEntries(owned);
+      setCheckedKeys((prev) => {
+        const next = { ...prev };
+        for (const entry of owned) {
+          const selectionKey = entry.exe ? normalizePathForMatch(entry.exe) : `epic:${entry.app_name.toLowerCase()}`;
+          const existsByPath = !!entry.exe && existingPaths.has(normalizePathForMatch(entry.exe));
+          if (!existsByPath && !existingAppNames.has(entry.app_name.toLowerCase()) && !(selectionKey in next)) {
+            next[selectionKey] = true;
+          }
+        }
+        return next;
+      });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [existingAppNames, existingPaths]);
+
+  useEffect(() => {
+    void loadLibrary();
+  }, [loadLibrary]);
+
+  const selected = entries.filter((entry) => {
+    const selectionKey = entry.exe ? normalizePathForMatch(entry.exe) : `epic:${entry.app_name.toLowerCase()}`;
+    return !!checkedKeys[selectionKey];
+  });
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.82)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="rounded-xl shadow-2xl w-[780px] max-h-[84vh] flex flex-col"
+        style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b flex-shrink-0" style={{ borderColor: "var(--color-border-card)" }}>
+          <div className="w-9 h-9 rounded flex items-center justify-center" style={{ background: "#1d1f27" }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f4f5f7" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3h8l3 4v12l-7 2-7-2V7l3-4z" />
+              <path d="M9.5 8h5" />
+              <path d="M9.5 12h5" />
+            </svg>
+          </div>
+          <div>
+            <h2 className="font-bold text-base" style={{ color: "var(--color-white)" }}>Import Epic Games Store Library</h2>
+            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+              Use Legendary to read your Epic ownership list, import installed games, and keep uninstalled titles as Legendary-backed placeholders.
+            </p>
+          </div>
+          <button onClick={onClose} className="ml-auto text-xl" style={{ color: "var(--color-text-dim)" }}>✕</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4"
+          style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+          <div className="mb-4 rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Legendary Bridge</div>
+                <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                  Legendary is the bridge Libmaly uses for Epic ownership sync and authenticated launch. Installed entries get a direct Legendary launch bridge; uninstalled entries stay available as placeholders.
+                </p>
+              </div>
+              <button
+                onClick={() => { void loadLibrary(); }}
+                disabled={refreshing}
+                className="px-3 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                style={{ background: "#222936", color: "#bfd2ff", border: "1px solid #46506a" }}
+              >
+                {refreshing ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+            <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+              <div style={{ color: "var(--color-text)" }}>
+                Status: {status?.available ? (status.authenticated ? `Signed in${status.displayName ? ` as ${status.displayName}` : ""}` : "Legendary found, login required") : "Legendary not found"}
+              </div>
+              {status?.version && <div style={{ color: "var(--color-text-dim)" }}>Version: {status.version}</div>}
+              {status?.executablePath && (
+                <div className="break-all" style={{ color: "var(--color-text-dim)" }}>Executable: {status.executablePath}</div>
+              )}
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={async () => {
+                  setAuthing(true);
+                  setError("");
+                  try {
+                    await invoke("epic_legendary_auth");
+                  } catch (e) {
+                    setError(String(e));
+                  } finally {
+                    setAuthing(false);
+                  }
+                }}
+                disabled={authing}
+                className="px-3 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                style={{ background: "#2d2532", color: "#ffc2d5", border: "1px solid #7a4a5f" }}
+              >
+                {authing ? "Opening login..." : "Sign in with Legendary"}
+              </button>
+              <button
+                onClick={() => { void openUrl(status?.installUrl || "https://github.com/derrod/legendary/releases/latest"); }}
+                className="px-3 py-2 rounded text-xs font-semibold"
+                style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+              >
+                Install Legendary
+              </button>
+            </div>
+          </div>
+
+          {loading && (
+            <div className="flex items-center justify-center h-24 gap-3">
+              <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: "var(--color-accent)" }} />
+              <span className="text-sm" style={{ color: "var(--color-text-muted)" }}>Checking Legendary and loading Epic library…</span>
+            </div>
+          )}
+          {error && <p className="text-sm" style={{ color: "var(--color-danger)" }}>{error}</p>}
+          {!loading && !error && entries.length === 0 && status?.authenticated && (
+            <p className="text-sm text-center py-8" style={{ color: "var(--color-text-muted)" }}>
+              No Epic titles were returned by Legendary yet.
+            </p>
+          )}
+          {!loading && entries.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs mb-2" style={{ color: "var(--color-text-muted)" }}>
+                {entries.length} Epic title{entries.length !== 1 ? "s" : ""} found.
+              </p>
+              {entries.map((entry) => {
+                const selectionKey = entry.exe ? normalizePathForMatch(entry.exe) : `epic:${entry.app_name.toLowerCase()}`;
+                const exists = (!!entry.exe && existingPaths.has(normalizePathForMatch(entry.exe))) || existingAppNames.has(entry.app_name.toLowerCase());
+                return (
+                  <label key={entry.app_name} className="flex items-start gap-3 rounded-lg px-3 py-2 cursor-pointer"
+                    style={{ background: "var(--color-panel-2)", opacity: exists ? 0.65 : 1 }}>
+                    <input
+                      type="checkbox"
+                      checked={!!checkedKeys[selectionKey]}
+                      disabled={exists}
+                      onChange={() => setCheckedKeys((prev) => ({ ...prev, [selectionKey]: !prev[selectionKey] }))}
+                      className="mt-1 rounded"
+                      style={{ accentColor: "var(--color-accent)" }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm truncate" style={{ color: "var(--color-text)" }}>{entry.title}</p>
+                      <p className="text-[10px] break-all" style={{ color: "var(--color-text-dim)" }}>
+                        {entry.app_name}{entry.exe ? ` · ${entry.exe}` : " · not installed locally"}
+                      </p>
+                      <p className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                        {exists
+                          ? "Already in your library"
+                          : entry.installed
+                            ? "Will be imported with Legendary launch enabled"
+                            : "Will be imported as an uninstalled Epic title with an Install via Legendary action"}
+                      </p>
+                      {entry.version && (
+                        <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                          Version: {entry.version}
+                        </p>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {!loading && entries.length > 0 && (
+          <div className="flex gap-3 justify-end px-6 py-4 border-t flex-shrink-0" style={{ borderColor: "var(--color-border-card)" }}>
+            <button onClick={onClose} className="px-4 py-2 rounded text-sm"
+              style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Cancel</button>
+            <button
+              onClick={async () => {
+                await onImport(selected);
+                onClose();
+              }}
+              disabled={selected.length === 0}
+              className="px-5 py-2 rounded text-sm font-semibold disabled:opacity-50"
+              style={{ background: "#202630", color: "#f4f5f7", border: "1px solid #505766" }}
+            >
+              Import {selected.length} Epic title{selected.length !== 1 ? "s" : ""}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ItchImportModal({
+  games,
+  customizations,
+  onImportInstalled,
+  onClose,
+}: {
+  games: Game[];
+  customizations: Record<string, GameCustomization>;
+  onImportInstalled: (result: ItchInstallResult) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [status, setStatus] = useState<ItchButlerStatus | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [library, setLibrary] = useState<ItchOwnedLibrary | null>(null);
+  const [updatesByCaveId, setUpdatesByCaveId] = useState<Record<string, ItchGameUpdate>>({});
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [installRoot, setInstallRoot] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+
+  const importedCaveIds = useMemo(
+    () => new Set(Object.values(customizations).map((custom) => custom.itchCaveId).filter((value): value is string => !!value)),
+    [customizations],
+  );
+  const existingPaths = useMemo(
+    () => new Set(games.map((game) => normalizePathForMatch(game.path))),
+    [games],
+  );
+
+  const refreshLibrary = useCallback(async (forceFresh = false, nextApiKey?: string) => {
+    const key = (nextApiKey ?? apiKey).trim();
+    if (!key) {
+      setError("Enter an itch.io API key first.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const nextLibrary = await invoke<ItchOwnedLibrary>("itch_butler_list_owned_games", {
+        apiKey: key,
+        search: null,
+        fresh: forceFresh,
+      });
+      setLibrary(nextLibrary);
+      if (!installRoot.trim() && nextLibrary.installLocations.length > 0) {
+        setInstallRoot(nextLibrary.installLocations[0].path);
+      }
+      await invoke("set_api_key", { provider: "itch_io", key });
+      if (nextLibrary.records.some((record) => record.caveIds.length > 0)) {
+        const updateResult = await invoke<ItchUpdateCheckResult>("itch_butler_check_updates", {
+          apiKey: key,
+          caveIds: nextLibrary.records.flatMap((record) => record.caveIds),
+        });
+        setWarnings(updateResult.warnings);
+        setUpdatesByCaveId(Object.fromEntries(updateResult.updates.map((update) => [update.caveId, update])));
+      } else {
+        setWarnings([]);
+        setUpdatesByCaveId({});
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [apiKey, installRoot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [butlerStatus, savedKey] = await Promise.all([
+          invoke<ItchButlerStatus>("itch_butler_status"),
+          invoke<string>("get_api_key", { provider: "itch_io" }).catch(() => ""),
+        ]);
+        if (cancelled) return;
+        setStatus(butlerStatus);
+        setApiKey(savedKey || "");
+        if (butlerStatus.available && savedKey) {
+          await refreshLibrary(false, savedKey);
+        } else {
+          setLoading(false);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(String(e));
+          setLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshLibrary]);
+
+  const filteredRecords = useMemo(() => {
+    const lower = query.trim().toLowerCase();
+    if (!library) return [];
+    if (!lower) return library.records;
+    return library.records.filter((record) => record.title.toLowerCase().includes(lower));
+  }, [library, query]);
+
+  const handlePickInstallRoot = async () => {
+    const picked = await open({ directory: true, multiple: false }).catch(() => null);
+    if (picked && typeof picked === "string") setInstallRoot(picked);
+  };
+
+  const handleInstall = async (entry: ItchLibraryEntry) => {
+    const key = apiKey.trim();
+    const target = installRoot.trim();
+    if (!key) {
+      setError("Enter an itch.io API key first.");
+      return;
+    }
+    if (!target) {
+      setError("Choose an install folder first.");
+      return;
+    }
+    setBusyKey(`install:${entry.id}`);
+    setError("");
+    try {
+      const result = await invoke<ItchInstallResult>("itch_butler_install_game", {
+        apiKey: key,
+        gameId: entry.id,
+        installPath: target,
+      });
+      await onImportInstalled(result);
+      await refreshLibrary(true, key);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleImportInstalled = async (entry: ItchLibraryEntry) => {
+    if (!library || !entry.primaryCaveId || entry.installFolders.length === 0) {
+      return;
+    }
+    const cave = library.caves.find((item) => item.id === entry.primaryCaveId);
+    setBusyKey(`import:${entry.primaryCaveId}`);
+    setError("");
+    try {
+      await onImportInstalled({
+        gameId: entry.id,
+        title: entry.title,
+        caveId: entry.primaryCaveId,
+        installFolder: entry.installFolders[0],
+        uploadId: cave?.upload?.id ?? 0,
+        buildId: cave?.build?.id ?? null,
+      });
+      await refreshLibrary(false, apiKey);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleUpdate = async (update: ItchGameUpdate) => {
+    const choice = [...update.choices].sort((a, b) => b.confidence - a.confidence)[0];
+    if (!choice) {
+      setError(`No update choice is available for ${update.game.title}.`);
+      return;
+    }
+    setBusyKey(`update:${update.caveId}`);
+    setError("");
+    try {
+      const result = await invoke<ItchInstallResult>("itch_butler_apply_update", {
+        apiKey,
+        caveId: update.caveId,
+        uploadId: choice.upload.id,
+        buildId: choice.build?.id ?? choice.upload.build?.id ?? null,
+      });
+      await onImportInstalled(result);
+      await refreshLibrary(true, apiKey);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.82)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="rounded-xl shadow-2xl w-[860px] max-h-[86vh] flex flex-col"
+        style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center gap-3 px-6 pt-5 pb-4 border-b flex-shrink-0" style={{ borderColor: "var(--color-border-card)" }}>
+          <div className="w-9 h-9 rounded flex items-center justify-center" style={{ background: "#2b2316", color: "#ffcf8d" }}>
+            io
+          </div>
+          <div>
+            <h2 className="font-bold text-base" style={{ color: "var(--color-white)" }}>itch.io Butler</h2>
+            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+              Browse owned purchases, install them with butler, and apply updates without leaving Libmaly.
+            </p>
+          </div>
+          <button onClick={onClose} className="ml-auto text-xl" style={{ color: "var(--color-text-dim)" }}>✕</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4"
+          style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+          <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Butler status</div>
+                <p className="mt-1 text-sm" style={{ color: status?.available ? "#9fe0a9" : "#ffb0a6" }}>
+                  {status?.available ? `Detected ${status.version || "butler"}` : "butler was not found on this system"}
+                </p>
+                {status?.executablePath && (
+                  <p className="text-[10px] break-all" style={{ color: "var(--color-text-dim)" }}>{status.executablePath}</p>
+                )}
+              </div>
+              {!status?.available && (
+                <button
+                  onClick={() => { void openUrl(status?.installUrl || "https://itch.io/app"); }}
+                  className="px-4 py-2 rounded text-sm font-medium"
+                  style={{ background: "#3a2516", color: "#ffcf8d", border: "1px solid #7b5a25" }}
+                >
+                  Get itch app / butler
+                </button>
+              )}
+            </div>
+
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey((e.target as HTMLInputElement).value)}
+              placeholder="itch.io API key"
+              className="w-full px-3 py-2 rounded text-sm outline-none"
+              style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+            />
+
+            <div className="grid grid-cols-[1fr_auto_auto] gap-2">
+              <input
+                type="text"
+                value={installRoot}
+                onChange={(e) => setInstallRoot((e.target as HTMLInputElement).value)}
+                placeholder="Default install folder for itch titles"
+                className="w-full px-3 py-2 rounded text-sm outline-none"
+                style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+              />
+              <button
+                onClick={() => { void handlePickInstallRoot(); }}
+                className="px-4 py-2 rounded text-sm"
+                style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+              >
+                Browse…
+              </button>
+              <button
+                onClick={() => { void refreshLibrary(true); }}
+                disabled={!status?.available || loading}
+                className="px-4 py-2 rounded text-sm font-medium disabled:opacity-50"
+                style={{ background: "#2b2316", color: "#ffcf8d", border: "1px solid #7b5a25" }}
+              >
+                {loading ? "Loading..." : "Load Library"}
+              </button>
+            </div>
+
+            {library && (
+              <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                Signed in as {library.profile.user.displayName || library.profile.user.username}. Owned titles: {library.records.length}. Installed caves: {library.caves.length}.
+              </p>
+            )}
+            {warnings.length > 0 && (
+              <p className="text-xs" style={{ color: "#ffd89a" }}>{warnings[0]}</p>
+            )}
+            {error && <p className="text-sm" style={{ color: "var(--color-danger)" }}>{error}</p>}
+          </div>
+
+          {status?.available && library && (
+            <>
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery((e.target as HTMLInputElement).value)}
+                placeholder="Filter owned itch titles"
+                className="w-full px-3 py-2 rounded text-sm outline-none"
+                style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+              />
+
+              <div className="space-y-2">
+                {filteredRecords.map((entry) => {
+                  const update = entry.primaryCaveId ? updatesByCaveId[entry.primaryCaveId] : undefined;
+                  const imported = !!entry.primaryCaveId && importedCaveIds.has(entry.primaryCaveId);
+                  const importFolder = entry.installFolders[0] || null;
+                  const alreadyExistsByPath = importFolder
+                    ? Array.from(existingPaths).some((path) => path.startsWith(normalizePathForMatch(importFolder)))
+                    : false;
+                  return (
+                    <div key={entry.id} className="rounded-lg p-3 flex gap-3 items-start"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                      {entry.cover ? (
+                        <img src={entry.cover} alt={entry.title} className="w-12 h-12 rounded object-cover flex-shrink-0" />
+                      ) : (
+                        <div className="w-12 h-12 rounded flex items-center justify-center flex-shrink-0"
+                          style={{ background: "var(--color-panel-3)", color: "var(--color-text-dim)" }}>
+                          io
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-medium truncate" style={{ color: "var(--color-text)" }}>{entry.title}</p>
+                          {entry.installed && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--color-success-bg)", color: "var(--color-success)" }}>
+                              Installed
+                            </span>
+                          )}
+                          {imported && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "#1b2f42", color: "#9ed2ff" }}>
+                              Imported
+                            </span>
+                          )}
+                          {update && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "#3f2f12", color: "#ffd483" }}>
+                              Update available
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] mt-1" style={{ color: "var(--color-text-dim)" }}>
+                          Game #{entry.id}{entry.installedAt ? ` · installed ${new Date(entry.installedAt).toLocaleString()}` : ""}
+                        </p>
+                        {importFolder && (
+                          <p className="text-[10px] mt-1 break-all" style={{ color: "var(--color-text-muted)" }}>{importFolder}</p>
+                        )}
+                      </div>
+                      <div className="flex flex-col gap-2 items-stretch min-w-[132px]">
+                        <button
+                          onClick={() => { void handleInstall(entry); }}
+                          disabled={busyKey !== null || !status.available}
+                          className="px-3 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                          style={{ background: "#2b2316", color: "#ffcf8d", border: "1px solid #7b5a25" }}
+                        >
+                          {busyKey === `install:${entry.id}` ? "Installing..." : entry.installed ? "Reinstall" : "Install"}
+                        </button>
+                        <button
+                          onClick={() => { void handleImportInstalled(entry); }}
+                          disabled={!entry.installed || !entry.primaryCaveId || busyKey !== null}
+                          className="px-3 py-2 rounded text-xs disabled:opacity-50"
+                          style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+                        >
+                          {busyKey === `import:${entry.primaryCaveId}` ? "Importing..." : imported ? "Re-import" : alreadyExistsByPath ? "Refresh Link" : "Import to Library"}
+                        </button>
+                        <button
+                          onClick={() => { if (update) void handleUpdate(update); }}
+                          disabled={!update || busyKey !== null}
+                          className="px-3 py-2 rounded text-xs disabled:opacity-50"
+                          style={{ background: "#203321", color: "#9fe0a9", border: "1px solid #38603a" }}
+                        >
+                          {busyKey === `update:${entry.primaryCaveId}` ? "Updating..." : "Apply Update"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {!loading && status?.available && library && filteredRecords.length === 0 && (
+            <p className="text-sm text-center py-8" style={{ color: "var(--color-text-muted)" }}>
+              No owned itch titles match your current filter.
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -3313,7 +4807,7 @@ function InteropImportModal({
   onClose,
 }: {
   games: Game[];
-  command: "import_playnite_games" | "import_gog_galaxy_games";
+  command: "import_playnite_games" | "import_gog_galaxy_games" | "import_protocol_store_games" | "import_exotic_store_games";
   title: string;
   subtitle: string;
   accent: string;
@@ -3462,6 +4956,7 @@ export default function App() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [keepDataOnDelete, setKeepDataOnDelete] = useState(true);
   const [showLinkModal, setShowLinkModal] = useState(false);
+  const [showSaveTransferModal, setShowSaveTransferModal] = useState(false);
   const [showF95Login, setShowF95Login] = useState(false);
   const [f95LoggedIn, setF95LoggedIn] = useState(false);
   const [showDLsiteLogin, setShowDLsiteLogin] = useState(false);
@@ -3470,10 +4965,10 @@ export default function App() {
   const [fakkuLoggedIn, setFakkuLoggedIn] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [showWhatsNewModal, setShowWhatsNewModal] = useState(false);
-  const [viewMode, setViewMode] = useState<"list" | "compact" | "grid">(() => loadCache("libmaly_view_mode", "list"));
+  const [viewMode, setViewMode] = useState<LayoutViewMode>(() => loadCache(SK_VIEW_MODE, "list"));
   const [isAppReady, setIsAppReady] = useState(false);
 
-  useEffect(() => saveCache("libmaly_view_mode", viewMode), [viewMode]);
+  useEffect(() => saveCache(SK_VIEW_MODE, viewMode), [viewMode]);
 
   const [isKioskMode, setIsKioskMode] = useState(false);
   useEffect(() => {
@@ -3500,7 +4995,7 @@ export default function App() {
     let csv = "Name,Path,Source,Tags,Playtime (s),Overall Rating,Rating Scale,Gameplay,Story,Soundtrack,Visuals,Characters,Performance,Review,Uninstalled\n";
     for (const g of games) {
       const name = customizations[g.path]?.displayName || metadata[g.path]?.title || g.name;
-      const src = metadata[g.path]?.source || "";
+      const src = metadataSourceSummary(metadata[g.path]) || metadata[g.path]?.source || "";
       const tags = (metadata[g.path]?.tags || []).join(";");
       const pt = stats[g.path]?.totalTime || 0;
       const custom = customizations[g.path];
@@ -3694,7 +5189,7 @@ export default function App() {
         : "";
       const reviewStr = review ? `<p style="font-size: 11px; color: var(--color-text-muted); margin: 6px 0 0 0; white-space: pre-wrap;">${review.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>` : "";
 
-      const src = metadata[g.path]?.source;
+      const src = metadataSourceSummary(metadata[g.path]) || metadata[g.path]?.source;
       const url = metadata[g.path]?.source_url;
       const sourceStr = src && url ? `<a href="${url}" target="_blank" style="display: inline-block; font-size: 10px; margin-top: 5px; color: var(--color-accent); text-decoration: none; border: 1px solid var(--color-border); padding: 2px 6px; border-radius: 4px;">↗ ${src}</a>` : "";
 
@@ -3836,10 +5331,17 @@ export default function App() {
   const screenshotToastTimeoutsRef = useRef<Record<string, number>>({});
 
   // ── UI states ──
-  const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadCache("libmaly_sidebar_w", 256));
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadCache(SK_SIDEBAR_WIDTH, 256));
+  const [savedLayoutPresets, setSavedLayoutPresets] = useState<LayoutPresetRecord[]>(() => loadCache(SK_LAYOUT_PRESETS, []));
   const isDraggingSidebar = useRef(false);
   const sbWidthRef = useRef(sidebarWidth);
   useEffect(() => { sbWidthRef.current = sidebarWidth; }, [sidebarWidth]);
+
+  const persistSidebarWidth = useCallback((nextWidth: number) => {
+    const resolved = clampSidebarWidthValue(nextWidth);
+    setSidebarWidth(resolved);
+    saveCache(SK_SIDEBAR_WIDTH, resolved);
+  }, []);
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
@@ -3854,7 +5356,7 @@ export default function App() {
       if (isDraggingSidebar.current) {
         isDraggingSidebar.current = false;
         document.body.style.cursor = "";
-        saveCache("libmaly_sidebar_w", sbWidthRef.current);
+        saveCache(SK_SIDEBAR_WIDTH, sbWidthRef.current);
       }
     };
     document.addEventListener("mousemove", onMouseMove);
@@ -3897,6 +5399,97 @@ export default function App() {
   });
   const appSettingsRef = useRef(appSettings);
   useEffect(() => { appSettingsRef.current = appSettings; }, [appSettings]);
+  const persistAppSettings = useCallback((nextSettings: AppSettings | ((prev: AppSettings) => AppSettings)) => {
+    setAppSettings((prev) => {
+      const resolved = typeof nextSettings === "function"
+        ? (nextSettings as (prev: AppSettings) => AppSettings)(prev)
+        : nextSettings;
+      saveCache(SK_SETTINGS, resolved);
+      return resolved;
+    });
+  }, []);
+  const currentLayoutPresetConfig = useMemo(
+    () => captureLayoutPresetConfig(viewMode, sidebarWidth, appSettings),
+    [appSettings, sidebarWidth, viewMode],
+  );
+  const layoutPresets = useMemo<LayoutPresetDescriptor[]>(
+    () => [
+      ...BUILTIN_LAYOUT_PRESETS,
+      ...savedLayoutPresets
+        .slice()
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    ],
+    [savedLayoutPresets],
+  );
+  const activeLayoutPresetId = useMemo(
+    () => layoutPresets.find((preset) => layoutPresetConfigsEqual(preset.config, currentLayoutPresetConfig))?.id ?? null,
+    [currentLayoutPresetConfig, layoutPresets],
+  );
+
+  const applyLayoutPreset = useCallback((config: LayoutPresetConfig) => {
+    setViewMode(config.viewMode);
+    persistSidebarWidth(config.sidebarWidth);
+    persistAppSettings((prev) => ({
+      ...prev,
+      sidebarMinimalMode: config.sidebarMinimalMode,
+      sidebarShowNews: config.sidebarShowNews,
+      sidebarShowStats: config.sidebarShowStats,
+      sidebarShowSearchTools: config.sidebarShowSearchTools,
+      sidebarShowCollections: config.sidebarShowCollections,
+      sidebarShowDevelopers: config.sidebarShowDevelopers,
+      sidebarShowWishlist: config.sidebarShowWishlist,
+      sidebarShowSurpriseButton: config.sidebarShowSurpriseButton,
+      sidebarShowAddButton: config.sidebarShowAddButton,
+      sidebarShowSettingsButton: config.sidebarShowSettingsButton,
+      sidebarShowLogsButton: config.sidebarShowLogsButton,
+    }));
+  }, [persistAppSettings, persistSidebarWidth]);
+
+  const persistLayoutPresets = useCallback((nextPresets: LayoutPresetRecord[] | ((prev: LayoutPresetRecord[]) => LayoutPresetRecord[])) => {
+    setSavedLayoutPresets((prev) => {
+      const resolved = typeof nextPresets === "function"
+        ? (nextPresets as (prev: LayoutPresetRecord[]) => LayoutPresetRecord[])(prev)
+        : nextPresets;
+      saveCache(SK_LAYOUT_PRESETS, resolved);
+      return resolved;
+    });
+  }, []);
+
+  const saveCurrentLayoutPreset = useCallback((name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new Error("Preset name cannot be empty.");
+    }
+    persistLayoutPresets((prev) => {
+      const baseId = slugifyLayoutPresetName(trimmed) || `preset-${Date.now()}`;
+      let nextId = baseId;
+      let suffix = 2;
+      while (prev.some((preset) => preset.id === nextId)) {
+        nextId = `${baseId}-${suffix}`;
+        suffix += 1;
+      }
+      return [
+        ...prev,
+        {
+          id: nextId,
+          name: trimmed,
+          config: currentLayoutPresetConfig,
+        },
+      ];
+    });
+  }, [currentLayoutPresetConfig, persistLayoutPresets]);
+
+  const updateLayoutPreset = useCallback((presetId: string) => {
+    persistLayoutPresets((prev) => prev.map((preset) => (
+      preset.id === presetId
+        ? { ...preset, config: currentLayoutPresetConfig }
+        : preset
+    )));
+  }, [currentLayoutPresetConfig, persistLayoutPresets]);
+
+  const deleteLayoutPreset = useCallback((presetId: string) => {
+    persistLayoutPresets((prev) => prev.filter((preset) => preset.id !== presetId));
+  }, [persistLayoutPresets]);
   useEffect(() => {
     navIndexRef.current = navIndex;
   }, [navIndex]);
@@ -4076,12 +5669,20 @@ export default function App() {
   const [showSteamImport, setShowSteamImport] = useState(false);
   /** Show the Steam library import modal */
   const [showSteamLibraryImport, setShowSteamLibraryImport] = useState(false);
+  /** Show the Epic Games Store / Legendary import modal */
+  const [showEpicImport, setShowEpicImport] = useState(false);
   /** Show the Lutris import modal */
   const [showLutrisImport, setShowLutrisImport] = useState(false);
   /** Show the Playnite import modal */
   const [showPlayniteImport, setShowPlayniteImport] = useState(false);
   /** Show the GOG Galaxy import modal */
   const [showGogImport, setShowGogImport] = useState(false);
+  /** Show the EA App / Ubisoft / Rockstar import modal */
+  const [showProtocolStoreImport, setShowProtocolStoreImport] = useState(false);
+  /** Show the GameJolt / Battle.net import modal */
+  const [showExoticImport, setShowExoticImport] = useState(false);
+  /** Show the itch.io butler modal */
+  const [showItchImport, setShowItchImport] = useState(false);
   /** Wishlisted unowned games */
   const [wishlist, setWishlist] = useState<WishlistItem[]>(() => loadCache(SK_WISHLIST, []));
 
@@ -4462,6 +6063,46 @@ export default function App() {
     reloadActiveProfile(nextRegistry.activeProfileId);
   }, [profileRegistry, reloadActiveProfile]);
 
+  const handleIncomingDeepLink = useCallback(async (rawUrl: string) => {
+    const oauthCallback = parseSyncOAuthCallbackUrl(rawUrl);
+    if (oauthCallback) {
+      try {
+        const config = await syncCompleteOAuthCallback(rawUrl);
+        window.dispatchEvent(new CustomEvent("libmaly-sync-config-updated"));
+        setInAppToasts(prev => [
+          {
+            id: `sync-oauth-${Date.now()}`,
+            type: "success" as const,
+            title: "Cloud sync connected",
+            message: `${getSyncProviderLabel(config.provider)} authorization completed successfully.`,
+            icon: "☁️",
+          },
+          ...prev,
+        ].slice(0, 5));
+      } catch (error) {
+        setInAppToasts(prev => [
+          {
+            id: `sync-oauth-failed-${Date.now()}`,
+            type: "warning" as const,
+            title: "Cloud sync authorization failed",
+            message: String(error),
+            icon: "⚠️",
+          },
+          ...prev,
+        ].slice(0, 5));
+      }
+      return true;
+    }
+
+    const req = parseDeepLinkUrl(rawUrl);
+    if (req) {
+      setPendingLaunchRequest(req);
+      return true;
+    }
+
+    return false;
+  }, []);
+
   // No auto-select: show HomeView when nothing is selected
 
   useEffect(() => {
@@ -4503,12 +6144,10 @@ export default function App() {
         const value = typeof nameArg === "string" ? nameArg : Array.isArray(nameArg) ? nameArg[0] : null;
         if (value && value.trim()) setPendingLaunchRequest({ mode: "name", value: value.trim() });
       }).catch(() => { });
-      getCurrentDeepLinks().then((urls) => {
+      getCurrentDeepLinks().then(async (urls) => {
         const arr = Array.isArray(urls) ? urls : [];
         for (const rawUrl of arr) {
-          const req = parseDeepLinkUrl(rawUrl);
-          if (req) {
-            setPendingLaunchRequest(req);
+          if (await handleIncomingDeepLink(rawUrl)) {
             break;
           }
         }
@@ -4604,13 +6243,13 @@ export default function App() {
       }
     });
     const unlistenDeepLink = onOpenUrl((urls) => {
-      for (const rawUrl of urls) {
-        const req = parseDeepLinkUrl(rawUrl);
-        if (req) {
-          setPendingLaunchRequest(req);
-          break;
+      void (async () => {
+        for (const rawUrl of urls) {
+          if (await handleIncomingDeepLink(rawUrl)) {
+            break;
+          }
         }
-      }
+      })();
     });
     const unlistenRustLog = listen<RustLogEntry>("rust-log", (ev) => {
       const entry = ev.payload;
@@ -4667,7 +6306,7 @@ export default function App() {
       unlistenRustLog.then((f) => f());
       unlistenDiscordJoin.then((f) => f());
     };
-  }, [reloadActiveProfile]);
+  }, [handleIncomingDeepLink, reloadActiveProfile]);
 
   useEffect(() => {
     if (!steamLaunchBridge) return;
@@ -4901,7 +6540,7 @@ export default function App() {
     const checkUpdates = async () => {
       const items = games
         .map((g) => ({ path: g.path, metadata: metadataRef.current[g.path] }))
-        .filter((entry): entry is MetadataQueueItem => !!entry.metadata?.source_url && !ghostGames[entry.path]);
+        .filter((entry): entry is MetadataQueueItem => metadataHasLinkedSources(entry.metadata) && !ghostGames[entry.path]);
       await runMetadataQueueJob({
         jobId: JOB_UPDATE_CHECKER,
         label: "Update Checker",
@@ -5071,7 +6710,7 @@ export default function App() {
     });
   };
 
-  const handleSteamLibraryImport = async (entries: SteamLibraryEntry[]) => {
+  const handleSteamLibraryImport = async (entries: SteamOwnedGame[]) => {
     if (entries.length === 0) return;
     try {
       await ensureSnapshotBeforeRiskyOp("before-steam-library-import", "Before importing Steam library");
@@ -5082,11 +6721,36 @@ export default function App() {
     setGames((prev) => {
       const next = [...prev];
       const seen = new Set(prev.map((g) => normalizePathForMatch(g.path)));
+      const placeholderIndexByAppId = new Map<string, number>();
+      for (let i = 0; i < next.length; i += 1) {
+        const appId = customizations[next[i].path]?.steamAppId?.trim();
+        if (appId) placeholderIndexByAppId.set(appId, i);
+      }
       for (const entry of entries) {
-        if (!entry.exe) continue;
-        const key = normalizePathForMatch(entry.exe);
+        const appId = entry.app_id.trim();
+        if (entry.exe) {
+          const key = normalizePathForMatch(entry.exe);
+          const placeholderIndex = placeholderIndexByAppId.get(appId);
+          if (placeholderIndex != null) {
+            next[placeholderIndex] = {
+              ...next[placeholderIndex],
+              name: entry.name || next[placeholderIndex].name,
+              path: entry.exe,
+              uninstalled: false,
+            };
+            seen.add(key);
+            continue;
+          }
+          if (seen.has(key)) continue;
+          next.push({ name: entry.name || deriveGameName(entry.exe), path: entry.exe, uninstalled: false });
+          seen.add(key);
+          continue;
+        }
+
+        const placeholderPath = steamPlaceholderPath(appId);
+        const key = normalizePathForMatch(placeholderPath);
         if (seen.has(key)) continue;
-        next.push({ name: entry.name || deriveGameName(entry.exe), path: entry.exe });
+        next.push({ name: entry.name || `Steam App ${appId}`, path: placeholderPath, uninstalled: true });
         seen.add(key);
       }
       saveCache(SK_GAMES, next);
@@ -5096,18 +6760,150 @@ export default function App() {
     setCustomizations((prev) => {
       const next = { ...prev };
       for (const entry of entries) {
-        if (!entry.exe) continue;
-        const prevCustom = next[entry.exe] ?? {};
-        next[entry.exe] = {
+        const appId = entry.app_id.trim();
+        const targetPath = entry.exe || steamPlaceholderPath(appId);
+        const oldPath = Object.keys(next).find((key) => key !== targetPath && next[key]?.steamAppId?.trim() === appId) || null;
+        const prevCustom = oldPath ? (next[oldPath] ?? {}) : (next[targetPath] ?? {});
+        next[targetPath] = {
           ...prevCustom,
-          displayName: prevCustom.displayName ?? entry.name ?? deriveGameName(entry.exe),
-          steamAppId: entry.app_id,
+          displayName: prevCustom.displayName ?? entry.name ?? (entry.exe ? deriveGameName(entry.exe) : entry.name),
+          steamAppId: appId,
           launchViaSteam: true,
         };
+        if (oldPath) delete next[oldPath];
       }
       saveCache(SK_CUSTOM, next);
       return next;
     });
+  };
+
+  const handleEpicImport = async (entries: EpicOwnedGame[]) => {
+    if (entries.length === 0) return;
+    try {
+      await ensureSnapshotBeforeRiskyOp("before-epic-import", "Before importing Epic Games Store library");
+    } catch {
+      return;
+    }
+
+    setGames((prev) => {
+      const next = [...prev];
+      const seen = new Set(prev.map((g) => normalizePathForMatch(g.path)));
+      const placeholderIndexByAppName = new Map<string, number>();
+      for (let i = 0; i < next.length; i += 1) {
+        const appName = customizations[next[i].path]?.epicAppName?.trim().toLowerCase();
+        if (appName) placeholderIndexByAppName.set(appName, i);
+      }
+      for (const entry of entries) {
+        const appName = entry.app_name.trim();
+        if (!appName) continue;
+        if (entry.exe) {
+          const key = normalizePathForMatch(entry.exe);
+          const placeholderIndex = placeholderIndexByAppName.get(appName.toLowerCase());
+          if (placeholderIndex != null) {
+            next[placeholderIndex] = {
+              ...next[placeholderIndex],
+              name: entry.title || next[placeholderIndex].name,
+              path: entry.exe,
+              uninstalled: false,
+            };
+            seen.add(key);
+            continue;
+          }
+          if (seen.has(key)) continue;
+          next.push({ name: entry.title || deriveGameName(entry.exe), path: entry.exe, uninstalled: false });
+          seen.add(key);
+          continue;
+        }
+
+        const placeholderPath = epicPlaceholderPath(appName);
+        const key = normalizePathForMatch(placeholderPath);
+        if (seen.has(key)) continue;
+        next.push({ name: entry.title || appName, path: placeholderPath, uninstalled: true });
+        seen.add(key);
+      }
+      saveCache(SK_GAMES, next);
+      return next;
+    });
+
+    setCustomizations((prev) => {
+      const next = { ...prev };
+      for (const entry of entries) {
+        const appName = entry.app_name.trim();
+        if (!appName) continue;
+        const targetPath = entry.exe || epicPlaceholderPath(appName);
+        const oldPath = Object.keys(next).find((key) => key !== targetPath && next[key]?.epicAppName?.trim().toLowerCase() === appName.toLowerCase()) || null;
+        const prevCustom = oldPath ? (next[oldPath] ?? {}) : (next[targetPath] ?? {});
+        next[targetPath] = {
+          ...prevCustom,
+          displayName: prevCustom.displayName ?? entry.title ?? (entry.exe ? deriveGameName(entry.exe) : entry.title),
+          storeProvider: prevCustom.storeProvider ?? "epic-games",
+          storeGameId: prevCustom.storeGameId ?? appName,
+          epicAppName: appName,
+          launchViaLegendary: prevCustom.launchViaLegendary ?? true,
+        };
+        if (oldPath) delete next[oldPath];
+      }
+      saveCache(SK_CUSTOM, next);
+      return next;
+    });
+  };
+
+  const handleItchInstalledImport = async (result: ItchInstallResult) => {
+    const [scanned] = await invoke<[Game[], DirMtime[]]>("scan_games", { path: result.installFolder });
+    const candidates = [...scanned].sort((a, b) => {
+      const preferred = result.title.toLowerCase();
+      const score = (game: Game) => {
+        const name = (game.name || deriveGameName(game.path)).toLowerCase();
+        let value = game.path.replace(/\\/g, "/").split("/").length * 10 + game.path.length;
+        if (name === preferred) value -= 200;
+        else if (name.includes(preferred) || preferred.includes(name)) value -= 100;
+        return value;
+      };
+      return score(a) - score(b);
+    });
+
+    const primary = candidates[0] || null;
+    if (!primary) {
+      alert(`Itch install finished, but Libmaly could not find a launchable executable in:\n${result.installFolder}`);
+      return;
+    }
+
+    const cachedCustom = loadCache<Record<string, GameCustomization>>(SK_CUSTOM, {});
+    const previousPath = Object.keys(cachedCustom).find((path) => cachedCustom[path]?.itchCaveId === result.caveId) || null;
+    if (previousPath && normalizePathForMatch(previousPath) !== normalizePathForMatch(primary.path)) {
+      applyExplicitGamePathRemaps([{ oldPath: previousPath, newPath: primary.path }]);
+    }
+
+    const nextGames = loadCache<Game[]>(SK_GAMES, []);
+    const normalizedPrimary = normalizePathForMatch(primary.path);
+    const existingIndex = nextGames.findIndex((game) => normalizePathForMatch(game.path) === normalizedPrimary);
+    if (existingIndex >= 0) {
+      nextGames[existingIndex] = {
+        ...nextGames[existingIndex],
+        name: result.title || nextGames[existingIndex].name,
+        path: primary.path,
+        uninstalled: false,
+      };
+    } else {
+      nextGames.push({ name: result.title || primary.name, path: primary.path, uninstalled: false });
+    }
+    saveCache(SK_GAMES, nextGames);
+    setGames(nextGames);
+
+    const nextCustom = loadCache<Record<string, GameCustomization>>(SK_CUSTOM, {});
+    const previousCustom = nextCustom[primary.path] ?? (previousPath ? nextCustom[previousPath] ?? {} : {});
+    nextCustom[primary.path] = {
+      ...previousCustom,
+      displayName: previousCustom.displayName ?? result.title ?? primary.name,
+      itchCaveId: result.caveId,
+      itchGameId: String(result.gameId),
+      pinnedExes: candidates.slice(1, 8).map((candidate) => ({ name: candidate.name, path: candidate.path })),
+    };
+    if (previousPath && previousPath !== primary.path) {
+      delete nextCustom[previousPath];
+    }
+    saveCache(SK_CUSTOM, nextCustom);
+    setCustomizations(nextCustom);
   };
 
   const handleLutrisImport = async (entries: LutrisGameEntry[]) => {
@@ -5186,13 +6982,40 @@ export default function App() {
       for (const e of entries) {
         if (!e.exe) continue;
         const prevCustom = next[e.exe] ?? {};
+        const shouldAttachStoreLaunch = !!e.store_uri && ["ea-app", "ubisoft-connect", "rockstar"].includes(e.source);
         next[e.exe] = {
           ...prevCustom,
           displayName: prevCustom.displayName ?? e.name ?? deriveGameName(e.exe),
           launchArgs: prevCustom.launchArgs ?? e.args,
+          storeProvider: prevCustom.storeProvider ?? (shouldAttachStoreLaunch ? e.source : undefined),
+          storeGameId: prevCustom.storeGameId ?? (shouldAttachStoreLaunch ? e.game_id : undefined),
+          storeLaunchUri: prevCustom.storeLaunchUri ?? (shouldAttachStoreLaunch ? e.store_uri ?? undefined : undefined),
+          launchViaStore: shouldAttachStoreLaunch ? (prevCustom.launchViaStore ?? true) : prevCustom.launchViaStore,
         };
       }
       saveCache(SK_CUSTOM, next);
+      return next;
+    });
+
+    setMetadata((prev) => {
+      const next = { ...prev };
+      for (const e of entries) {
+        if (!e.exe) continue;
+        if (!e.source_url && !e.cover_url && !e.developer && !e.version && !e.overview) continue;
+        next[e.exe] = mergeMetadataWithSnapshot(next[e.exe], {
+          source: e.source,
+          source_url: e.source_url ?? "",
+          title: e.name ?? undefined,
+          developer: e.developer ?? undefined,
+          cover_url: e.cover_url ?? undefined,
+          overview: e.overview ?? undefined,
+          version: e.version ?? undefined,
+          fetchedAt: Date.now(),
+          screenshots: [],
+          tags: [],
+        });
+      }
+      saveCache(SK_META, next);
       return next;
     });
   };
@@ -5376,15 +7199,50 @@ export default function App() {
 
   const fetchMetadataForPath = async (currentMeta: GameMetadata, gamePath: string) => {
     if (ghostGames[gamePath]) return null; // Ghost mode: no network requests
-    const cmd = metadataFetchCommand(currentMeta.source);
-    if (!cmd || !currentMeta.source_url) return null;
-    const result = await invoke<GameMetadata | null>(cmd, { url: currentMeta.source_url });
-    return result ? { ...result, fetchedAt: Date.now() } : null;
+    const snapshots = metadataSnapshotsFromMeta(currentMeta).filter((snapshot) => isNonEmptyMetadataString(snapshot.source_url));
+    if (snapshots.length === 0) return null;
+
+    const refreshedSnapshots: MetadataSourceSnapshot[] = [];
+    let successCount = 0;
+    let lastError: unknown = null;
+
+    for (const snapshot of snapshots) {
+      if (!snapshot.source_url) {
+        refreshedSnapshots.push(snapshot);
+        continue;
+      }
+      try {
+        const result = await invokeMetadataBySource(snapshot.source, snapshot.source_url);
+        if (result) {
+          refreshedSnapshots.push(normalizeMetadataSnapshot({
+            ...result,
+            source: snapshot.source,
+            source_label: result.source_label || snapshot.source_label,
+            source_url: snapshot.source_url,
+            fetchedAt: Date.now(),
+            screenshots: result.screenshots || [],
+            tags: result.tags || [],
+          }));
+          successCount += 1;
+        } else {
+          refreshedSnapshots.push(snapshot);
+        }
+      } catch (error) {
+        lastError = error;
+        refreshedSnapshots.push(snapshot);
+      }
+    }
+
+    if (successCount === 0 && lastError) {
+      throw lastError;
+    }
+
+    return mergeMetadataSnapshots(refreshedSnapshots);
   };
 
   const applyMetadataUpdate = (path: string, nextMeta: GameMetadata) => {
     setMetadata((prev) => {
-      const next = { ...prev, [path]: nextMeta };
+      const next = { ...prev, [path]: mergeMetadataSnapshots(metadataSnapshotsFromMeta(nextMeta)) };
       saveCache(SK_META, next);
       return next;
     });
@@ -5500,11 +7358,13 @@ export default function App() {
   const backupRetentionStatus = backgroundJobButtonLabel(backupRetentionJob, t("settings.system.apply_backup"));
   const dbVacuumJob = backgroundJobs[JOB_DB_VACUUM] ?? null;
   const dbVacuumStatus = backgroundJobButtonLabel(dbVacuumJob, "Optimize Storage");
+  const autoCloudBackupJob = backgroundJobs[JOB_AUTO_CLOUD_BACKUP] ?? null;
   const isIntegrityCheckBusy = integrityCheckJob ? isBackgroundJobBusy(integrityCheckJob.status) : false;
   const isBatchMetadataRefreshBusy = batchMetadataRefreshJob ? isBackgroundJobBusy(batchMetadataRefreshJob.status) : false;
   const isAutoHealPathsBusy = autoHealPathsJob ? isBackgroundJobBusy(autoHealPathsJob.status) : false;
   const isBackupRetentionBusy = backupRetentionJob ? isBackgroundJobBusy(backupRetentionJob.status) : false;
   const isDbVacuumBusy = dbVacuumJob ? isBackgroundJobBusy(dbVacuumJob.status) : false;
+  const isAutoCloudBackupBusy = autoCloudBackupJob ? isBackgroundJobBusy(autoCloudBackupJob.status) : false;
 
   // ── Scanning ────────────────────────────────────────────────────────────────
   const runIncrementalSyncAll = async (folders: LibraryFolder[]) => {
@@ -5950,6 +7810,68 @@ export default function App() {
     }
   };
 
+  const runAutoCloudBackup = useCallback(async () => {
+    if (isAutoCloudBackupBusy) return null;
+    upsertBackgroundJob(JOB_AUTO_CLOUD_BACKUP, {
+      label: "Cloud Auto-Backup",
+      status: "running",
+      detail: "Preparing cloud backup...",
+    });
+    try {
+      const config = await syncGetConfig();
+      if (!config) {
+        upsertBackgroundJob(JOB_AUTO_CLOUD_BACKUP, {
+          label: "Cloud Auto-Backup",
+          status: "permanent_failed",
+          detail: "Cloud backup skipped: no provider configured.",
+        });
+        return null;
+      }
+      if (!isAutoBackupProvider(config.provider)) {
+        upsertBackgroundJob(JOB_AUTO_CLOUD_BACKUP, {
+          label: "Cloud Auto-Backup",
+          status: "permanent_failed",
+          detail: `Cloud backup requires Google Drive or Dropbox. Current provider: ${getSyncProviderLabel(config.provider)}.`,
+        });
+        return null;
+      }
+      upsertBackgroundJob(JOB_AUTO_CLOUD_BACKUP, {
+        label: "Cloud Auto-Backup",
+        status: "running",
+        detail: `Uploading library state to ${getSyncProviderLabel(config.provider)}...`,
+      });
+      const result = await syncUpload();
+      clearBackgroundJob(JOB_AUTO_CLOUD_BACKUP);
+      persistAppSettings((prev) => ({
+        ...prev,
+        cloudAutoBackupLastSuccessAt: Date.now(),
+      }));
+      return result;
+    } catch (e) {
+      upsertBackgroundJob(JOB_AUTO_CLOUD_BACKUP, {
+        label: "Cloud Auto-Backup",
+        status: "permanent_failed",
+        detail: `Cloud auto-backup failed: ${String(e)}`,
+      });
+      return null;
+    }
+  }, [clearBackgroundJob, isAutoCloudBackupBusy, persistAppSettings, upsertBackgroundJob]);
+
+  useEffect(() => {
+    if (!appSettings.cloudAutoBackupEnabled) return;
+    const intervalMinutes = Math.max(5, appSettings.cloudAutoBackupIntervalMinutes || 0);
+    const initialTimer = window.setTimeout(() => {
+      runAutoCloudBackup().catch(() => {});
+    }, Math.min(intervalMinutes * 60 * 1000, 60_000));
+    const periodicTimer = window.setInterval(() => {
+      runAutoCloudBackup().catch(() => {});
+    }, intervalMinutes * 60 * 1000);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(periodicTimer);
+    };
+  }, [appSettings.cloudAutoBackupEnabled, appSettings.cloudAutoBackupIntervalMinutes, runAutoCloudBackup]);
+
   const backupSaveFilesForPath = async (gamePath: string, silent = false) => {
     try {
       const res = await invoke<SaveBackupResult>("backup_save_files", { gamePath });
@@ -5963,6 +7885,102 @@ export default function App() {
         await showPermissionDiagnostic("create the save-file backup", null, e, "Save-file backup failed");
       }
       throw e;
+    }
+  };
+
+  const backupSaveFilesToCloudForPath = async (gamePath: string) => {
+    try {
+      const result = await invoke<SyncSaveBackupResult>("sync_upload_save_backup", { gamePath });
+      await applyBackupRetentionPolicy(true);
+      alert(
+        `Save backup created and uploaded:\n${result.zipPath}\nRemote: ${result.remotePath}\nFiles: ${result.files}`,
+      );
+      return result;
+    } catch (e) {
+      alert(`Cloud save backup failed: ${String(e)}`);
+      throw e;
+    }
+  };
+
+  const installSelectedSteamGame = async () => {
+    if (!selected) return;
+    const appId = customizations[selected.path]?.steamAppId?.trim();
+    if (!appId) {
+      alert("This game does not have a Steam app ID yet.");
+      return;
+    }
+    try {
+      await invoke("install_steam_game", { appId });
+      alert("Steam install request sent. Once the game is installed, re-run the Steam library import to upgrade this placeholder into a local executable entry.");
+    } catch (e) {
+      alert(`Failed to trigger Steam install: ${String(e)}`);
+    }
+  };
+
+  const installSelectedEpicGame = async () => {
+    if (!selected) return;
+    const appName = customizations[selected.path]?.epicAppName?.trim();
+    if (!appName) {
+      alert("This game does not have an Epic / Legendary app name yet.");
+      return;
+    }
+    try {
+      await invoke("install_epic_game", { appName });
+      alert("Legendary install started. Re-run the Epic import after completion to replace the placeholder with the installed executable path.");
+    } catch (e) {
+      alert(`Failed to start Legendary install: ${String(e)}`);
+    }
+  };
+
+  const installSelectedUbisoftGame = async () => {
+    if (!selected) return;
+    const customization = customizations[selected.path];
+    const gameId = customization?.storeGameId?.trim();
+    if (!gameId) {
+      alert("This game does not have a Ubisoft Connect game ID yet.");
+      return;
+    }
+    try {
+      await invoke("launch_store_uri", { uri: `uplay://install/${encodeURIComponent(gameId)}` });
+      alert("Ubisoft Connect install request sent. Re-run the Ubisoft import after completion to replace this launcher entry with the installed executable path.");
+    } catch (e) {
+      alert(`Failed to trigger Ubisoft Connect install: ${String(e)}`);
+    }
+  };
+
+  const installSelectedRemoteStoreGame = async () => {
+    if (!selected) return;
+    const customization = customizations[selected.path];
+    if (!customization) {
+      alert("This game does not have remote install metadata yet.");
+      return;
+    }
+    if (customization.steamAppId?.trim()) {
+      await installSelectedSteamGame();
+      return;
+    }
+    if (customization.epicAppName?.trim()) {
+      await installSelectedEpicGame();
+      return;
+    }
+    if (customization.storeProvider === "ubisoft-connect" && customization.storeGameId?.trim()) {
+      await installSelectedUbisoftGame();
+      return;
+    }
+    alert("This launcher does not support remote install from Libmaly yet.");
+  };
+
+  const launchSelectedStoreGame = async () => {
+    if (!selected) return;
+    const uri = customizations[selected.path]?.storeLaunchUri?.trim();
+    if (!uri) {
+      alert("This game does not have a launcher protocol URI yet.");
+      return;
+    }
+    try {
+      await invoke("launch_store_uri", { uri });
+    } catch (e) {
+      alert(`Failed to launch from store: ${String(e)}`);
     }
   };
 
@@ -6247,6 +8265,44 @@ export default function App() {
   const launchGame = async (path: string, overridePath?: string, overrideArgs?: string) => {
     const gameCustom = customizations[path];
 
+    if (!overridePath && !overrideArgs && isSteamPlaceholderPath(path) && gameCustom?.steamAppId?.trim()) {
+      try {
+        await invoke("install_steam_game", { appId: gameCustom.steamAppId.trim() });
+      } catch (e) {
+        alert("Failed to trigger Steam install: " + e);
+      }
+      return;
+    }
+
+    if (!overridePath && !overrideArgs && isEpicPlaceholderPath(path) && gameCustom?.epicAppName?.trim()) {
+      try {
+        await invoke("install_epic_game", { appName: gameCustom.epicAppName.trim() });
+      } catch (e) {
+        alert("Failed to trigger Epic install: " + e);
+      }
+      return;
+    }
+
+    const shouldLaunchViaLegendary = !overridePath && !overrideArgs && !!gameCustom?.launchViaLegendary && !!gameCustom?.epicAppName?.trim();
+    if (shouldLaunchViaLegendary && gameCustom?.epicAppName) {
+      try {
+        await invoke("launch_epic_game", { appName: gameCustom.epicAppName.trim() });
+      } catch (e) {
+        alert("Failed to launch through Legendary: " + e);
+      }
+      return;
+    }
+
+    const shouldLaunchViaStore = !overridePath && !overrideArgs && !!gameCustom?.launchViaStore && !!gameCustom?.storeLaunchUri?.trim();
+    if (shouldLaunchViaStore && gameCustom?.storeLaunchUri) {
+      try {
+        await invoke("launch_store_uri", { uri: gameCustom.storeLaunchUri.trim() });
+      } catch (e) {
+        alert("Failed to launch through store: " + e);
+      }
+      return;
+    }
+
     // Only launch via Steam if explicitly enabled AND steamAppId is valid (non-empty string)
     const shouldLaunchViaSteam = !overridePath && !overrideArgs && 
                                   gameCustom?.launchViaSteam && 
@@ -6518,18 +8574,19 @@ export default function App() {
   const handleMetaFetched = (meta: GameMetadata) => {
     if (!selected) return;
     const oldMeta = metadata[selected.path];
+    const mergedMeta = mergeMetadataWithSnapshot(oldMeta, { ...meta, fetchedAt: Date.now() });
     if (oldMeta) {
-      setPendingMetaUpdate({ path: selected.path, oldMeta, newMeta: meta });
+      setPendingMetaUpdate({ path: selected.path, oldMeta, newMeta: mergedMeta });
     } else {
-      const next = { ...metadata, [selected.path]: { ...meta, fetchedAt: Date.now() } };
+      const next = { ...metadata, [selected.path]: mergedMeta };
       setMetadata(next);
       saveCache(SK_META, next);
 
-      if (meta.version) {
+      if (mergedMeta.version) {
         setHistory(prev => {
           const list = prev[selected.path] || [];
           if (list.length === 0) {
-            const nextList = [{ id: String(Date.now()), date: Date.now(), version: meta.version!, note: "Initial link" }];
+            const nextList = [{ id: String(Date.now()), date: Date.now(), version: mergedMeta.version!, note: "Initial link" }];
             const n = { ...prev, [selected.path]: nextList };
             saveCache(SK_HISTORY, n);
             return n;
@@ -6543,7 +8600,7 @@ export default function App() {
   const handleBatchMetadataRefresh = async () => {
     if (batchMetadataRefreshJob && isBackgroundJobBusy(batchMetadataRefreshJob.status)) return;
     const items = Object.keys(metadata)
-      .filter((p) => metadata[p]?.source_url && !ghostGames[p])
+      .filter((p) => metadataHasLinkedSources(metadata[p]) && !ghostGames[p])
       .map((path) => ({ path, metadata: metadata[path] }));
     if (items.length === 0) return;
     try {
@@ -6801,7 +8858,7 @@ export default function App() {
 
       const items = Object.keys(metadataRef.current).filter(p => {
         const m = metadataRef.current[p];
-        if (!m.source_url) return false;
+        if (!metadataHasLinkedSources(m)) return false;
         if (ghostGames[p]) return false; // Skip ghost mode games
         if (!m.fetchedAt) return true;
         return now - m.fetchedAt > expiryAge;
@@ -6859,7 +8916,13 @@ export default function App() {
       !c.runnerOverrideEnabled &&
       !c.runnerOverride &&
       !c.steamAppId &&
-      !c.launchViaSteam
+      !c.launchViaSteam &&
+      !c.storeProvider &&
+      !c.storeGameId &&
+      !c.storeLaunchUri &&
+      !c.launchViaStore &&
+      !c.epicAppName &&
+      !c.launchViaLegendary
     ) delete next[selected.path];
     else next[selected.path] = c;
     setCustomizations(next); saveCache(SK_CUSTOM, next);
@@ -6913,7 +8976,73 @@ export default function App() {
   };
 
   const gameDisplayName = (g: Game) =>
-    customizations[g.path]?.displayName ?? metadata[g.path]?.title ?? g.name;
+    resolvedGameDisplayName(g, customizations, metadata);
+
+  const ownershipGroupsState = useMemo(() => {
+    const buckets = new Map<string, Game[]>();
+    for (const game of games) {
+      const key = ownershipGroupingKey(game, customizations, metadata);
+      const existing = buckets.get(key);
+      if (existing) existing.push(game);
+      else buckets.set(key, [game]);
+    }
+
+    const groups: OwnershipGroup[] = [];
+    const byPath = new Map<string, OwnershipGroup>();
+    for (const [key, memberGames] of buckets.entries()) {
+      const ranked = [...memberGames].sort((a, b) => {
+        const aScore = ownershipPrimaryRank(a, customizations[a.path], metadata[a.path]);
+        const bScore = ownershipPrimaryRank(b, customizations[b.path], metadata[b.path]);
+        if (aScore !== bScore) return bScore - aScore;
+        return gameDisplayName(a).localeCompare(gameDisplayName(b));
+      });
+      const primaryGame = ranked[0] ?? memberGames[0];
+      const providerLabels = Array.from(new Set(
+        memberGames
+          .map((game) => launchProviderLabelForGame(game, customizations[game.path]))
+          .filter(Boolean)
+      ));
+      const providerSummary = providerLabels.length <= 1
+        ? (providerLabels[0] ?? "Local")
+        : `${providerLabels[0]} +${providerLabels.length - 1}`;
+      const group: OwnershipGroup = {
+        id: key,
+        displayName: gameDisplayName(primaryGame),
+        memberGames: ranked,
+        memberPaths: ranked.map((game) => game.path),
+        primaryGame,
+        providerLabels,
+        providerSummary,
+      };
+      groups.push(group);
+      for (const game of memberGames) {
+        byPath.set(game.path, group);
+      }
+    }
+
+    return { groups, byPath };
+  }, [games, customizations, metadata]);
+
+  const selectedOwnershipGroup = useMemo(() => {
+    if (!selected) return null;
+    return ownershipGroupsState.byPath.get(selected.path) ?? null;
+  }, [ownershipGroupsState.byPath, selected]);
+
+  const ownershipGroupStatsById = useMemo(() => {
+    const next: Record<string, GameStats> = {};
+    for (const group of ownershipGroupsState.groups) {
+      next[group.id] = group.memberGames.reduce<GameStats>((acc, game) => {
+        const stat = stats[game.path];
+        if (!stat) return acc;
+        acc.totalTime += stat.totalTime ?? 0;
+        acc.launchCount += stat.launchCount ?? 0;
+        acc.lastPlayed = Math.max(acc.lastPlayed, stat.lastPlayed ?? 0);
+        acc.lastSession = Math.max(acc.lastSession, stat.lastSession ?? 0);
+        return acc;
+      }, { totalTime: 0, lastPlayed: 0, lastSession: 0, launchCount: 0 });
+    }
+    return next;
+  }, [ownershipGroupsState.groups, stats]);
 
   const surpriseCandidates = useMemo(() => {
     return games.filter((g) =>
@@ -6985,9 +9114,9 @@ export default function App() {
    * Single-game dirs are flattened (rendered ungrouped).
    */
   type SidebarItem =
-    | { kind: "game"; game: Game; depth: number }
+    | { kind: "game"; game: Game; card: OwnershipGroup; depth: number }
     | { kind: "group-header"; dir: string; label: string; count: number; depth: number }
-    | { kind: "group-game"; game: Game; dir: string; depth: number };
+    | { kind: "group-game"; game: Game; card: OwnershipGroup; dir: string; depth: number };
 
 
   const allCustomTags = useMemo(() => {
@@ -7022,15 +9151,15 @@ export default function App() {
         if (filterMode === "all") { if (isHid && !search && !activeCol) return false; }
         else if (filterMode === "favs") return !!favGames[g.path];
         else if (filterMode === "hidden") return isHid;
-        else if (filterMode === "f95") return metadata[g.path]?.source === "f95";
-        else if (filterMode === "dlsite") return metadata[g.path]?.source === "dlsite";
-        else if (filterMode === "vndb") return metadata[g.path]?.source === "vndb";
-        else if (filterMode === "mangagamer") return metadata[g.path]?.source === "mangagamer";
-        else if (filterMode === "johren") return metadata[g.path]?.source === "johren";
-        else if (filterMode === "fakku") return metadata[g.path]?.source === "fakku";
-        else if (filterMode === "igdb") return metadata[g.path]?.source === "igdb";
-        else if (filterMode === "rawg") return metadata[g.path]?.source === "rawg";
-        else if (filterMode === "mobygames") return metadata[g.path]?.source === "mobygames";
+        else if (filterMode === "f95") return metadataUsesSource(metadata[g.path], "f95");
+        else if (filterMode === "dlsite") return metadataUsesSource(metadata[g.path], "dlsite");
+        else if (filterMode === "vndb") return metadataUsesSource(metadata[g.path], "vndb");
+        else if (filterMode === "mangagamer") return metadataUsesSource(metadata[g.path], "mangagamer");
+        else if (filterMode === "johren") return metadataUsesSource(metadata[g.path], "johren");
+        else if (filterMode === "fakku") return metadataUsesSource(metadata[g.path], "fakku");
+        else if (filterMode === "igdb") return metadataUsesSource(metadata[g.path], "igdb");
+        else if (filterMode === "rawg") return metadataUsesSource(metadata[g.path], "rawg");
+        else if (filterMode === "mobygames") return metadataUsesSource(metadata[g.path], "mobygames");
         else if (filterMode === "unlinked") return !metadata[g.path];
         else if (filterMode === "Playing" || filterMode === "Completed" || filterMode === "On Hold" || filterMode === "Dropped" || filterMode === "Plan to Play") {
           return customizations[g.path]?.status === filterMode;
@@ -7080,33 +9209,45 @@ export default function App() {
     });
   }, [sortMode, orderKey]); // eslint-disable-line
 
+  const groupedFiltered = useMemo(() => {
+    const seen = new Set<string>();
+    const next: OwnershipGroup[] = [];
+    for (const game of filtered) {
+      const group = ownershipGroupsState.byPath.get(game.path);
+      if (!group || seen.has(group.id)) continue;
+      seen.add(group.id);
+      next.push(group);
+    }
+    return next;
+  }, [filtered, ownershipGroupsState.byPath]);
+
   const sidebarItems = useMemo<SidebarItem[]>(() => {
     type FolderNode = {
       dir: string;
       label: string;
       children: Map<string, FolderNode>;
-      directGames: Game[];
+      directCards: OwnershipGroup[];
       totalGames: number;
     };
     const rootNode: FolderNode = {
       dir: "",
       label: "",
       children: new Map(),
-      directGames: [],
+      directCards: [],
       totalGames: 0,
     };
 
     const ensureChild = (parent: FolderNode, dir: string, label: string) => {
       let child = parent.children.get(dir);
       if (!child) {
-        child = { dir, label, children: new Map(), directGames: [], totalGames: 0 };
+        child = { dir, label, children: new Map(), directCards: [], totalGames: 0 };
         parent.children.set(dir, child);
       }
-      return child;
+      return child as FolderNode;
     };
 
-    for (const game of filtered) {
-      const parentDir = pathDirname(game.path);
+    for (const card of groupedFiltered) {
+      const parentDir = pathDirname(card.primaryGame.path);
       const relativeSegments = pathSegmentsRelativeToRoot(parentDir, libraryFolders);
       let cursor = rootNode;
       const accumulated: string[] = [];
@@ -7115,11 +9256,11 @@ export default function App() {
         const dirKey = accumulated.join("/");
         cursor = ensureChild(cursor, dirKey, segment);
       }
-      cursor.directGames.push(game);
+      cursor.directCards.push(card);
     }
 
     const finalizeCounts = (node: FolderNode): number => {
-      let total = node.directGames.length;
+      let total = node.directCards.length;
       for (const child of node.children.values()) {
         total += finalizeCounts(child);
       }
@@ -7148,11 +9289,11 @@ export default function App() {
       for (const child of childNodes) {
         flattenNode(child, childDepth, items);
       }
-      for (const game of node.directGames) {
+      for (const card of node.directCards) {
         if (shouldGroup) {
-          items.push({ kind: "group-game", game, dir: node.dir, depth: childDepth });
+          items.push({ kind: "group-game", game: card.primaryGame, card, dir: node.dir, depth: childDepth });
         } else {
-          items.push({ kind: "game", game, depth: childDepth });
+          items.push({ kind: "game", game: card.primaryGame, card, depth: childDepth });
         }
       }
     };
@@ -7160,7 +9301,7 @@ export default function App() {
     const items: SidebarItem[] = [];
     flattenNode(rootNode, 0, items);
     return items;
-  }, [filtered, libraryFolders, collapsedGroups]);
+  }, [groupedFiltered, libraryFolders, collapsedGroups]);
 
   // ── Virtual list for sidebar (handles 1000+ games smoothly) ──────────────
   /** Items actually visible (excludes group-game rows whose group is collapsed) */
@@ -7185,7 +9326,7 @@ export default function App() {
   useEffect(() => {
     if (!selected) return;
     const idx = visibleSidebarItems.findIndex(
-      (item) => (item.kind === "game" || item.kind === "group-game") && item.game.path === selected.path
+      (item) => (item.kind === "game" || item.kind === "group-game") && item.card.memberPaths.includes(selected.path)
     );
     if (idx !== -1) scrollToIndex(idx);
   }, [selected, visibleSidebarItems, scrollToIndex]);
@@ -7206,19 +9347,21 @@ export default function App() {
 
       if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") return;
 
-      const actionable = visibleSidebarItems.filter(i => i.kind === "game" || i.kind === "group-game").map(i => (i as any).game as Game);
+      const actionable = visibleSidebarItems.filter(i => i.kind === "game" || i.kind === "group-game").map(i => (i as SidebarItem & { card: OwnershipGroup }).card);
       if (actionable.length === 0) return;
 
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
-        let idx = selected ? actionable.findIndex(g => g.path === selected.path) : -1;
+        let idx = selected ? actionable.findIndex(card => card.memberPaths.includes(selected.path)) : -1;
 
         if (e.key === "ArrowDown") {
           const next = idx === -1 ? 0 : Math.min(idx + 1, actionable.length - 1);
-          openGameView(actionable[next]);
+          const card = actionable[next];
+          openGameView(card.memberGames.find((game) => game.path === selected?.path) ?? card.primaryGame);
         } else {
           const prev = idx === -1 ? actionable.length - 1 : Math.max(idx - 1, 0);
-          openGameView(actionable[prev]);
+          const card = actionable[prev];
+          openGameView(card.memberGames.find((game) => game.path === selected?.path) ?? card.primaryGame);
         }
       } else if (e.key === " ") {
         if (selected && !runningGamePath && syncState !== "syncing") {
@@ -7229,7 +9372,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [visibleSidebarItems, selected]);
+  }, [visibleSidebarItems, selected, openGameView, runningGamePath, syncState, launchGame]);
 
   /** path that is currently a drop target (for highlight) */
   const dragOverPath = useRef<string | null>(null);
@@ -7324,6 +9467,21 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, [goBack, goForward]);
+
+  useEffect(() => {
+    const onMouseNavigation = (e: MouseEvent) => {
+      if (e.button === 3) {
+        e.preventDefault();
+        goBack();
+      } else if (e.button === 4) {
+        e.preventDefault();
+        goForward();
+      }
+    };
+
+    window.addEventListener("mouseup", onMouseNavigation);
+    return () => window.removeEventListener("mouseup", onMouseNavigation);
   }, [goBack, goForward]);
 
   if (!isAppReady) {
@@ -8065,32 +10223,38 @@ export default function App() {
 
                   // ── Game row ──
                   const game = item.kind === "group-game" ? item.game : (item as { kind: "game"; game: Game }).game;
+                  const card = item.card;
                   const isGrouped = item.kind === "group-game";
                   const depth = item.depth;
                   // visibleSidebarItems already excludes collapsed group items, but keep the guard
                   if (isGrouped && collapsedGroups.has((item as { kind: "group-game"; dir: string; game: Game }).dir)) return null;
 
-                  const isSelected = selected?.path === game.path;
-                  const isDragOver = dragOverPathState === game.path;
-                  const m = metadata[game.path];
-                  const cus = customizations[game.path];
+                  const activeGroupGame = selected && card.memberPaths.includes(selected.path)
+                    ? card.memberGames.find((entry) => entry.path === selected.path) ?? game
+                    : game;
+                  const isSelected = !!selected && card.memberPaths.includes(selected.path);
+                  const isDragOver = dragOverPathState === card.primaryGame.path;
+                  const m = metadata[activeGroupGame.path] ?? metadata[game.path];
+                  const cus = customizations[activeGroupGame.path] ?? customizations[game.path];
                   const coverSrc = cus?.coverUrl ?? m?.cover_url;
-                  const name = gameDisplayName(game);
-                  const isFavItem = !!favGames[game.path];
-                  const isHiddenItem = !!hiddenGames[game.path];
+                  const name = card.displayName;
+                  const isFavItem = card.memberGames.some((entry) => !!favGames[entry.path]);
+                  const isHiddenItem = card.memberGames.every((entry) => !!hiddenGames[entry.path]);
+                  const groupStats = ownershipGroupStatsById[card.id] ?? { totalTime: 0, lastPlayed: 0, lastSession: 0, launchCount: 0 };
+                  const collectionMatches = collections.filter((collection) => card.memberGames.some((entry) => collection.gamePaths.includes(entry.path)));
                   return (
-                    <button key={game.path} onClick={() => openGameView(game)}
-                      onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, game }); }}
+                    <button key={card.id} onClick={() => openGameView(activeGroupGame)}
+                      onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, game: activeGroupGame }); }}
                       draggable={sortMode === "custom"}
                       onDragStart={(e) => {
-                        dragPath.current = game.path;
+                        dragPath.current = card.primaryGame.path;
                         if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
                       }}
                       onDragEnter={(e) => {
                         e.preventDefault();
-                        if (dragPath.current && dragPath.current !== game.path) {
-                          dragOverPath.current = game.path;
-                          setDragOverPathState(game.path);
+                        if (dragPath.current && dragPath.current !== card.primaryGame.path) {
+                          dragOverPath.current = card.primaryGame.path;
+                          setDragOverPathState(card.primaryGame.path);
                         }
                       }}
                       onDragOver={(e) => {
@@ -8098,15 +10262,15 @@ export default function App() {
                         if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
                       }}
                       onDragLeave={() => {
-                        if (dragOverPath.current === game.path) {
+                        if (dragOverPath.current === card.primaryGame.path) {
                           dragOverPath.current = null;
                           setDragOverPathState(null);
                         }
                       }}
                       onDrop={(e) => {
                         e.preventDefault();
-                        if (dragPath.current && dragPath.current !== game.path) {
-                          applyDrop(dragPath.current, game.path);
+                        if (dragPath.current && dragPath.current !== card.primaryGame.path) {
+                          applyDrop(dragPath.current, card.primaryGame.path);
                         }
                         dragPath.current = null;
                         dragOverPath.current = null;
@@ -8130,7 +10294,7 @@ export default function App() {
                       {viewMode === "compact" ? (
                         <div className="w-5 h-5 rounded flex-shrink-0 overflow-hidden relative" style={{ background: heroGradient(game.name) }}>
                           {coverSrc ? <img src={coverSrc} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-white" style={{ fontSize: "9px" }}>{name.charAt(0).toUpperCase()}</div>}
-                          <NsfwOverlay gamePath={game.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
+                          <NsfwOverlay gamePath={activeGroupGame.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
                         </div>
                       ) : (
                         <div className="w-9 h-9 rounded flex-shrink-0 overflow-hidden relative"
@@ -8146,7 +10310,7 @@ export default function App() {
                             <span className="absolute top-0 right-0 text-[8px] leading-none p-px"
                               style={{ color: "var(--color-warning)", textShadow: "0 0 3px var(--color-black)", zIndex: 11 }}>★</span>
                           )}
-                          <NsfwOverlay gamePath={game.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
+                          <NsfwOverlay gamePath={activeGroupGame.path} meta={m} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} small={true} />
                         </div>
                       )}
                       <div className="min-w-0 flex-1">
@@ -8156,6 +10320,12 @@ export default function App() {
                               style={{ color: "var(--color-text-dim)" }}>⠿</span>
                           )}
                           <p className="text-xs font-medium truncate flex-1">{name}</p>
+                          {card.providerLabels.length > 1 && (
+                            <span className="text-[9px] px-1 rounded flex-shrink-0"
+                              style={{ background: "var(--color-accent-deep)", color: "var(--color-accent-soft)" }}>
+                              {card.providerSummary}
+                            </span>
+                          )}
                           {isHiddenItem && (
                             <span className="text-[9px] px-1 rounded flex-shrink-0"
                               style={{ background: "var(--color-panel-3)", color: "var(--color-text-dim)" }}>{t('game.hidden')}</span>
@@ -8164,16 +10334,16 @@ export default function App() {
                         {viewMode !== "compact" && (
                           <>
                             <p className="text-[10px] truncate" style={{ color: "var(--color-text-dim)" }}>
-                              {stats[game.path]?.totalTime > 0
-                                ? `${formatTime(stats[game.path].totalTime)}${(stats[game.path].launchCount ?? 0) > 0
-                                  ? ` · ${t('game.times_played', { count: stats[game.path].launchCount })}`
+                              {groupStats.totalTime > 0
+                                ? `${formatTime(groupStats.totalTime)}${(groupStats.launchCount ?? 0) > 0
+                                  ? ` · ${t('game.times_played', { count: groupStats.launchCount })}`
                                   : ""
                                 }`
                                 : t('library.status.never_played')}
                             </p>
-                            {collections.some((c) => c.gamePaths.includes(game.path)) && (
+                            {collectionMatches.length > 0 && (
                               <div className="flex gap-0.5 mt-0.5">
-                                {collections.filter((c) => c.gamePaths.includes(game.path)).map((c) => (
+                                {collectionMatches.map((c) => (
                                   <span key={c.id} title={c.name} className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: c.color }} />
                                 ))}
                               </div>
@@ -8314,33 +10484,51 @@ export default function App() {
         ) : viewMode === "grid" && !selected ? (
           <div className="flex-1 overflow-y-auto px-6 py-6" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
             <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
-              {filtered.map(game => {
-                const isFavItem = !!favGames[game.path];
-                const cover = customizations[game.path]?.coverUrl ?? metadata[game.path]?.cover_url;
+              {groupedFiltered.map((card) => {
+                const activeGroupGame = card.primaryGame;
+                const isFavItem = card.memberGames.some((game) => !!favGames[game.path]);
+                const cover = customizations[activeGroupGame.path]?.coverUrl
+                  ?? metadata[activeGroupGame.path]?.cover_url
+                  ?? customizations[card.primaryGame.path]?.coverUrl
+                  ?? metadata[card.primaryGame.path]?.cover_url;
+                const groupStats = ownershipGroupStatsById[card.id] ?? { totalTime: 0, lastPlayed: 0, lastSession: 0, launchCount: 0 };
                 return (
-                  <button key={game.path} onClick={() => openGameView(game)} className="flex flex-col gap-2 group text-left relative transition-transform hover:scale-105">
+                  <button key={card.id} onClick={() => openGameView(activeGroupGame)} className="flex flex-col gap-2 group text-left relative transition-transform hover:scale-105">
                     <div className="aspect-[2/3] w-full bg-[var(--color-panel)] rounded-lg overflow-hidden border border-[var(--color-border)] group-hover:border-[var(--color-accent)] relative shadow-lg">
                       {cover ? (
                         <img src={cover} className="w-full h-full object-cover" alt="" />
                       ) : syncState === "syncing" ? (
                         <div className="w-full h-full animate-pulse bg-[var(--color-border)]" />
                       ) : (
-                        <div className="w-full h-full flex items-center justify-center p-4 text-center text-sm font-bold text-white" style={{ background: heroGradient(game.name) }}>
-                          {gameDisplayName(game)}
+                        <div className="w-full h-full flex items-center justify-center p-4 text-center text-sm font-bold text-white" style={{ background: heroGradient(card.primaryGame.name) }}>
+                          {card.displayName}
                         </div>
                       )}
                       {isFavItem && (
                         <span className="absolute top-2 right-2 text-sm leading-none" style={{ color: "var(--color-warning)", textShadow: "0 0 3px var(--color-black)", zIndex: 11 }}>★</span>
                       )}
 
-                      <NsfwOverlay gamePath={game.path} meta={metadata[game.path]} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} />
+                      {card.providerLabels.length > 1 && (
+                        <span className="absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                          style={{ background: "rgba(10, 20, 34, 0.82)", color: "var(--color-accent-soft)", border: "1px solid var(--color-accent-mid)", zIndex: 11 }}>
+                          {card.providerSummary}
+                        </span>
+                      )}
+
+                      <NsfwOverlay gamePath={activeGroupGame.path} meta={metadata[activeGroupGame.path] ?? metadata[card.primaryGame.path]} appSettings={appSettings} revealed={revealedNsfw} onReveal={revealNsfwPath} />
                     </div>
-                    <p className="text-xs font-semibold text-[var(--color-text)] truncate px-1">{gameDisplayName(game)}</p>
+                    <div className="px-1">
+                      <p className="text-xs font-semibold text-[var(--color-text)] truncate">{card.displayName}</p>
+                      <p className="text-[10px] truncate" style={{ color: "var(--color-text-dim)" }}>
+                        {card.providerLabels.length > 1 ? `${card.providerLabels.length} launch providers` : card.providerSummary}
+                        {groupStats.totalTime > 0 ? ` · ${formatTime(groupStats.totalTime)}` : ""}
+                      </p>
+                    </div>
                   </button>
                 )
               })}
             </div>
-            {filtered.length === 0 && <div className="text-center py-12 text-[var(--color-text-muted)]">{t('library.main.no_games_match')}</div>}
+            {groupedFiltered.length === 0 && <div className="text-center py-12 text-[var(--color-text-muted)]">{t('library.main.no_games_match')}</div>}
           </div>
         ) : !selected ? (
           games.length === 0 ? (
@@ -8410,6 +10598,17 @@ export default function App() {
             stat={stats[selected.path] || { totalTime: 0, lastPlayed: 0, lastSession: 0 }}
             meta={metadata[selected.path]}
             customization={customizations[selected.path] ?? {}}
+            launchOptions={selectedOwnershipGroup && selectedOwnershipGroup.memberGames.length > 1
+              ? selectedOwnershipGroup.memberGames.map((entry) => ({
+                path: entry.path,
+                label: `${launchProviderLabelForGame(entry, customizations[entry.path])}${entry.uninstalled ? " · Uninstalled" : " · Installed"}`,
+              }))
+              : []}
+            currentLaunchOptionPath={selected.path}
+            onSelectLaunchOption={(path) => {
+              const nextGame = selectedOwnershipGroup?.memberGames.find((entry) => entry.path === path) ?? games.find((entry) => entry.path === path) ?? null;
+              if (nextGame) openGameView(nextGame);
+            }}
             f95LoggedIn={f95LoggedIn}
             screenshots={screenshots[selected.path] ?? []}
             isHidden={!!hiddenGames[selected.path]}
@@ -8433,7 +10632,32 @@ export default function App() {
             onOpenF95Login={() => setShowF95Login(true)}
             onClearMeta={handleClearMeta}
             onUpdate={() => setShowUpdateModal(true)}
+            onLaunchStoreGame={selected.uninstalled
+              ? (() => {
+                  const customization = customizations[selected.path];
+                  const remoteInstallLabel = remoteInstallLabelForCustomization(customization);
+                  const openStoreLabel = openStoreLabelForCustomization(customization);
+                  if (!remoteInstallLabel && !openStoreLabel) return null;
+                  return () => {
+                    if (remoteInstallLabel) {
+                      void installSelectedRemoteStoreGame();
+                      return;
+                    }
+                    void launchSelectedStoreGame();
+                  };
+                })()
+              : null}
+            launchStoreLabel={selected.uninstalled
+              ? remoteInstallLabelForCustomization(customizations[selected.path]) ?? openStoreLabelForCustomization(customizations[selected.path])
+              : null}
+            onRemoteInstall={selected && !selected.uninstalled && remoteInstallLabelForCustomization(customizations[selected.path])
+              ? () => { void installSelectedRemoteStoreGame(); }
+              : null}
+            remoteInstallLabel={selected && !selected.uninstalled
+              ? remoteInstallLabelForCustomization(customizations[selected.path])
+              : null}
             onBackupSaves={() => backupSaveFilesForPath(selected.path)}
+            onBackupSavesToCloud={() => { void backupSaveFilesToCloudForPath(selected.path); }}
             wineIntroVideoAssessment={selectedWineMediaAssessment}
             shaderCachePanel={shaderCachePanel}
             onInstallMediaFixes={platform !== "windows" ? async () => {
@@ -8464,6 +10688,7 @@ export default function App() {
             }: undefined}
             onToggleHide={toggleHide}
             onToggleFav={toggleFav}
+            onTransferSaves={() => setShowSaveTransferModal(true)}
             onOpenCustomize={() => setShowCustomizeModal(true)}
             onSaveCustomization={(changes) => {
               const nc = { ...(customizations[selected.path] || {}), ...changes };
@@ -8556,14 +10781,28 @@ export default function App() {
             onWineSettings={() => setShowWineSettings(true)}
             onSteamImport={() => setShowSteamImport(true)}
             onSteamLibraryImport={() => setShowSteamLibraryImport(true)}
+            onEpicImport={() => setShowEpicImport(true)}
             onLutrisImport={() => setShowLutrisImport(true)}
             onPlayniteImport={() => setShowPlayniteImport(true)}
             onGogImport={() => setShowGogImport(true)}
+            onProtocolStoreImport={() => setShowProtocolStoreImport(true)}
+            onExoticImport={() => setShowExoticImport(true)}
+            onItchImport={() => setShowItchImport(true)}
             onAppUpdate={() => setShowAppUpdateModal(true)}
             onOpenWhatsNew={() => setShowWhatsNewModal(true)}
             appSettings={appSettings}
             defaultSettings={DEFAULT_SETTINGS}
-            onSaveSettings={(s) => { setAppSettings(s); saveCache(SK_SETTINGS, s); }}
+            onSaveSettings={persistAppSettings}
+            viewMode={viewMode}
+            sidebarWidth={sidebarWidth}
+            layoutPresets={layoutPresets}
+            activeLayoutPresetId={activeLayoutPresetId}
+            onViewModeChange={setViewMode}
+            onSidebarWidthChange={persistSidebarWidth}
+            onApplyLayoutPreset={applyLayoutPreset}
+            onSaveLayoutPreset={saveCurrentLayoutPreset}
+            onUpdateLayoutPreset={updateLayoutPreset}
+            onDeleteLayoutPreset={deleteLayoutPreset}
             libraryProfiles={profileRegistry.profiles}
             activeLibraryProfileId={profileRegistry.activeProfileId}
             onSwitchLibraryProfile={handleSwitchLibraryProfile}
@@ -8600,6 +10839,9 @@ export default function App() {
             onRunDbVacuum={() => { runDbVacuum(false).catch(() => { }); }}
             dbVacuumStatus={dbVacuumStatus}
             isDbVacuumBusy={isDbVacuumBusy}
+            onRunCloudBackupNow={() => { runAutoCloudBackup().catch(() => { }); }}
+            cloudBackupNowStatus={autoCloudBackupJob?.detail || null}
+            isCloudBackupNowBusy={isAutoCloudBackupBusy}
           />
         )
       }
@@ -8809,6 +11051,17 @@ export default function App() {
         )
       }
       {
+        showSaveTransferModal && selected && (
+          <SaveTransferModal
+            gameName={selected.name}
+            gamePath={selected.path}
+            engine={metadata[selected.path]?.engine}
+            companyName={metadata[selected.path]?.developer}
+            onClose={() => setShowSaveTransferModal(false)}
+          />
+        )
+      }
+      {
         showF95Login && (
           <F95LoginModal
             onClose={() => setShowF95Login(false)}
@@ -8893,8 +11146,29 @@ export default function App() {
         showSteamLibraryImport && (
           <SteamLibraryImportModal
             games={games}
+            customizations={customizations}
             onImport={handleSteamLibraryImport}
             onClose={() => setShowSteamLibraryImport(false)}
+          />
+        )
+      }
+      {
+        showEpicImport && (
+          <EpicLegendaryImportModal
+            games={games}
+            customizations={customizations}
+            onImport={handleEpicImport}
+            onClose={() => setShowEpicImport(false)}
+          />
+        )
+      }
+      {
+        showItchImport && (
+          <ItchImportModal
+            games={games}
+            customizations={customizations}
+            onImportInstalled={handleItchInstalledImport}
+            onClose={() => setShowItchImport(false)}
           />
         )
       }
@@ -8930,6 +11204,32 @@ export default function App() {
             accent="#4f90d9"
             onImport={handleInteropImport}
             onClose={() => setShowGogImport(false)}
+          />
+        )
+      }
+      {
+        showProtocolStoreImport && (
+          <InteropImportModal
+            games={games}
+            command="import_protocol_store_games"
+            title="Import from EA App / Ubisoft Connect / Rockstar"
+            subtitle="Scan Windows uninstall entries, Ubisoft install registry, and Origin local manifests to attach launcher-managed games with protocol-based launch support."
+            accent="#ff8aa5"
+            onImport={handleInteropImport}
+            onClose={() => setShowProtocolStoreImport(false)}
+          />
+        )
+      }
+      {
+        showExoticImport && (
+          <InteropImportModal
+            games={games}
+            command="import_exotic_store_games"
+            title="Import from GameJolt / Battle.net"
+            subtitle="Experimental: detect installed GameJolt and Battle.net titles from local manifests or registry and prefill best-effort public store metadata."
+            accent="#e6b85c"
+            onImport={handleInteropImport}
+            onClose={() => setShowExoticImport(false)}
           />
         )
       }

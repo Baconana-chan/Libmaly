@@ -3,12 +3,13 @@ use reqwest_cookie_store::{CookieStore, CookieStoreMutex};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::BufReader;
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::data_paths::app_data_root;
+use crate::vault;
 
 // ── Search Suggestion Cache & Rate Limiter ───────────────────────────────
 
@@ -68,17 +69,28 @@ static SEARCH_CACHE: LazyLock<Mutex<SearchCache>> = LazyLock::new(|| Mutex::new(
 // ── Cookie store with disk persistence ────────────────────────────────────
 
 static COOKIE_STORE: Mutex<Option<Arc<CookieStoreMutex>>> = Mutex::new(None);
+const F95_COOKIE_VAULT_KEY: &str = "cookies::f95";
 
 fn cookies_path() -> PathBuf {
     app_data_root().join("f95cookies.json")
 }
 
 fn load_or_new_store() -> Arc<CookieStoreMutex> {
+    if let Ok(Some(raw)) = vault::get_secret(F95_COOKIE_VAULT_KEY) {
+        #[allow(deprecated)]
+        if let Ok(store) = CookieStore::load_json(Cursor::new(raw.into_bytes())) {
+            return Arc::new(CookieStoreMutex::new(store));
+        }
+    }
     let path = cookies_path();
     if path.exists() {
-        if let Ok(f) = std::fs::File::open(&path) {
+        if let Ok(bytes) = std::fs::read(&path) {
             #[allow(deprecated)]
-            if let Ok(store) = CookieStore::load_json(BufReader::new(f)) {
+            if let Ok(store) = CookieStore::load_json(Cursor::new(bytes.clone())) {
+                if let Ok(raw) = String::from_utf8(bytes) {
+                    let _ = vault::set_secret(F95_COOKIE_VAULT_KEY, &raw);
+                    let _ = std::fs::remove_file(&path);
+                }
                 return Arc::new(CookieStoreMutex::new(store));
             }
         }
@@ -87,14 +99,15 @@ fn load_or_new_store() -> Arc<CookieStoreMutex> {
 }
 
 fn save_cookies(store: &CookieStoreMutex) {
-    let path = cookies_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut f) = std::fs::File::create(&path) {
+    let mut raw = Vec::new();
+    {
         let locked = store.lock().unwrap();
         #[allow(deprecated)]
-        let _ = locked.save_json(&mut f);
+        let _ = locked.save_json(&mut raw);
+    }
+    if let Ok(serialized) = String::from_utf8(raw) {
+        let _ = vault::set_secret(F95_COOKIE_VAULT_KEY, &serialized);
+        let _ = std::fs::remove_file(cookies_path());
     }
 }
 
@@ -127,10 +140,13 @@ pub fn http() -> Client {
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct GameMetadata {
     pub source: String, // "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku"
+    pub source_label: Option<String>,
     pub source_url: String,
     pub title: Option<String>,
     pub version: Option<String>,
     pub developer: Option<String>,
+    pub publisher: Option<String>,
+    pub genres: Vec<String>,
     pub overview: Option<String>,
     /// For DLsite: HTML fragment (may contain <img>). For F95: plain text paragraphs (\n separated).
     pub overview_html: Option<String>,
@@ -157,6 +173,90 @@ pub struct GameMetadata {
     pub product_format: Option<String>,
     pub file_format: Option<String>,
     pub file_size: Option<String>,
+}
+
+fn format_relation_entry(label: &str, title: &str, target: Option<&str>) -> Option<String> {
+    let relation_label = label.trim();
+    let relation_title = title.trim();
+    if relation_label.is_empty() || relation_title.is_empty() {
+        return None;
+    }
+
+    Some(match target.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(target) => format!("{}: {} ({})", relation_label, relation_title, target),
+        None => format!("{}: {}", relation_label, relation_title),
+    })
+}
+
+fn push_relation_entry(relations: &mut Vec<String>, seen: &mut HashSet<String>, label: &str, title: Option<&str>, target: Option<&str>) {
+    if let Some(entry) = title.and_then(|value| format_relation_entry(label, value, target)) {
+        if seen.insert(entry.clone()) {
+            relations.push(entry);
+        }
+    }
+}
+
+fn push_relation_entries<I>(relations: &mut Vec<String>, seen: &mut HashSet<String>, label: &str, items: I)
+where
+    I: IntoIterator<Item = (Option<String>, Option<String>)>,
+{
+    for (title, target) in items {
+        push_relation_entry(relations, seen, label, title.as_deref(), target.as_deref());
+    }
+}
+
+fn igdb_game_url(slug: Option<&str>, url: Option<&str>) -> Option<String> {
+    url.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| slug.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()).map(|slug| format!("https://www.igdb.com/games/{}", slug)))
+}
+
+async fn fetch_rawg_relation_page(api_key: &str, slug: &str, endpoint: &str, page_size: usize) -> Result<Vec<(Option<String>, Option<String>)>, String> {
+    #[derive(Deserialize)]
+    struct RawgRelationListResponse {
+        results: Option<Vec<RawgRelationItem>>,
+    }
+
+    #[derive(Deserialize)]
+    struct RawgRelationItem {
+        name: Option<String>,
+        slug: Option<String>,
+    }
+
+    let req_url = format!(
+        "https://api.rawg.io/api/games/{}/{endpoint}?key={}&page_size={}",
+        slug, api_key, page_size
+    );
+
+    let resp = http()
+        .get(&req_url)
+        .send()
+        .await
+        .map_err(|e| format!("RAWG relation request failed for {}: {}", endpoint, e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("RAWG relation request HTTP {} for {}", resp.status(), endpoint));
+    }
+
+    let parsed: RawgRelationListResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse RAWG relation response for {}: {}", endpoint, e))?;
+
+    Ok(parsed
+        .results
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| {
+            let url = item
+                .slug
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| format!("https://rawg.io/games/{}", value));
+            (item.name, url)
+        })
+        .collect())
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -364,7 +464,7 @@ fn validate_metadata_shape(source_id: &str, source_label: &str, meta: &GameMetad
     Ok(())
 }
 
-fn finalize_scrape_result(
+pub(crate) fn finalize_scrape_result(
     source_id: &str,
     source_label: &str,
     url: &str,
@@ -496,6 +596,7 @@ pub async fn f95_login(username: String, password: String) -> Result<bool, Strin
 pub async fn f95_logout() -> Result<(), String> {
     // Replace the store with a fresh empty one and delete the cookie file
     *COOKIE_STORE.lock().unwrap() = Some(Arc::new(CookieStoreMutex::new(CookieStore::new(None))));
+    vault::delete_secret(F95_COOKIE_VAULT_KEY)?;
     let _ = std::fs::remove_file(cookies_path());
     Ok(())
 }
@@ -522,6 +623,7 @@ pub async fn f95_is_logged_in() -> Result<bool, String> {
 static DLSITE_STORE: Mutex<Option<Arc<CookieStoreMutex>>> = Mutex::new(None);
 static SUGGEST_CACHE: std::sync::OnceLock<Mutex<HashMap<String, Vec<SearchResultItem>>>> =
     std::sync::OnceLock::new();
+const DLSITE_COOKIE_VAULT_KEY: &str = "cookies::dlsite";
 
 fn suggest_cache() -> &'static Mutex<HashMap<String, Vec<SearchResultItem>>> {
     SUGGEST_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -532,11 +634,21 @@ fn dlsite_cookies_path() -> PathBuf {
 }
 
 fn dlsite_load_or_new_store() -> Arc<CookieStoreMutex> {
+    if let Ok(Some(raw)) = vault::get_secret(DLSITE_COOKIE_VAULT_KEY) {
+        #[allow(deprecated)]
+        if let Ok(store) = CookieStore::load_json(Cursor::new(raw.into_bytes())) {
+            return Arc::new(CookieStoreMutex::new(store));
+        }
+    }
     let path = dlsite_cookies_path();
     if path.exists() {
-        if let Ok(f) = std::fs::File::open(&path) {
+        if let Ok(bytes) = std::fs::read(&path) {
             #[allow(deprecated)]
-            if let Ok(store) = CookieStore::load_json(BufReader::new(f)) {
+            if let Ok(store) = CookieStore::load_json(Cursor::new(bytes.clone())) {
+                if let Ok(raw) = String::from_utf8(bytes) {
+                    let _ = vault::set_secret(DLSITE_COOKIE_VAULT_KEY, &raw);
+                    let _ = std::fs::remove_file(&path);
+                }
                 return Arc::new(CookieStoreMutex::new(store));
             }
         }
@@ -545,14 +657,15 @@ fn dlsite_load_or_new_store() -> Arc<CookieStoreMutex> {
 }
 
 fn dlsite_save_cookies(store: &CookieStoreMutex) {
-    let path = dlsite_cookies_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut f) = std::fs::File::create(&path) {
+    let mut raw = Vec::new();
+    {
         let locked = store.lock().unwrap();
         #[allow(deprecated)]
-        let _ = locked.save_json(&mut f);
+        let _ = locked.save_json(&mut raw);
+    }
+    if let Ok(serialized) = String::from_utf8(raw) {
+        let _ = vault::set_secret(DLSITE_COOKIE_VAULT_KEY, &serialized);
+        let _ = std::fs::remove_file(dlsite_cookies_path());
     }
 }
 
@@ -648,6 +761,7 @@ pub async fn dlsite_login(login_id: String, password: String) -> Result<bool, St
 #[tauri::command]
 pub async fn dlsite_logout() -> Result<(), String> {
     *DLSITE_STORE.lock().unwrap() = Some(Arc::new(CookieStoreMutex::new(CookieStore::new(None))));
+    vault::delete_secret(DLSITE_COOKIE_VAULT_KEY)?;
     let _ = std::fs::remove_file(dlsite_cookies_path());
     Ok(())
 }
@@ -666,17 +780,28 @@ pub async fn dlsite_is_logged_in() -> Result<bool, String> {
 
 // ── FAKKU auth ───────────────────────────────────────────────────────────────
 static FAKKU_STORE: Mutex<Option<Arc<CookieStoreMutex>>> = Mutex::new(None);
+const FAKKU_COOKIE_VAULT_KEY: &str = "cookies::fakku";
 
 fn fakku_cookies_path() -> PathBuf {
     app_data_root().join("fakku_cookies.json")
 }
 
 fn fakku_load_or_new_store() -> Arc<CookieStoreMutex> {
+    if let Ok(Some(raw)) = vault::get_secret(FAKKU_COOKIE_VAULT_KEY) {
+        #[allow(deprecated)]
+        if let Ok(store) = CookieStore::load_json(Cursor::new(raw.into_bytes())) {
+            return Arc::new(CookieStoreMutex::new(store));
+        }
+    }
     let path = fakku_cookies_path();
     if path.exists() {
-        if let Ok(f) = std::fs::File::open(&path) {
+        if let Ok(bytes) = std::fs::read(&path) {
             #[allow(deprecated)]
-            if let Ok(store) = CookieStore::load_json(BufReader::new(f)) {
+            if let Ok(store) = CookieStore::load_json(Cursor::new(bytes.clone())) {
+                if let Ok(raw) = String::from_utf8(bytes) {
+                    let _ = vault::set_secret(FAKKU_COOKIE_VAULT_KEY, &raw);
+                    let _ = std::fs::remove_file(&path);
+                }
                 return Arc::new(CookieStoreMutex::new(store));
             }
         }
@@ -685,14 +810,15 @@ fn fakku_load_or_new_store() -> Arc<CookieStoreMutex> {
 }
 
 fn fakku_save_cookies(store: &CookieStoreMutex) {
-    let path = fakku_cookies_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut f) = std::fs::File::create(&path) {
+    let mut raw = Vec::new();
+    {
         let locked = store.lock().unwrap();
         #[allow(deprecated)]
-        let _ = locked.save_json(&mut f);
+        let _ = locked.save_json(&mut raw);
+    }
+    if let Ok(serialized) = String::from_utf8(raw) {
+        let _ = vault::set_secret(FAKKU_COOKIE_VAULT_KEY, &serialized);
+        let _ = std::fs::remove_file(fakku_cookies_path());
     }
 }
 
@@ -852,6 +978,7 @@ pub async fn fakku_login(email: String, password: String) -> Result<bool, String
 #[tauri::command]
 pub async fn fakku_logout() -> Result<(), String> {
     *FAKKU_STORE.lock().unwrap() = Some(Arc::new(CookieStoreMutex::new(CookieStore::new(None))));
+    vault::delete_secret(FAKKU_COOKIE_VAULT_KEY)?;
     let _ = std::fs::remove_file(fakku_cookies_path());
     Ok(())
 }
@@ -1120,10 +1247,13 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
 
         Ok(GameMetadata {
             source: "f95".into(),
+            source_label: Some("F95zone".into()),
             source_url: normalized_url.clone(),
             title: if title.is_empty() { None } else { Some(title) },
             version,
             developer,
+            publisher: None,
+            genres: Vec::new(),
             overview,
             overview_html: overview_html_f95,
             cover_url,
@@ -1387,10 +1517,13 @@ pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> 
 
         Ok(GameMetadata {
             source: "dlsite".into(),
+            source_label: Some("DLsite".into()),
             source_url: url.clone(),
             title,
             version: None,
             developer,
+            publisher: None,
+            genres: Vec::new(),
             overview,
             overview_html,
             cover_url,
@@ -1581,10 +1714,13 @@ pub async fn fetch_vndb_metadata(url: String) -> Result<GameMetadata, String> {
 
         Ok(GameMetadata {
             source: "vndb".into(),
+            source_label: Some("VNDB".into()),
             source_url: url.clone(),
             title,
             version: None,
             developer,
+            publisher: None,
+            genres: Vec::new(),
             overview,
             overview_html: None,
             cover_url,
@@ -1829,10 +1965,13 @@ async fn fetch_store_metadata(url: String) -> Result<GameMetadata, String> {
 
         Ok(GameMetadata {
             source: source_id.to_string(),
+            source_label: Some(source_label.to_string()),
             source_url: source_url.clone(),
             title,
             version: None,
             developer,
+            publisher: None,
+            genres: Vec::new(),
             overview,
             overview_html: None,
             cover_url,
@@ -2560,6 +2699,29 @@ struct ApiKeys {
     igdb_client_secret: Option<String>,
     rawg_api_key: Option<String>,
     mobygames_api_key: Option<String>,
+    itch_io_api_key: Option<String>,
+}
+
+fn api_key_vault_name(provider: &str) -> Option<&'static str> {
+    match provider {
+        "igdb_client_id" => Some("api::igdb_client_id"),
+        "igdb_client_secret" => Some("api::igdb_client_secret"),
+        "rawg" => Some("api::rawg"),
+        "mobygames" => Some("api::mobygames"),
+        "itch_io" => Some("api::itch_io"),
+        _ => None,
+    }
+}
+
+fn legacy_api_key_value(keys: &ApiKeys, provider: &str) -> Option<String> {
+    match provider {
+        "igdb_client_id" => keys.igdb_client_id.clone(),
+        "igdb_client_secret" => keys.igdb_client_secret.clone(),
+        "rawg" => keys.rawg_api_key.clone(),
+        "mobygames" => keys.mobygames_api_key.clone(),
+        "itch_io" => keys.itch_io_api_key.clone(),
+        _ => None,
+    }
 }
 
 fn load_api_keys() -> ApiKeys {
@@ -2574,56 +2736,48 @@ fn load_api_keys() -> ApiKeys {
     ApiKeys::default()
 }
 
-fn save_api_keys(keys: &ApiKeys) {
-    let path = api_keys_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut f) = std::fs::File::create(&path) {
-        let _ = serde_json::to_writer_pretty(&mut f, keys);
-    }
-}
-
 #[tauri::command]
 pub fn set_api_key(provider: String, key: String) -> Result<(), String> {
-    let mut keys = load_api_keys();
-    match provider.as_str() {
-        "igdb_client_id" => keys.igdb_client_id = Some(key),
-        "igdb_client_secret" => keys.igdb_client_secret = Some(key),
-        "rawg" => keys.rawg_api_key = Some(key),
-        "mobygames" => keys.mobygames_api_key = Some(key),
-        _ => return Err(format!("Unknown provider: {}", provider)),
+    let Some(vault_name) = api_key_vault_name(&provider) else {
+        return Err(format!("Unknown provider: {}", provider));
+    };
+    if key.trim().is_empty() {
+        vault::delete_secret(vault_name)?;
+    } else {
+        vault::set_secret(vault_name, &key)?;
     }
-    save_api_keys(&keys);
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_api_key(provider: String) -> Option<String> {
-    let keys = load_api_keys();
-    match provider.as_str() {
-        "igdb_client_id" => keys.igdb_client_id,
-        "igdb_client_secret" => keys.igdb_client_secret,
-        "rawg" => keys.rawg_api_key,
-        "mobygames" => keys.mobygames_api_key,
-        _ => None,
+    let vault_name = api_key_vault_name(&provider)?;
+    if let Ok(Some(value)) = vault::get_secret(vault_name) {
+        return Some(value);
     }
+    let keys = load_api_keys();
+    let legacy = legacy_api_key_value(&keys, &provider);
+    if let Some(ref value) = legacy {
+        let _ = vault::set_secret(vault_name, value);
+        let _ = std::fs::remove_file(api_keys_path());
+    }
+    legacy
 }
 
 // ── IGDB Metadata Fetcher ─────────────────────────────────────────────────────
 
-static IGDB_ACCESS_TOKEN: Mutex<Option<(String, u64)>> = Mutex::new(None); // (token, expiry_ms)
+static IGDB_ACCESS_TOKEN: Mutex<Option<(String, String, u64)>> = Mutex::new(None); // (profile_id, token, expiry_ms)
 
 async fn get_igdb_access_token() -> Result<String, String> {
-    let keys = load_api_keys();
-    let client_id = keys.igdb_client_id.ok_or("IGDB Client ID not configured")?;
-    let client_secret = keys.igdb_client_secret.ok_or("IGDB Client Secret not configured")?;
+    let profile_id = vault::current_profile_id();
+    let client_id = get_api_key("igdb_client_id".to_string()).ok_or("IGDB Client ID not configured")?;
+    let client_secret = get_api_key("igdb_client_secret".to_string()).ok_or("IGDB Client Secret not configured")?;
 
     // Check if we have a valid cached token
     {
         let guard = IGDB_ACCESS_TOKEN.lock().unwrap();
-        if let Some((token, expiry)) = guard.as_ref() {
-            if now_ms() < *expiry {
+        if let Some((cached_profile_id, token, expiry)) = guard.as_ref() {
+            if cached_profile_id == &profile_id && now_ms() < *expiry {
                 return Ok(token.clone());
             }
         }
@@ -2663,7 +2817,7 @@ async fn get_igdb_access_token() -> Result<String, String> {
     // Cache the token
     {
         let mut guard = IGDB_ACCESS_TOKEN.lock().unwrap();
-        *guard = Some((token_resp.access_token.clone(), expiry_ms));
+        *guard = Some((profile_id, token_resp.access_token.clone(), expiry_ms));
     }
 
     Ok(token_resp.access_token)
@@ -2684,7 +2838,21 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
         r#"
         fields name, summary, cover.url, screenshots.url, genres.name, involved_companies.company.name,
                involved_companies.developer, involved_companies.publisher, release_dates.date,
-               rating, rating_count, platforms.name, websites.url, version_parent.name;
+               rating, rating_count, platforms.name, websites.url,
+               version_parent.name, version_parent.slug, version_parent.url,
+               parent_game.name, parent_game.slug, parent_game.url,
+               collections.name, collections.slug, collections.url,
+               franchise.name, franchise.slug, franchise.url,
+               franchises.name, franchises.slug, franchises.url,
+               dlcs.name, dlcs.slug, dlcs.url,
+               expanded_games.name, expanded_games.slug, expanded_games.url,
+               expansions.name, expansions.slug, expansions.url,
+               forks.name, forks.slug, forks.url,
+               ports.name, ports.slug, ports.url,
+               remakes.name, remakes.slug, remakes.url,
+               remasters.name, remasters.slug, remasters.url,
+               similar_games.name, similar_games.slug, similar_games.url,
+               standalone_expansions.name, standalone_expansions.slug, standalone_expansions.url;
         where slug = "{}";
         limit 1;
     "#,
@@ -2694,7 +2862,7 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
     let resp = http()
         .post("https://api.igdb.com/v4/games")
         .header("Authorization", format!("Bearer {}", token))
-        .header("Client-ID", load_api_keys().igdb_client_id.unwrap_or_default())
+        .header("Client-ID", get_api_key("igdb_client_id".to_string()).unwrap_or_default())
         .body(query)
         .send()
         .await
@@ -2719,7 +2887,20 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
         platforms: Option<Vec<IgdbPlatform>>,
         #[allow(dead_code)]
         websites: Option<Vec<IgdbWebsite>>,
+        parent_game: Option<IgdbNamedResource>,
         version_parent: Option<IgdbVersionParent>,
+        collections: Option<Vec<IgdbNamedResource>>,
+        franchise: Option<IgdbNamedResource>,
+        franchises: Option<Vec<IgdbNamedResource>>,
+        dlcs: Option<Vec<IgdbNamedResource>>,
+        expanded_games: Option<Vec<IgdbNamedResource>>,
+        expansions: Option<Vec<IgdbNamedResource>>,
+        forks: Option<Vec<IgdbNamedResource>>,
+        ports: Option<Vec<IgdbNamedResource>>,
+        remakes: Option<Vec<IgdbNamedResource>>,
+        remasters: Option<Vec<IgdbNamedResource>>,
+        similar_games: Option<Vec<IgdbNamedResource>>,
+        standalone_expansions: Option<Vec<IgdbNamedResource>>,
     }
 
     #[derive(Deserialize)]
@@ -2765,10 +2946,14 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
         url: Option<String>,
     }
 
-    #[derive(Deserialize)]
-    struct IgdbVersionParent {
+    #[derive(Deserialize, Clone)]
+    struct IgdbNamedResource {
         name: Option<String>,
+        slug: Option<String>,
+        url: Option<String>,
     }
+
+    type IgdbVersionParent = IgdbNamedResource;
 
     let games: Vec<IgdbGame> = resp
         .json()
@@ -2845,18 +3030,167 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
         .as_ref()
         .map(|p| p.iter().filter_map(|pl| pl.name.clone()).collect::<Vec<_>>().join(", "));
 
+    let mut relations = Vec::new();
+    let mut seen_relations = HashSet::new();
+    let version_parent_url = game
+        .version_parent
+        .as_ref()
+        .and_then(|value| igdb_game_url(value.slug.as_deref(), value.url.as_deref()));
+    let parent_game_url = game
+        .parent_game
+        .as_ref()
+        .and_then(|value| igdb_game_url(value.slug.as_deref(), value.url.as_deref()));
+    let franchise_url = game
+        .franchise
+        .as_ref()
+        .and_then(|value| igdb_game_url(value.slug.as_deref(), value.url.as_deref()));
+    push_relation_entry(
+        &mut relations,
+        &mut seen_relations,
+        "version",
+        game.version_parent.as_ref().and_then(|value| value.name.as_deref()),
+        version_parent_url.as_deref(),
+    );
+    push_relation_entry(
+        &mut relations,
+        &mut seen_relations,
+        "parent game",
+        game.parent_game.as_ref().and_then(|value| value.name.as_deref()),
+        parent_game_url.as_deref(),
+    );
+    push_relation_entry(
+        &mut relations,
+        &mut seen_relations,
+        "franchise",
+        game.franchise.as_ref().and_then(|value| value.name.as_deref()),
+        franchise_url.as_deref(),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "collection",
+        game.collections
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "franchise",
+        game.franchises
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "dlc",
+        game.dlcs.clone().unwrap_or_default().into_iter().map(|value| {
+            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+            (value.name, url)
+        }),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "expanded game",
+        game.expanded_games.clone().unwrap_or_default().into_iter().map(|value| {
+            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+            (value.name, url)
+        }),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "expansion",
+        game.expansions.clone().unwrap_or_default().into_iter().map(|value| {
+            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+            (value.name, url)
+        }),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "fork",
+        game.forks.clone().unwrap_or_default().into_iter().map(|value| {
+            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+            (value.name, url)
+        }),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "port",
+        game.ports.clone().unwrap_or_default().into_iter().map(|value| {
+            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+            (value.name, url)
+        }),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "remake",
+        game.remakes.clone().unwrap_or_default().into_iter().map(|value| {
+            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+            (value.name, url)
+        }),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "remaster",
+        game.remasters.clone().unwrap_or_default().into_iter().map(|value| {
+            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+            (value.name, url)
+        }),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "similar",
+        game.similar_games.clone().unwrap_or_default().into_iter().map(|value| {
+            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+            (value.name, url)
+        }),
+    );
+    push_relation_entries(
+        &mut relations,
+        &mut seen_relations,
+        "standalone expansion",
+        game.standalone_expansions.clone().unwrap_or_default().into_iter().map(|value| {
+            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+            (value.name, url)
+        }),
+    );
+    if relations.len() > 16 {
+        relations.truncate(16);
+    }
+
     let metadata = GameMetadata {
         source: "igdb".to_string(),
+        source_label: Some("IGDB".to_string()),
         source_url: url.clone(),
         title: game.name.clone(),
         version: game.version_parent.as_ref().and_then(|vp| vp.name.clone()),
         developer,
+        publisher: None,
+        genres: tags.clone(),
         overview: game.summary.clone(),
         overview_html: game.summary.clone(),
         cover_url,
         screenshots,
         tags,
-        relations: Vec::new(),
+        relations,
         engine: None,
         os,
         language: None,
@@ -2909,7 +3243,9 @@ pub async fn fetch_rawg_metadata(url: String) -> Result<GameMetadata, String> {
 
     #[derive(Deserialize)]
     struct RawgGame {
+        id: Option<i64>,
         name: Option<String>,
+        slug: Option<String>,
         description_raw: Option<String>,
         background_image: Option<String>,
         background_image_additional: Option<String>,
@@ -2923,6 +3259,9 @@ pub async fn fetch_rawg_metadata(url: String) -> Result<GameMetadata, String> {
         #[allow(dead_code)]
         website: Option<String>,
         parent_platforms: Option<Vec<RawgParentPlatform>>,
+        parents_count: Option<u64>,
+        additions_count: Option<u64>,
+        game_series_count: Option<u64>,
     }
 
     #[derive(Deserialize)]
@@ -2992,18 +3331,54 @@ pub async fn fetch_rawg_metadata(url: String) -> Result<GameMetadata, String> {
 
     let rating = game.metacritic.map(|m| (m as f64 / 10.0).to_string());
 
+    let relation_slug = game.slug.clone().or_else(|| game.id.map(|id| id.to_string()));
+    let mut relations = Vec::new();
+    let mut seen_relations = HashSet::new();
+    if let Some(slug) = relation_slug.as_deref() {
+        if game.parents_count.unwrap_or(0) > 0 {
+            push_relation_entries(
+                &mut relations,
+                &mut seen_relations,
+                "parent game",
+                fetch_rawg_relation_page(&api_key, slug, "parent-games", 6).await?,
+            );
+        }
+        if game.additions_count.unwrap_or(0) > 0 {
+            push_relation_entries(
+                &mut relations,
+                &mut seen_relations,
+                "addition",
+                fetch_rawg_relation_page(&api_key, slug, "additions", 6).await?,
+            );
+        }
+        if game.game_series_count.unwrap_or(0) > 0 {
+            push_relation_entries(
+                &mut relations,
+                &mut seen_relations,
+                "series",
+                fetch_rawg_relation_page(&api_key, slug, "game-series", 8).await?,
+            );
+        }
+    }
+    if relations.len() > 16 {
+        relations.truncate(16);
+    }
+
     let metadata = GameMetadata {
         source: "rawg".to_string(),
+        source_label: Some("RAWG".to_string()),
         source_url: url.clone(),
         title: game.name.clone(),
         version: None,
         developer,
+        publisher: None,
+        genres: tags.clone(),
         overview: game.description_raw.clone(),
         overview_html: game.description_raw.clone(),
         cover_url: game.background_image,
         screenshots,
         tags,
-        relations: Vec::new(),
+        relations,
         engine: None,
         os,
         language: None,
@@ -3131,7 +3506,7 @@ pub async fn fetch_mobygames_metadata(url: String) -> Result<GameMetadata, Strin
         .as_ref()
         .map(|d| d.iter().filter_map(|dev| dev.developer_name.clone()).collect::<Vec<_>>().join(", "));
 
-    let _publisher = game
+    let publisher = game
         .publishers
         .as_ref()
         .map(|p| p.iter().filter_map(|pub_item| pub_item.publisher_name.clone()).collect::<Vec<_>>().join(", "));
@@ -3155,10 +3530,13 @@ pub async fn fetch_mobygames_metadata(url: String) -> Result<GameMetadata, Strin
 
     let metadata = GameMetadata {
         source: "mobygames".to_string(),
+        source_label: Some("MobyGames".to_string()),
         source_url: url.clone(),
         title: game.title.clone(),
         version: None,
         developer,
+        publisher,
+        genres: tags.clone(),
         overview: game.description.clone(),
         overview_html: game.description.clone(),
         cover_url,

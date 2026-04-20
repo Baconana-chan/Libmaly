@@ -1,24 +1,37 @@
+import type { ComponentChildren } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { useTranslation } from "react-i18next";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
+import SyncConflictModal from "./SyncConflictModal";
 import { addCustomLanguage, loadCustomLanguages, removeCustomLanguage } from "../../i18n";
+import { SK_COLLECTIONS, SK_GAMES, SK_META, SK_NOTES } from "../../lib/constants";
 import {
   syncConfigure,
   syncGetConfig,
   syncUpload,
   syncDownload,
   syncCheckRemote,
+  syncPreviewConflicts,
   type SyncProviderConfig,
+  type SyncConflictPreviewReport,
   type SyncResult,
   type WebdavConfig,
   type NextcloudConfig,
   type S3Config,
   type GitConfig,
+  type GoogleDriveConfig,
+  type DropboxConfig,
   createWebdavConfig,
   createNextcloudConfig,
   createS3Config,
   createGitConfig,
+  createGoogleDriveConfig,
+  createDropboxConfig,
+  getSyncProviderLabel,
+  isAutoBackupProvider,
+  syncStartOAuth,
 } from "../../lib/sync";
 
 interface Game { name: string; path: string; }
@@ -59,6 +72,9 @@ interface AppSettingsLike {
   metadataAutoRefetchDays: number;
   autoScreenshotInterval: number;
   saveBackupOnExit: boolean;
+  cloudAutoBackupEnabled: boolean;
+  cloudAutoBackupIntervalMinutes: number;
+  cloudAutoBackupLastSuccessAt: number;
   sidebarMinimalMode?: boolean;
   sidebarShowNews?: boolean;
   sidebarShowStats?: boolean;
@@ -130,6 +146,80 @@ interface LibraryProfileDraftLike {
   bannerUrl?: string;
   accentColor?: string;
 }
+
+interface VaultEntryStatus {
+  key: string;
+  group: string;
+  label: string;
+  hasValue: boolean;
+}
+
+interface VaultSummary {
+  profileId: string;
+  entries: VaultEntryStatus[];
+}
+
+interface CustomMetadataTemplateSummary {
+  id: string;
+  name: string;
+  description?: string | null;
+  enabled: boolean;
+  overrideBuiltin: boolean;
+  urlPatterns: string[];
+  fieldCount: number;
+}
+
+type LayoutViewMode = "list" | "compact" | "grid";
+
+interface LayoutPresetConfig {
+  viewMode: LayoutViewMode;
+  sidebarWidth: number;
+  sidebarMinimalMode: boolean;
+  sidebarShowNews: boolean;
+  sidebarShowStats: boolean;
+  sidebarShowSearchTools: boolean;
+  sidebarShowCollections: boolean;
+  sidebarShowDevelopers: boolean;
+  sidebarShowWishlist: boolean;
+  sidebarShowSurpriseButton: boolean;
+  sidebarShowAddButton: boolean;
+  sidebarShowSettingsButton: boolean;
+  sidebarShowLogsButton: boolean;
+}
+
+interface LayoutPresetDescriptor {
+  id: string;
+  name: string;
+  description?: string;
+  config: LayoutPresetConfig;
+  readOnly?: boolean;
+}
+
+interface StorageBootstrap {
+  unified: boolean;
+  entries: Record<string, string>;
+}
+
+interface ConsistencyTestResult {
+  passed: boolean;
+  message: string;
+  details?: string[];
+}
+
+interface ReliabilityScenarioResult {
+  key: string;
+  passed: boolean;
+  message: string;
+  details: string[];
+}
+
+interface ReliabilityScenarioReport {
+  completedAt: number;
+  platform: string;
+  scenarios: ReliabilityScenarioResult[];
+}
+
+const GLOBAL_STORAGE_KEYS = new Set(["libmaly_last_seen_version"]);
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: "dark", label: "themes.dark" },
@@ -251,11 +341,11 @@ function MigrationWizardModal({
 
   return (
     <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center"
+      className="fixed inset-0 z-9999 flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.8)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="rounded-xl shadow-2xl w-[640px] max-w-[92vw] max-h-[85vh] flex flex-col"
+      <div className="rounded-xl shadow-2xl w-160 max-w-[92vw] max-h-[85vh] flex flex-col"
         style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
         <div className="flex items-center gap-3 px-5 py-3 border-b" style={{ borderColor: "var(--color-border-card)" }}>
           <h2 className="font-bold text-sm" style={{ color: "var(--color-white)" }}>{t('common.migration.title')}</h2>
@@ -315,6 +405,50 @@ function MigrationWizardModal({
   );
 }
 
+function SettingsSurface({
+  title,
+  description,
+  children,
+  wide = false,
+}: {
+  title: string;
+  description?: string;
+  children: ComponentChildren;
+  wide?: boolean;
+}) {
+  return (
+    <section
+      className={`settings-surface-card${wide ? " settings-surface-card--wide" : ""}`}
+      style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}
+    >
+      <div className="settings-surface-card__header">
+        <h3 className="settings-surface-card__title">{title}</h3>
+        {description && (
+          <p className="settings-surface-card__description" style={{ color: "var(--color-text-muted)" }}>
+            {description}
+          </p>
+        )}
+      </div>
+      <div className="settings-surface-card__body">{children}</div>
+    </section>
+  );
+}
+
+function SettingsStat({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="settings-stat" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+      <div className="settings-stat__label" style={{ color: "var(--color-text-dim)" }}>{label}</div>
+      <div className="settings-stat__value" style={{ color: "var(--color-text)" }}>{value}</div>
+    </div>
+  );
+}
+
 // ─── Settings Modal ────────────────────────────────────────────────────────────
 function SettingsModal({
   games, ghostGames, onToggleGhost, onToggleAllGhost,
@@ -322,11 +456,13 @@ function SettingsModal({
   appUpdate, appSettings,
   defaultSettings,
   onF95Login, onF95Logout, onDLsiteLogin, onDLsiteLogout, onFakkuLogin, onFakkuLogout, onRemoveFolder,
-  onRescanAll, onWineSettings, onSteamImport, onSteamLibraryImport, onLutrisImport, onPlayniteImport, onGogImport, onAppUpdate, onOpenWhatsNew, onSaveSettings, onOpenMigrationWizard, onClose,
+  onRescanAll, onWineSettings, onSteamImport, onSteamLibraryImport, onEpicImport, onLutrisImport, onPlayniteImport, onGogImport, onProtocolStoreImport, onExoticImport, onItchImport, onAppUpdate, onOpenWhatsNew, onSaveSettings, onOpenMigrationWizard, onClose,
+  viewMode, sidebarWidth, layoutPresets, activeLayoutPresetId, onViewModeChange, onSidebarWidthChange, onApplyLayoutPreset, onSaveLayoutPreset, onUpdateLayoutPreset, onDeleteLayoutPreset,
   onRunIntegrityCheck, onOpenRestoreSnapshots, onExportCSV, onExportHTML, onExportCloudState, onImportCloudState, onBatchMetadataRefresh, batchRefreshStatus, integrityCheckStatus,
   backgroundJobs, syncStatusText, isIntegrityCheckBusy, isBatchMetadataRefreshBusy, onAutoHealPaths, autoHealPathsStatus, isAutoHealPathsBusy,
   onApplyBackupRetentionPolicy, backupRetentionStatus, isBackupRetentionBusy,
   onRunDbVacuum, dbVacuumStatus, isDbVacuumBusy,
+  onRunCloudBackupNow, cloudBackupNowStatus, isCloudBackupNowBusy,
   discordSnapshot, onOpenDiscordSettings
   , libraryProfiles, activeLibraryProfileId, onSwitchLibraryProfile, onSaveLibraryProfile, onDeleteLibraryProfile
 }: {
@@ -342,8 +478,18 @@ function SettingsModal({
   onDLsiteLogin: () => void; onDLsiteLogout: () => void;
   onFakkuLogin: () => void; onFakkuLogout: () => void;
   onRemoveFolder: (p: string) => void;
-  onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void; onSteamLibraryImport: () => void; onLutrisImport: () => void; onPlayniteImport: () => void; onGogImport: () => void;
+  onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void; onSteamLibraryImport: () => void; onEpicImport: () => void; onLutrisImport: () => void; onPlayniteImport: () => void; onGogImport: () => void; onProtocolStoreImport: () => void; onExoticImport: () => void; onItchImport: () => void;
   onAppUpdate: () => void; onOpenWhatsNew: () => void; onSaveSettings: (s: AppSettingsLike) => void; onOpenMigrationWizard: () => void; onClose: () => void;
+  viewMode: LayoutViewMode;
+  sidebarWidth: number;
+  layoutPresets: LayoutPresetDescriptor[];
+  activeLayoutPresetId: string | null;
+  onViewModeChange: (mode: LayoutViewMode) => void;
+  onSidebarWidthChange: (width: number) => void;
+  onApplyLayoutPreset: (config: LayoutPresetConfig) => void;
+  onSaveLayoutPreset: (name: string) => void;
+  onUpdateLayoutPreset: (presetId: string) => void;
+  onDeleteLayoutPreset: (presetId: string) => void;
   onRunIntegrityCheck: () => void;
   onOpenRestoreSnapshots: () => void;
   onExportCSV: () => void; onExportHTML: () => void; onExportCloudState: () => void; onImportCloudState: () => void;
@@ -363,6 +509,9 @@ function SettingsModal({
   onRunDbVacuum: () => void;
   dbVacuumStatus: string | null;
   isDbVacuumBusy: boolean;
+  onRunCloudBackupNow: () => void;
+  cloudBackupNowStatus: string | null;
+  isCloudBackupNowBusy: boolean;
   discordSnapshot: DiscordSdkSnapshotLike | null;
   onOpenDiscordSettings: () => void;
   libraryProfiles: LibraryProfileLike[];
@@ -372,15 +521,16 @@ function SettingsModal({
   onDeleteLibraryProfile: (profileId: string) => Promise<void> | void;
 }) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "sync" | "customcss" | "consistency" | "apikeys" | "wine">("general");
+  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "sync" | "sources" | "customcss" | "consistency" | "vault" | "wine">("general");
   const [customLangs, setCustomLangs] = useState<Record<string, { name: string; translation: Record<string, unknown> }>>({});
   const [langImporting, setLangImporting] = useState(false);
 
   // Sync state
-  const [syncProviderType, setSyncProviderType] = useState<"webdav" | "nextcloud" | "s3" | "git">("webdav");
+  const [syncProviderType, setSyncProviderType] = useState<"webdav" | "nextcloud" | "s3" | "git" | "google-drive" | "dropbox">("webdav");
   const [syncConfig, setSyncConfig] = useState<SyncProviderConfig | null>(null);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [syncConflictReport, setSyncConflictReport] = useState<SyncConflictPreviewReport | null>(null);
   const [remoteExists, setRemoteExists] = useState<boolean | null>(null);
   const [webdavUrl, setWebdavUrl] = useState("");
   const [webdavUsername, setWebdavUsername] = useState("");
@@ -396,20 +546,38 @@ function SettingsModal({
   const [gitBranch, setGitBranch] = useState("main");
   const [gitUsername, setGitUsername] = useState("");
   const [gitPassword, setGitPassword] = useState("");
+  const [googleDriveAccessToken, setGoogleDriveAccessToken] = useState("");
+  const [googleDriveFileName, setGoogleDriveFileName] = useState("libmaly-state.json");
+  const [googleDriveClientId, setGoogleDriveClientId] = useState("");
+  const [googleDriveRefreshToken, setGoogleDriveRefreshToken] = useState("");
+  const [googleDriveAuthMode, setGoogleDriveAuthMode] = useState<"oauth" | "manual">("oauth");
+  const [dropboxAccessToken, setDropboxAccessToken] = useState("");
+  const [dropboxPath, setDropboxPath] = useState("/Apps/Libmaly/libmaly-state.json");
+  const [dropboxClientId, setDropboxClientId] = useState("");
+  const [dropboxRefreshToken, setDropboxRefreshToken] = useState("");
+  const [dropboxAuthMode, setDropboxAuthMode] = useState<"oauth" | "manual">("oauth");
 
   // Custom CSS state
   const [customCss, setCustomCss] = useState("");
   const [cssSaving, setCssSaving] = useState(false);
+  const [customMetadataTemplates, setCustomMetadataTemplates] = useState<CustomMetadataTemplateSummary[]>([]);
+  const [customMetadataJson, setCustomMetadataJson] = useState("");
+  const [customMetadataBusy, setCustomMetadataBusy] = useState(false);
+  const [customMetadataStatus, setCustomMetadataStatus] = useState<string | null>(null);
 
   // API Keys state
   const [igdbClientId, setIgdbClientId] = useState("");
   const [igdbClientSecret, setIgdbClientSecret] = useState("");
   const [rawgApiKey, setRawgApiKey] = useState("");
   const [mobygamesApiKey, setMobygamesApiKey] = useState("");
+  const [itchApiKey, setItchApiKey] = useState("");
   const [apiKeySaving, setApiKeySaving] = useState(false);
+  const [vaultSummary, setVaultSummary] = useState<VaultSummary | null>(null);
+  const [layoutPresetName, setLayoutPresetName] = useState("");
+  const [layoutPresetStatus, setLayoutPresetStatus] = useState<string | null>(null);
 
   // Data consistency test state
-  const [testResults, setTestResults] = useState<Record<string, { passed: boolean; message: string; details?: string[] }>>({});
+  const [testResults, setTestResults] = useState<Record<string, ConsistencyTestResult>>({});
   const [testsRunning, setTestsRunning] = useState(false);
 
   const discordStatusSummary = !discordSnapshot
@@ -545,7 +713,45 @@ function SettingsModal({
           setGitBranch(cfg.branch);
           setGitUsername(cfg.username || "");
           setGitPassword(cfg.password || "");
+        } else if (savedConfig.provider === "google-drive") {
+          const cfg = savedConfig.config as GoogleDriveConfig;
+          setGoogleDriveAccessToken(cfg.accessToken);
+          setGoogleDriveFileName(cfg.fileName);
+          setGoogleDriveClientId(cfg.clientId || "");
+          setGoogleDriveRefreshToken(cfg.refreshToken || "");
+          setGoogleDriveAuthMode(cfg.clientId || cfg.refreshToken ? "oauth" : "manual");
+        } else if (savedConfig.provider === "dropbox") {
+          const cfg = savedConfig.config as DropboxConfig;
+          setDropboxAccessToken(cfg.accessToken);
+          setDropboxPath(cfg.path);
+          setDropboxClientId(cfg.clientId || "");
+          setDropboxRefreshToken(cfg.refreshToken || "");
+          setDropboxAuthMode(cfg.clientId || cfg.refreshToken ? "oauth" : "manual");
         }
+      } else {
+        setSyncConfig(null);
+        setWebdavUrl("");
+        setWebdavUsername("");
+        setWebdavPassword("");
+        setWebdavPath("libmaly-state.json");
+        setS3Bucket("");
+        setS3Region("");
+        setS3AccessKey("");
+        setS3SecretKey("");
+        setS3Endpoint("");
+        setS3Path("libmaly-state.json");
+        setGitUrl("");
+        setGitBranch("main");
+        setGitUsername("");
+        setGitPassword("");
+        setGoogleDriveAccessToken("");
+        setGoogleDriveFileName("libmaly-state.json");
+        setGoogleDriveClientId("");
+        setGoogleDriveRefreshToken("");
+        setDropboxAccessToken("");
+        setDropboxPath("/Apps/Libmaly/libmaly-state.json");
+        setDropboxClientId("");
+        setDropboxRefreshToken("");
       }
     } catch (error) {
       console.error("Failed to load sync config:", error);
@@ -554,8 +760,35 @@ function SettingsModal({
     }
   };
 
+  const loadVaultSummary = async () => {
+    try {
+      const summary = await invoke<VaultSummary>("vault_list_entries");
+      setVaultSummary(summary);
+    } catch (error) {
+      console.error("Failed to load vault summary:", error);
+    }
+  };
+
+  const loadCustomMetadataTemplates = async () => {
+    try {
+      const templates = await invoke<CustomMetadataTemplateSummary[]>("custom_metadata_list_templates");
+      setCustomMetadataTemplates(templates);
+    } catch (error) {
+      console.error("Failed to load custom metadata templates:", error);
+      setCustomMetadataStatus(`Failed to load templates: ${String(error)}`);
+    }
+  };
+
   useEffect(() => {
     loadSyncConfig();
+    void loadVaultSummary();
+    void loadCustomMetadataTemplates();
+  }, [activeLibraryProfileId]);
+
+  useEffect(() => {
+    const reload = () => { void loadSyncConfig(); void loadVaultSummary(); void loadCustomMetadataTemplates(); };
+    window.addEventListener("libmaly-sync-config-updated", reload);
+    return () => window.removeEventListener("libmaly-sync-config-updated", reload);
   }, []);
 
   // Load custom CSS from localStorage and apply it
@@ -569,22 +802,29 @@ function SettingsModal({
   useEffect(() => {
     const loadApiKeys = async () => {
       try {
-        const [igdbId, igdbSecret, rawgKey, mobyKey] = await Promise.all([
+        setIgdbClientId("");
+        setIgdbClientSecret("");
+        setRawgApiKey("");
+        setMobygamesApiKey("");
+        setItchApiKey("");
+        const [igdbId, igdbSecret, rawgKey, mobyKey, itchKey] = await Promise.all([
           invoke<string>("get_api_key", { provider: "igdb_client_id" }),
           invoke<string>("get_api_key", { provider: "igdb_client_secret" }),
           invoke<string>("get_api_key", { provider: "rawg" }),
           invoke<string>("get_api_key", { provider: "mobygames" }),
+          invoke<string>("get_api_key", { provider: "itch_io" }),
         ]);
         if (igdbId) setIgdbClientId(igdbId);
         if (igdbSecret) setIgdbClientSecret(igdbSecret);
         if (rawgKey) setRawgApiKey(rawgKey);
         if (mobyKey) setMobygamesApiKey(mobyKey);
+        if (itchKey) setItchApiKey(itchKey);
       } catch (e) {
         console.error("Failed to load API keys:", e);
       }
     };
     loadApiKeys();
-  }, []);
+  }, [activeLibraryProfileId]);
 
   const applyCustomCss = (css: string) => {
     let styleTag = document.getElementById("libmaly-custom-css") as HTMLStyleElement;
@@ -615,14 +855,140 @@ function SettingsModal({
     applyCustomCss("");
   };
 
+  const handleImportCustomMetadataJson = async () => {
+    if (!customMetadataJson.trim()) {
+      setCustomMetadataStatus("Paste a template JSON document first.");
+      return;
+    }
+    setCustomMetadataBusy(true);
+    setCustomMetadataStatus(null);
+    try {
+      const templates = await invoke<CustomMetadataTemplateSummary[]>("custom_metadata_import_templates", { jsonText: customMetadataJson });
+      setCustomMetadataTemplates(templates);
+      setCustomMetadataStatus(`Imported ${templates.length} custom metadata template(s).`);
+    } catch (error) {
+      setCustomMetadataStatus(`Import failed: ${String(error)}`);
+    } finally {
+      setCustomMetadataBusy(false);
+    }
+  };
+
+  const handleImportCustomMetadataFile = async () => {
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!picked || Array.isArray(picked)) return;
+    setCustomMetadataBusy(true);
+    setCustomMetadataStatus(null);
+    try {
+      const templates = await invoke<CustomMetadataTemplateSummary[]>("custom_metadata_import_templates_from_path", { path: picked });
+      setCustomMetadataTemplates(templates);
+      setCustomMetadataStatus(`Imported templates from ${picked}.`);
+    } catch (error) {
+      setCustomMetadataStatus(`File import failed: ${String(error)}`);
+    } finally {
+      setCustomMetadataBusy(false);
+    }
+  };
+
+  const handleExportCustomMetadata = async () => {
+    const target = await save({
+      defaultPath: "libmaly-custom-metadata.json",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!target) return;
+    setCustomMetadataBusy(true);
+    setCustomMetadataStatus(null);
+    try {
+      await invoke("custom_metadata_export_templates_to_path", { path: target });
+      setCustomMetadataStatus(`Exported templates to ${target}.`);
+    } catch (error) {
+      setCustomMetadataStatus(`Export failed: ${String(error)}`);
+    } finally {
+      setCustomMetadataBusy(false);
+    }
+  };
+
+  const handleLoadInstalledCustomMetadataJson = async () => {
+    setCustomMetadataBusy(true);
+    setCustomMetadataStatus(null);
+    try {
+      const raw = await invoke<string>("custom_metadata_export_templates");
+      setCustomMetadataJson(raw);
+      setCustomMetadataStatus("Loaded installed templates into the editor.");
+    } catch (error) {
+      setCustomMetadataStatus(`Could not load installed templates: ${String(error)}`);
+    } finally {
+      setCustomMetadataBusy(false);
+    }
+  };
+
+  const handleDeleteCustomMetadataTemplate = async (id: string) => {
+    setCustomMetadataBusy(true);
+    setCustomMetadataStatus(null);
+    try {
+      const templates = await invoke<CustomMetadataTemplateSummary[]>("custom_metadata_delete_template", { id });
+      setCustomMetadataTemplates(templates);
+      setCustomMetadataStatus(`Removed template '${id}'.`);
+    } catch (error) {
+      setCustomMetadataStatus(`Delete failed: ${String(error)}`);
+    } finally {
+      setCustomMetadataBusy(false);
+    }
+  };
+
   // Data consistency test functions
   const runConsistencyTests = async () => {
+    const loadConsistencyStorageEntries = async () => {
+      const profileId = (activeLibraryProfileId || "default").trim() || "default";
+      const profilePrefix = `libmaly_profile::${profileId}::`;
+      const entries: Record<string, string> = {};
+
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        try {
+          const bootstrap = await invoke<StorageBootstrap>("get_storage_bootstrap");
+          if (bootstrap?.unified) {
+            for (const [key, value] of Object.entries(bootstrap.entries || {})) {
+              if (key.startsWith(profilePrefix)) {
+                entries[key.slice(profilePrefix.length)] = value;
+              } else if (GLOBAL_STORAGE_KEYS.has(key)) {
+                entries[key] = value;
+              } else if (profileId === "default" && !key.startsWith("libmaly_profile::")) {
+                entries[key] = value;
+              }
+            }
+            return entries;
+          }
+        } catch {
+          // Fall back to localStorage below when unified bootstrap is unavailable.
+        }
+      }
+
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        const value = localStorage.getItem(key);
+        if (value === null) continue;
+        if (key.startsWith(profilePrefix)) {
+          entries[key.slice(profilePrefix.length)] = value;
+        } else if (GLOBAL_STORAGE_KEYS.has(key)) {
+          entries[key] = value;
+        } else if (profileId === "default" && !key.startsWith("libmaly_profile::")) {
+          entries[key] = value;
+        }
+      }
+
+      return entries;
+    };
+
     setTestsRunning(true);
-    const results: Record<string, { passed: boolean; message: string; details?: string[] }> = {};
+    const results: Record<string, ConsistencyTestResult> = {};
+    const storageEntries = await loadConsistencyStorageEntries();
 
     // Test 1: Games list consistency
     try {
-      const gamesList = JSON.parse(localStorage.getItem("games-list-v2") || "[]");
+      const gamesList = JSON.parse(storageEntries[SK_GAMES] || "[]");
       const details: string[] = [];
       let passed = true;
 
@@ -651,7 +1017,7 @@ function SettingsModal({
 
     // Test 2: Metadata consistency
     try {
-      const metadata = JSON.parse(localStorage.getItem("game-metadata") || "{}");
+      const metadata = JSON.parse(storageEntries[SK_META] || "{}");
       const details: string[] = [];
       let passed = true;
 
@@ -660,10 +1026,10 @@ function SettingsModal({
         details.push("Metadata is not an object");
       } else {
         details.push(`Found metadata for ${Object.keys(metadata).length} games`);
-        const gamesList = JSON.parse(localStorage.getItem("games-list-v2") || "[]");
+        const gamesList = JSON.parse(storageEntries[SK_GAMES] || "[]");
         const metadataKeys = Object.keys(metadata);
-        const gamePaths = gamesList.map((g: any) => g.path);
-        const orphanedMetadata = metadataKeys.filter(k => !gamePaths.includes(k));
+        const gamePaths = new Set(gamesList.map((g: any) => normalizePathForMatch(g.path)));
+        const orphanedMetadata = metadataKeys.filter((key) => !gamePaths.has(normalizePathForMatch(key)));
         if (orphanedMetadata.length > 0) {
           passed = false;
           details.push(`Found ${orphanedMetadata.length} orphaned metadata entries`);
@@ -676,7 +1042,7 @@ function SettingsModal({
 
     // Test 3: Notes consistency
     try {
-      const notes = JSON.parse(localStorage.getItem("game-notes-v1") || "{}");
+      const notes = JSON.parse(storageEntries[SK_NOTES] || "{}");
       const details: string[] = [];
       let passed = true;
 
@@ -685,10 +1051,10 @@ function SettingsModal({
         details.push("Notes is not an object");
       } else {
         details.push(`Found notes for ${Object.keys(notes).length} games`);
-        const gamesList = JSON.parse(localStorage.getItem("games-list-v2") || "[]");
+        const gamesList = JSON.parse(storageEntries[SK_GAMES] || "[]");
         const noteKeys = Object.keys(notes);
-        const gamePaths = gamesList.map((g: any) => g.path);
-        const orphanedNotes = noteKeys.filter(k => !gamePaths.includes(k));
+        const gamePaths = new Set(gamesList.map((g: any) => normalizePathForMatch(g.path)));
+        const orphanedNotes = noteKeys.filter((key) => !gamePaths.has(normalizePathForMatch(key)));
         if (orphanedNotes.length > 0) {
           passed = false;
           details.push(`Found ${orphanedNotes.length} orphaned note entries`);
@@ -701,7 +1067,7 @@ function SettingsModal({
 
     // Test 4: Collections consistency
     try {
-      const collections = JSON.parse(localStorage.getItem("collections-v1") || "[]");
+      const collections = JSON.parse(storageEntries[SK_COLLECTIONS] || "[]");
       const details: string[] = [];
       let passed = true;
 
@@ -710,14 +1076,14 @@ function SettingsModal({
         details.push("Collections is not an array");
       } else {
         details.push(`Found ${collections.length} collections`);
-        const gamesList = JSON.parse(localStorage.getItem("games-list-v2") || "[]");
-        const gamePaths = new Set(gamesList.map((g: any) => g.path));
+        const gamesList = JSON.parse(storageEntries[SK_GAMES] || "[]");
+        const gamePaths = new Set(gamesList.map((g: any) => normalizePathForMatch(g.path)));
         collections.forEach((col: any) => {
           if (!col.games || !Array.isArray(col.games)) {
             passed = false;
             details.push(`Collection "${col.name}" has invalid games array`);
           } else {
-            const invalidGames = col.games.filter((p: string) => !gamePaths.has(p));
+            const invalidGames = col.games.filter((path: string) => !gamePaths.has(normalizePathForMatch(path)));
             if (invalidGames.length > 0) {
               passed = false;
               details.push(`Collection "${col.name}" has ${invalidGames.length} invalid game paths`);
@@ -734,22 +1100,16 @@ function SettingsModal({
     try {
       const details: string[] = [];
       let passed = true;
-      const requiredKeys = ["games-list-v2", "game-metadata", "game-notes-v1"];
-      const optionalKeys = ["collections-v1"];
-      const foundKeys: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith("libmaly_")) {
-          foundKeys.push(key);
-        }
-      }
-      details.push(`Found ${foundKeys.length} libmaly storage keys`);
-      const missingRequiredKeys = requiredKeys.filter(k => !localStorage.getItem(k));
+      const requiredKeys = [SK_GAMES, SK_META, SK_NOTES];
+      const optionalKeys = [SK_COLLECTIONS];
+      const foundKeys = Object.keys(storageEntries).sort();
+      details.push(`Found ${foundKeys.length} storage entries in the active profile snapshot`);
+      const missingRequiredKeys = requiredKeys.filter((key) => !(key in storageEntries));
       if (missingRequiredKeys.length > 0) {
         passed = false;
         details.push(`Missing required keys: ${missingRequiredKeys.join(", ")}`);
       }
-      const missingOptionalKeys = optionalKeys.filter(k => !localStorage.getItem(k));
+      const missingOptionalKeys = optionalKeys.filter((key) => !(key in storageEntries));
       if (missingOptionalKeys.length > 0) {
         details.push(`Optional keys not present: ${missingOptionalKeys.join(", ")} (this is normal if you don't use this feature)`);
       }
@@ -764,33 +1124,48 @@ function SettingsModal({
       let passed = true;
       let invalidCount = 0;
       let checkedCount = 0;
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith("libmaly_")) {
-          const value = localStorage.getItem(key);
-          if (value) {
-            checkedCount++;
-            try {
-              JSON.parse(value);
-            } catch {
-              // If it's not JSON, check if it's a simple string value (which is valid)
-              if (value === value.trim() && !value.startsWith("{") && !value.startsWith("[")) {
-                // Simple string value, consider it valid
-              } else {
-                passed = false;
-                invalidCount++;
-                details.push(`Invalid JSON in key: ${key}`);
-              }
-            }
+      for (const [key, value] of Object.entries(storageEntries)) {
+        if (!value) continue;
+        checkedCount++;
+        try {
+          JSON.parse(value);
+        } catch {
+          if (value === value.trim() && !value.startsWith("{") && !value.startsWith("[")) {
+            continue;
           }
+          passed = false;
+          invalidCount++;
+          details.push(`Invalid JSON in key: ${key}`);
         }
       }
       if (invalidCount === 0) {
-        details.push(`Checked ${checkedCount} libmaly keys - all contain valid data`);
+        details.push(`Checked ${checkedCount} storage entries - all contain valid data`);
       }
       results["json_validity"] = { passed, message: passed ? "All data is valid" : `Found ${invalidCount} invalid entries`, details };
     } catch (e) {
       results["json_validity"] = { passed: false, message: "Failed to check JSON validity", details: [String(e)] };
+    }
+
+    // Test 7-11: Release reliability scenarios
+    try {
+      const report = await invoke<ReliabilityScenarioReport>("run_release_reliability_checks");
+      for (const scenario of report.scenarios) {
+        const details = [...(scenario.details || [])];
+        if (scenario.key === "cross_platform_backup_restore") {
+          details.push(`Validated on current runtime platform: ${report.platform}`);
+        }
+        results[scenario.key] = {
+          passed: scenario.passed,
+          message: scenario.message,
+          details,
+        };
+      }
+    } catch (e) {
+      results["release_reliability"] = {
+        passed: false,
+        message: "Failed to run release reliability scenarios",
+        details: [String(e)],
+      };
     }
 
     setTestResults(results);
@@ -825,6 +1200,20 @@ function SettingsModal({
           endpoint: s3Endpoint || undefined,
           path: s3Path,
         });
+      } else if (syncProviderType === "google-drive") {
+        newConfig = createGoogleDriveConfig({
+          accessToken: googleDriveAccessToken,
+          fileName: googleDriveFileName,
+          clientId: googleDriveAuthMode === "oauth" ? googleDriveClientId || undefined : undefined,
+          refreshToken: googleDriveAuthMode === "oauth" ? googleDriveRefreshToken || undefined : undefined,
+        });
+      } else if (syncProviderType === "dropbox") {
+        newConfig = createDropboxConfig({
+          accessToken: dropboxAccessToken,
+          path: dropboxPath,
+          clientId: dropboxAuthMode === "oauth" ? dropboxClientId || undefined : undefined,
+          refreshToken: dropboxAuthMode === "oauth" ? dropboxRefreshToken || undefined : undefined,
+        });
       } else {
         newConfig = createGitConfig({
           url: gitUrl,
@@ -836,7 +1225,9 @@ function SettingsModal({
 
       await syncConfigure(newConfig);
       setSyncConfig(newConfig);
+      setSyncConflictReport(null);
       setSyncResult({ success: true, message: "Configuration saved", conflictsDetected: false, entriesSynced: 0 });
+      await loadVaultSummary();
     } catch (error) {
       setSyncResult({ success: false, message: String(error), conflictsDetected: false, entriesSynced: 0 });
     } finally {
@@ -850,6 +1241,12 @@ function SettingsModal({
     try {
       const result = await syncUpload();
       setSyncResult(result);
+      if (result.conflictsDetected) {
+        const report = await syncPreviewConflicts();
+        setSyncConflictReport(report);
+      } else {
+        setSyncConflictReport(null);
+      }
     } catch (error) {
       setSyncResult({ success: false, message: String(error), conflictsDetected: false, entriesSynced: 0 });
     } finally {
@@ -863,6 +1260,12 @@ function SettingsModal({
     try {
       const result = await syncDownload();
       setSyncResult(result);
+      if (result.conflictsDetected) {
+        const report = await syncPreviewConflicts();
+        setSyncConflictReport(report);
+      } else {
+        setSyncConflictReport(null);
+      }
     } catch (error) {
       setSyncResult({ success: false, message: String(error), conflictsDetected: false, entriesSynced: 0 });
     } finally {
@@ -882,6 +1285,23 @@ function SettingsModal({
       setSyncLoading(false);
     }
   };
+  const handleStartOAuth = async (provider: "google-drive" | "dropbox") => {
+    const clientId = provider === "google-drive" ? googleDriveClientId.trim() : dropboxClientId.trim();
+    if (!clientId) {
+      setSyncResult({ success: false, message: "Enter a Client ID / App key before starting OAuth.", conflictsDetected: false, entriesSynced: 0 });
+      return;
+    }
+    setSyncLoading(true);
+    try {
+      const result = await syncStartOAuth(provider, clientId);
+      await openUrl(result.authorizationUrl);
+      setSyncResult({ success: true, message: `Browser opened for ${getSyncProviderLabel(provider)} OAuth. Finish the login flow and LIBMALY will capture the callback automatically.`, conflictsDetected: false, entriesSynced: 0 });
+    } catch (error) {
+      setSyncResult({ success: false, message: String(error), conflictsDetected: false, entriesSynced: 0 });
+    } finally {
+      setSyncLoading(false);
+    }
+  };
   const tabs: { id: typeof tab; label: string }[] = [
     { id: "general", label: t('settings.tabs.general') },
     { id: "scanner", label: t('settings.tabs.scanner') },
@@ -889,9 +1309,10 @@ function SettingsModal({
     { id: "rss", label: t('settings.tabs.rss') },
     { id: "ghost", label: "👻 Ghost Mode" },
     { id: "sync", label: "🔄 Sync" },
+    { id: "sources", label: "🕸 Sources" },
     { id: "customcss", label: "🎨 Custom CSS" },
     { id: "consistency", label: "🧪 Consistency Tests" },
-    { id: "apikeys" as const, label: "🔑 API Keys" },
+    { id: "vault" as const, label: "🔐 Vault" },
     ...(platform !== "windows" ? [{ id: "wine" as const, label: t('settings.tabs.wine') }] : []),
   ];
   const jobTone = (status: BackgroundJobStatus) => {
@@ -925,32 +1346,228 @@ function SettingsModal({
         return status;
     }
   };
+  const autoCloudBackupJob = backgroundJobs.find((job) => job.id === "auto-cloud-backup") ?? null;
+  const autoCloudBackupStatus = autoCloudBackupJob
+    ? (autoCloudBackupJob.detail?.trim() || jobStatusLabel(autoCloudBackupJob.status))
+    : null;
+  const syncGuide = useMemo(() => {
+    switch (syncProviderType) {
+      case "webdav":
+        return {
+          title: "WebDAV Quick Start",
+          intro: "Use this if you already have a WebDAV-compatible storage endpoint from a NAS, hosting panel, or cloud provider.",
+          steps: [
+            "Copy the base WebDAV URL from your provider dashboard.",
+            "Enter the login and password used for that WebDAV endpoint.",
+            "Pick a remote file path such as libmaly-state.json.",
+            "Save configuration, then use Check Remote or Upload to test it.",
+          ],
+          tips: [
+            "Good fit for self-hosted storage and NAS setups.",
+            "If your provider gives a folder URL, use the folder path plus a file name in the Path field.",
+          ],
+        };
+      case "nextcloud":
+        return {
+          title: "Nextcloud Quick Start",
+          intro: "Nextcloud uses the same WebDAV fields, but the URL usually points to your Nextcloud WebDAV endpoint.",
+          steps: [
+            "Open Nextcloud settings and find the WebDAV URL.",
+            "Paste that URL here and enter your Nextcloud username and app password.",
+            "Choose a file path such as Libmaly/libmaly-state.json.",
+            "Save configuration and test with Upload or Download.",
+          ],
+          tips: [
+            "An app password is safer than your main account password.",
+            "If sync fails, double-check that the URL is the WebDAV endpoint, not the normal web UI page.",
+          ],
+        };
+      case "google-drive":
+        return googleDriveAuthMode === "oauth"
+          ? {
+            title: "Google Drive OAuth Guide",
+            intro: "Best option if you want Libmaly to reconnect automatically later using a refresh token.",
+            steps: [
+              "Create a desktop OAuth client in Google Cloud Console.",
+              "Paste the client ID into the OAuth Client ID field.",
+              "Click Connect Google Drive and finish the browser login.",
+              "After the callback returns to Libmaly, save the configuration if you changed the file name.",
+            ],
+            tips: [
+              "The library state is stored in the hidden appData folder, not in your visible Drive root.",
+              "OAuth is the better long-term option because the token can be refreshed automatically.",
+            ],
+          }
+          : {
+            title: "Google Drive Manual Token Guide",
+            intro: "Use this if getting a ready-made access token is easier for you than setting up OAuth in the app.",
+            steps: [
+              "Generate or obtain a Google Drive access token with permission for app data access.",
+              "Paste that token into the Access Token field.",
+              "Choose the remote file name for the library state.",
+              "Save configuration and immediately test with Upload, because manual tokens can expire quickly.",
+            ],
+            tips: [
+              "Manual tokens are simpler once, but usually less convenient over time because they expire.",
+              "If Upload suddenly stops working later, the first thing to check is whether the token expired.",
+            ],
+          };
+      case "dropbox":
+        return dropboxAuthMode === "oauth"
+          ? {
+            title: "Dropbox OAuth Guide",
+            intro: "Best option if you want Libmaly to keep working without re-pasting tokens all the time.",
+            steps: [
+              "Create a scoped Dropbox app in the Dropbox developer console.",
+              "Paste the app key into the Dropbox App Key field.",
+              "Set a destination path such as /Apps/Libmaly/libmaly-state.json.",
+              "Click Connect Dropbox and complete the browser login flow.",
+            ],
+            tips: [
+              "Keep the path absolute and start it with /.",
+              "OAuth is the recommended mode for scheduled auto-backups.",
+            ],
+          }
+          : {
+            title: "Dropbox Manual Token Guide",
+            intro: "Use this mode if you already know how to mint a Dropbox access token and want the fastest setup.",
+            steps: [
+              "Generate or obtain a Dropbox access token for your app.",
+              "Paste the token into the Access Token field.",
+              "Set the destination file path, for example /Apps/Libmaly/libmaly-state.json.",
+              "Save configuration and test with Upload right away.",
+            ],
+            tips: [
+              "Like Google manual mode, this can stop working when the token expires.",
+              "If you want less maintenance, switch back to OAuth mode later.",
+            ],
+          };
+      case "git":
+        return {
+          title: "Git Sync Guide",
+          intro: "Use this if you want the library state versioned in a Git repository.",
+          steps: [
+            "Create an empty repository or choose an existing private repo.",
+            "Paste the clone URL and branch name.",
+            "If the repo needs authentication, enter a username and token.",
+            "Save configuration, then upload to push the current state.",
+          ],
+          tips: [
+            "Private repositories are strongly recommended.",
+            "Git is useful if you want history and manual rollback outside Libmaly.",
+          ],
+        };
+      case "s3":
+        return {
+          title: "S3 Quick Start",
+          intro: "Use this for AWS S3 or compatible object storage such as Cloudflare R2, MinIO, Wasabi, or Backblaze B2 S3.",
+          steps: [
+            "Enter the bucket name and region from your object storage provider.",
+            "Paste the access key and secret key for a user that can read and write one object.",
+            "If you are using a non-AWS provider, fill in the custom endpoint URL.",
+            "Choose an object path such as libmaly-state.json or Libmaly/state.json, then save and test it.",
+          ],
+          tips: [
+            "Leave Endpoint empty for normal AWS S3.",
+            "For S3-compatible providers, Endpoint is often the only extra field you need.",
+          ],
+        };
+      default:
+        return null;
+    }
+  }, [dropboxAuthMode, googleDriveAuthMode, syncProviderType]);
+  const formatTimestamp = (value?: number | null) => {
+    if (!value) return "Never";
+    try {
+      return new Date(value).toLocaleString();
+    } catch {
+      return "Never";
+    }
+  };
+  const selectedCustomLayoutPreset = useMemo(
+    () => layoutPresets.find((preset) => preset.id === activeLayoutPresetId && !preset.readOnly) ?? null,
+    [activeLayoutPresetId, layoutPresets],
+  );
+  const connectedStorefronts = [f95LoggedIn, dlsiteLoggedIn, fakkuLoggedIn].filter(Boolean).length;
+  const activeSidebarSections = [
+    "sidebarShowNews",
+    "sidebarShowStats",
+    "sidebarShowSearchTools",
+    "sidebarShowCollections",
+    "sidebarShowDevelopers",
+    "sidebarShowWishlist",
+    "sidebarShowSurpriseButton",
+    "sidebarShowAddButton",
+    "sidebarShowSettingsButton",
+    "sidebarShowLogsButton",
+  ].filter((key) => ((appSettings as unknown as Record<string, unknown>)[key]) !== false).length;
+  const tabDescriptions: Record<typeof tab, string> = {
+    general: "Profile, appearance, accounts, and core app behavior.",
+    scanner: "Library maintenance, rescans, recovery, and metadata refresh.",
+    import: "Storefront and launcher import bridges.",
+    rss: "Configure feed sources for updates and news.",
+    ghost: "Keep selected games strictly local-only.",
+    sync: "Cloud sync providers, OAuth, and backup scheduling.",
+    sources: "Import and manage custom JSON metadata scrapers.",
+    customcss: "Inject custom CSS overrides into the app.",
+    consistency: "Run data-integrity checks against local state.",
+    vault: "Secure secrets, sessions, and API credentials.",
+    wine: "Wine and Proton runtime configuration.",
+  };
+
+  const handleSaveLayoutPresetClick = () => {
+    try {
+      onSaveLayoutPreset(layoutPresetName);
+      setLayoutPresetStatus(`Saved layout preset '${layoutPresetName.trim()}'.`);
+      setLayoutPresetName("");
+    } catch (error) {
+      setLayoutPresetStatus(String(error));
+    }
+  };
+
+  const handleUpdateLayoutPresetClick = (presetId: string, presetName: string) => {
+    onUpdateLayoutPreset(presetId);
+    setLayoutPresetStatus(`Updated layout preset '${presetName}'.`);
+  };
+
+  const handleDeleteLayoutPresetClick = (presetId: string, presetName: string) => {
+    if (!confirm(`Delete layout preset '${presetName}'?`)) return;
+    onDeleteLayoutPreset(presetId);
+    setLayoutPresetStatus(`Deleted layout preset '${presetName}'.`);
+  };
   return (
-    <div className="fixed inset-0 z-[9990] flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.75)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="rounded-xl shadow-2xl flex flex-col overflow-hidden"
-        style={{ width: 480, maxHeight: "80vh", background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
+    <>
+      <div className="fixed inset-0 z-9990 flex items-center justify-center"
+        style={{ background: "rgba(0,0,0,0.75)" }}
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className="rounded-xl shadow-2xl flex flex-col overflow-hidden"
+          style={{ width: 960, maxWidth: "94vw", maxHeight: "88vh", background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
 
         {/* Header */}
-        <div className="flex items-center gap-3 px-5 py-4 border-b flex-shrink-0" style={{ borderColor: "var(--color-border-soft)" }}>
+        <div className="flex items-start gap-3 px-6 py-5 border-b shrink-0" style={{ borderColor: "var(--color-border-soft)" }}>
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
-          <h2 className="font-bold text-base flex-1" style={{ color: "var(--color-white)" }}>{t('common.settings')}</h2>
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="font-bold text-lg" style={{ color: "var(--color-white)" }}>{t('common.settings')}</h2>
+            <p className="mt-1 text-sm leading-relaxed" style={{ color: "var(--color-text-muted)" }}>{tabDescriptions[tab]}</p>
+          </div>
           <button onClick={onClose} style={{ color: "var(--color-text-dim)", fontSize: 18, lineHeight: 1 }}>✕</button>
         </div>
 
         {/* Tab bar */}
-        <div className="flex gap-0.5 px-4 pt-3 flex-shrink-0 overflow-x-auto whitespace-nowrap" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+        <div className="flex flex-wrap gap-2 px-6 pt-4 pb-1 shrink-0" style={{ background: "var(--color-bg-elev)" }}>
           {tabs.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
-              className="px-3 py-1.5 rounded-t text-xs font-medium flex-shrink-0"
+              className="px-3 py-2 rounded-lg text-xs font-medium shrink-0 transition-colors"
               style={{
-                background: tab === t.id ? "var(--color-bg-elev)" : "transparent",
-                color: tab === t.id ? "var(--color-accent)" : "var(--color-text-dim)",
-                borderBottom: tab === t.id ? "2px solid var(--color-accent)" : "2px solid transparent",
+                background: tab === t.id ? "var(--color-panel)" : "var(--color-panel-2)",
+                color: tab === t.id ? "var(--color-accent)" : "var(--color-text-muted)",
+                border: `1px solid ${tab === t.id ? "var(--color-accent-deep)" : "var(--color-border-soft)"}`,
+                boxShadow: tab === t.id ? "inset 0 0 0 1px rgba(102, 192, 244, 0.18)" : "none",
               }}>
               {t.label}
             </button>
@@ -958,955 +1575,1089 @@ function SettingsModal({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4"
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4"
           style={{ background: "var(--color-bg-elev)", scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
 
           {tab === "general" && (
             <>
-              <section className="space-y-2">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.language')}</h3>
-                <select
-                  value={appSettings.language || "en"}
-                  onChange={(e) => onSaveSettings({ ...appSettings, language: e.currentTarget.value })}
-                  className="w-full px-3 py-2 rounded-lg text-sm bg-transparent border outline-none"
-                  style={{ background: "var(--color-panel)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
-                >
-                  <option value="en" style={{ background: "var(--color-panel-2)" }}>English (US)</option>
-                  <option value="ru" style={{ background: "var(--color-panel-2)" }}>Русский (Russian)</option>
-                  <option value="ja" style={{ background: "var(--color-panel-2)" }}>日本語 (Japanese)</option>
-                  <option value="zh" style={{ background: "var(--color-panel-2)" }}>中文 (Chinese)</option>
-                  <option value="ko" style={{ background: "var(--color-panel-2)" }}>한국어 (Korean)</option>
-                  <option value="zh-TW" style={{ background: "var(--color-panel-2)" }}>繁體中文 (Taiwanese)</option>
-                  <option value="pl" style={{ background: "var(--color-panel-2)" }}>Polski (Polish)</option>
-                  <option value="uk" style={{ background: "var(--color-panel-2)" }}>Українська (Ukrainian)</option>
-                  <option value="de" style={{ background: "var(--color-panel-2)" }}>Deutsch (German)</option>
-                  <option value="fr" style={{ background: "var(--color-panel-2)" }}>Français (French)</option>
-                  {Object.entries(customLangs).map(([code, { name }]) => (
-                    <option key={code} value={code} style={{ background: "var(--color-panel-2)" }}>
-                      {name} ({code})
-                    </option>
-                  ))}
-                </select>
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleImportLanguage}
-                    disabled={langImporting}
-                    className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
-                    style={{ background: "var(--color-panel-3)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}
-                    title="Import a custom language JSON file"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                      <polyline points="7 10 12 15 17 10" />
-                      <line x1="12" y1="15" x2="12" y2="3" />
-                    </svg>
-                    {langImporting ? "Importing..." : "Import Language"}
-                  </button>
-                  {customLangs[appSettings.language || ""] && (
-                    <button
-                      onClick={() => handleRemoveCustomLanguage(appSettings.language!)}
-                      className="py-1.5 px-3 rounded text-xs flex items-center justify-center gap-1"
-                      style={{ background: "var(--color-danger-bg)", color: "var(--color-danger)", border: "1px solid var(--color-danger-border)" }}
-                      title="Remove this custom language"
-                    >
-                      ✕
-                    </button>
-                  )}
+              <section className="settings-hero-card" style={{ background: "linear-gradient(135deg, rgba(42,109,181,0.22), rgba(22,32,45,0.95))", border: "1px solid var(--color-accent-deep)" }}>
+                <div className="settings-hero-card__content">
+                  <div>
+                    <div className="settings-hero-card__eyebrow" style={{ color: "var(--color-accent-soft)" }}>Settings Overview</div>
+                    <h3 className="settings-hero-card__title" style={{ color: "var(--color-white)" }}>Less scanning, more signal</h3>
+                    <p className="settings-hero-card__description" style={{ color: "var(--color-text-soft)" }}>
+                      General settings are now grouped by intent: identity, accounts, app behavior, appearance, safety, and maintenance. The idea is to make first-time setup readable instead of forcing one long pass over unrelated controls.
+                    </p>
+                  </div>
+                  <div className="settings-stats-grid">
+                    <SettingsStat label="Active profile" value={selectedProfile?.displayName || profileDraft.displayName || "New profile"} />
+                    <SettingsStat label="Storefront sessions" value={`${connectedStorefronts}/3 connected`} />
+                    <SettingsStat label="Library folders" value={`${libraryFolders.length}`} />
+                    <SettingsStat label="Sidebar sections" value={`${activeSidebarSections} visible`} />
+                  </div>
                 </div>
-                {Object.keys(customLangs).length > 0 && (
-                  <p className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>
-                    💡 Custom languages: {Object.keys(customLangs).map(c => customLangs[c].name).join(", ")}
-                  </p>
-                )}
               </section>
 
-              <section className="space-y-2">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Search Engine</h3>
-                <select
-                  value={appSettings.preferredSearchEngine || "duckduckgo"}
-                  onChange={(e) => onSaveSettings({ ...appSettings, preferredSearchEngine: e.currentTarget.value as any })}
-                  className="w-full px-3 py-2 rounded-lg text-sm bg-transparent border outline-none"
-                  style={{ background: "var(--color-panel)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+              <div className="settings-general-grid">
+                <SettingsSurface
+                  title="Language & Discovery"
+                  description="Pick the app language and the search engine used for metadata lookup."
                 >
-                  <option value="duckduckgo" style={{ background: "var(--color-panel-2)" }}>DuckDuckGo</option>
-                  <option value="google" style={{ background: "var(--color-panel-2)" }}>Google</option>
-                  <option value="bing" style={{ background: "var(--color-panel-2)" }}>Bing</option>
-                  <option value="brave" style={{ background: "var(--color-panel-2)" }}>Brave</option>
-                </select>
-                <p className="text-[9px]" style={{ color: "var(--color-text-dim)" }}>
-                  Search engine used for metadata lookups in Link Game Metadata
-                </p>
-              </section>
-
-              <section className="space-y-3">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.profiles.title')}</h3>
-                <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-                  <div className="flex items-center gap-3">
-                    <div
-                      className="w-11 h-11 rounded-xl flex items-center justify-center text-sm font-black overflow-hidden"
-                      style={{
-                        background: selectedProfile?.avatarUrl
-                          ? `center / cover no-repeat url(${selectedProfile.avatarUrl})`
-                          : `linear-gradient(135deg, ${profileDraft.accentColor || "#66c0f4"}, color-mix(in srgb, ${profileDraft.accentColor || "#66c0f4"} 45%, black 55%))`,
-                        color: "white",
-                      }}
-                    >
-                      {!selectedProfile?.avatarUrl && (profileDraft.displayName || "P").slice(0, 1).toUpperCase()}
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-[11px] mb-1" style={{ color: "var(--color-text-dim)" }}>{t('settings.language')}</label>
+                      <select
+                        value={appSettings.language || "en"}
+                        onChange={(e) => onSaveSettings({ ...appSettings, language: e.currentTarget.value })}
+                        className="w-full px-3 py-2 rounded-lg text-sm bg-transparent border outline-none"
+                        style={{ background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                      >
+                        <option value="en" style={{ background: "var(--color-panel-2)" }}>English (US)</option>
+                        <option value="ru" style={{ background: "var(--color-panel-2)" }}>Русский (Russian)</option>
+                        <option value="ja" style={{ background: "var(--color-panel-2)" }}>日本語 (Japanese)</option>
+                        <option value="zh" style={{ background: "var(--color-panel-2)" }}>中文 (Chinese)</option>
+                        <option value="ko" style={{ background: "var(--color-panel-2)" }}>한국어 (Korean)</option>
+                        <option value="zh-TW" style={{ background: "var(--color-panel-2)" }}>繁體中文 (Taiwanese)</option>
+                        <option value="pl" style={{ background: "var(--color-panel-2)" }}>Polski (Polish)</option>
+                        <option value="uk" style={{ background: "var(--color-panel-2)" }}>Українська (Ukrainian)</option>
+                        <option value="de" style={{ background: "var(--color-panel-2)" }}>Deutsch (German)</option>
+                        <option value="fr" style={{ background: "var(--color-panel-2)" }}>Français (French)</option>
+                        {Object.entries(customLangs).map(([code, { name }]) => (
+                          <option key={code} value={code} style={{ background: "var(--color-panel-2)" }}>
+                            {name} ({code})
+                          </option>
+                        ))}
+                      </select>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-semibold truncate" style={{ color: "var(--color-text)" }}>
-                        {selectedProfile?.displayName || profileDraft.displayName || t('settings.profiles.new_profile')}
-                      </div>
-                      <div className="text-[11px] truncate" style={{ color: "var(--color-text-dim)" }}>
-                        {selectedProfile?.id === activeLibraryProfileId ? t('settings.profiles.active_profile') : t('settings.profiles.profile_editor')}
-                        {profileDraft.handle ? ` · @${profileDraft.handle}` : ""}
-                      </div>
-                      {(profileDraft.tagline || selectedProfile?.tagline) && (
-                        <div className="text-[11px] truncate mt-0.5" style={{ color: "var(--color-text-muted)" }}>
-                          {profileDraft.tagline || selectedProfile?.tagline}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleImportLanguage}
+                        disabled={langImporting}
+                        className="flex-1 py-2 rounded text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                          <polyline points="7 10 12 15 17 10" />
+                          <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                        {langImporting ? "Importing..." : "Import Language"}
+                      </button>
+                      {customLangs[appSettings.language || ""] && (
+                        <button
+                          onClick={() => handleRemoveCustomLanguage(appSettings.language!)}
+                          className="py-2 px-3 rounded text-xs"
+                          style={{ background: "var(--color-danger-bg)", color: "var(--color-danger)", border: "1px solid var(--color-danger-border)" }}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-[11px] mb-1" style={{ color: "var(--color-text-dim)" }}>Search Engine</label>
+                      <select
+                        value={appSettings.preferredSearchEngine || "duckduckgo"}
+                        onChange={(e) => onSaveSettings({ ...appSettings, preferredSearchEngine: e.currentTarget.value as any })}
+                        className="w-full px-3 py-2 rounded-lg text-sm bg-transparent border outline-none"
+                        style={{ background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                      >
+                        <option value="duckduckgo" style={{ background: "var(--color-panel-2)" }}>DuckDuckGo</option>
+                        <option value="google" style={{ background: "var(--color-panel-2)" }}>Google</option>
+                        <option value="bing" style={{ background: "var(--color-panel-2)" }}>Bing</option>
+                        <option value="brave" style={{ background: "var(--color-panel-2)" }}>Brave</option>
+                      </select>
+                    </div>
+                    {Object.keys(customLangs).length > 0 && (
+                      <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>
+                        Custom languages: {Object.keys(customLangs).map(c => customLangs[c].name).join(", ")}
+                      </p>
+                    )}
+                  </div>
+                </SettingsSurface>
+
+                <SettingsSurface
+                  title="Accounts"
+                  description="Connect storefront sessions here. Provider secrets are kept in the secure vault."
+                >
+                  <div className="space-y-2.5">
+                    <div className="settings-account-row" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                      <div>
+                        <div className="settings-account-row__title">F95zone</div>
+                        <div className="settings-account-row__status" style={{ color: f95LoggedIn ? "var(--color-warning)" : "var(--color-text-dim)" }}>
+                          {f95LoggedIn ? t('settings.accounts.logged_in') : t('settings.accounts.sign_in', { name: "F95zone" })}
                         </div>
+                      </div>
+                      {f95LoggedIn ? (
+                        <button onClick={onF95Logout} className="settings-account-row__button" style={{ background: "var(--color-warning-bg)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>
+                          {t('settings.accounts.sign_out')}
+                        </button>
+                      ) : (
+                        <button onClick={() => { onClose(); onF95Login(); }} className="settings-account-row__button" style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
+                          Sign in
+                        </button>
+                      )}
+                    </div>
+                    <div className="settings-account-row" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                      <div>
+                        <div className="settings-account-row__title">DLsite</div>
+                        <div className="settings-account-row__status" style={{ color: dlsiteLoggedIn ? "var(--color-danger-strong)" : "var(--color-text-dim)" }}>
+                          {dlsiteLoggedIn ? t('settings.accounts.logged_in') : `${t('settings.accounts.sign_in', { name: "DLsite" })} · ${t('settings.accounts.age_gate')}`}
+                        </div>
+                      </div>
+                      {dlsiteLoggedIn ? (
+                        <button onClick={onDLsiteLogout} className="settings-account-row__button" style={{ background: "var(--color-danger-bg)", color: "var(--color-danger-strong)", border: "1px solid var(--color-danger-border)" }}>
+                          {t('settings.accounts.sign_out')}
+                        </button>
+                      ) : (
+                        <button onClick={() => { onClose(); onDLsiteLogin(); }} className="settings-account-row__button" style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
+                          Sign in
+                        </button>
+                      )}
+                    </div>
+                    <div className="settings-account-row" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                      <div>
+                        <div className="settings-account-row__title">FAKKU</div>
+                        <div className="settings-account-row__status" style={{ color: fakkuLoggedIn ? "#da4c96" : "var(--color-text-dim)" }}>
+                          {fakkuLoggedIn ? t('settings.accounts.logged_in') : `${t('settings.accounts.sign_in', { name: "FAKKU" })} · ${t('settings.accounts.age_check_bypass')}`}
+                        </div>
+                      </div>
+                      {fakkuLoggedIn ? (
+                        <button onClick={onFakkuLogout} className="settings-account-row__button" style={{ background: "#3b1f2f", color: "#da4c96", border: "1px solid #6a2d4b" }}>
+                          {t('settings.accounts.sign_out')}
+                        </button>
+                      ) : (
+                        <button onClick={() => { onClose(); onFakkuLogin(); }} className="settings-account-row__button" style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
+                          Sign in
+                        </button>
                       )}
                     </div>
                   </div>
-                  <div className="flex gap-2">
-                    <select
-                      value={selectedProfileId}
-                      onChange={(e) => setSelectedProfileId(e.currentTarget.value)}
-                      className="flex-1 px-3 py-2 rounded text-sm bg-transparent border outline-none"
-                      style={{ background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
-                    >
-                      {libraryProfiles.map((profile) => (
-                        <option key={profile.id} value={profile.id} style={{ background: "var(--color-panel-2)" }}>
-                          {profile.displayName}{profile.id === activeLibraryProfileId ? t('settings.profiles.active_suffix') : ""}
-                        </option>
-                      ))}
-                      <option value="new" style={{ background: "var(--color-panel-2)" }}>{t('settings.profiles.create_new')}</option>
-                    </select>
-                    {selectedProfileId !== activeLibraryProfileId && selectedProfileId !== "new" && (
+                </SettingsSurface>
+
+                <SettingsSurface
+                  title={t('settings.profiles.title')}
+                  description="Profiles isolate library data, sync state, secrets, and presentation identity."
+                  wide
+                >
+                  <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="w-11 h-11 rounded-xl flex items-center justify-center text-sm font-black overflow-hidden"
+                        style={{
+                          background: selectedProfile?.avatarUrl
+                            ? `center / cover no-repeat url(${selectedProfile.avatarUrl})`
+                            : `linear-gradient(135deg, ${profileDraft.accentColor || "#66c0f4"}, color-mix(in srgb, ${profileDraft.accentColor || "#66c0f4"} 45%, black 55%))`,
+                          color: "white",
+                        }}
+                      >
+                        {!selectedProfile?.avatarUrl && (profileDraft.displayName || "P").slice(0, 1).toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-semibold truncate" style={{ color: "var(--color-text)" }}>
+                          {selectedProfile?.displayName || profileDraft.displayName || t('settings.profiles.new_profile')}
+                        </div>
+                        <div className="text-[11px] truncate" style={{ color: "var(--color-text-dim)" }}>
+                          {selectedProfile?.id === activeLibraryProfileId ? t('settings.profiles.active_profile') : t('settings.profiles.profile_editor')}
+                          {profileDraft.handle ? ` · @${profileDraft.handle}` : ""}
+                        </div>
+                        {(profileDraft.tagline || selectedProfile?.tagline) && (
+                          <div className="text-[11px] truncate mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+                            {profileDraft.tagline || selectedProfile?.tagline}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <select
+                        value={selectedProfileId}
+                        onChange={(e) => setSelectedProfileId(e.currentTarget.value)}
+                        className="flex-1 px-3 py-2 rounded text-sm bg-transparent border outline-none"
+                        style={{ background: "var(--color-panel)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                      >
+                        {libraryProfiles.map((profile) => (
+                          <option key={profile.id} value={profile.id} style={{ background: "var(--color-panel-2)" }}>
+                            {profile.displayName}{profile.id === activeLibraryProfileId ? t('settings.profiles.active_suffix') : ""}
+                          </option>
+                        ))}
+                        <option value="new" style={{ background: "var(--color-panel-2)" }}>{t('settings.profiles.create_new')}</option>
+                      </select>
+                      {selectedProfileId !== activeLibraryProfileId && selectedProfileId !== "new" && (
+                        <button
+                          onClick={() => onSwitchLibraryProfile(selectedProfileId)}
+                          className="px-3 py-2 rounded text-xs font-semibold"
+                          style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                        >
+                          {t('settings.profiles.switch')}
+                        </button>
+                      )}
                       <button
-                        onClick={() => onSwitchLibraryProfile(selectedProfileId)}
+                        onClick={() => setSelectedProfileId("new")}
                         className="px-3 py-2 rounded text-xs font-semibold"
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}
+                      >
+                        {t('settings.profiles.new_button')}
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.profiles.display_name')}
+                        <input
+                          type="text"
+                          value={profileDraft.displayName || ""}
+                          onInput={(e) => setProfileDraft((prev) => ({ ...prev, displayName: (e.target as HTMLInputElement).value }))}
+                          className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
+                          style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                        />
+                      </label>
+                      <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.profiles.handle')}
+                        <input
+                          type="text"
+                          value={profileDraft.handle || ""}
+                          onInput={(e) => setProfileDraft((prev) => ({ ...prev, handle: (e.target as HTMLInputElement).value.replace(/^@+/, "") }))}
+                          className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
+                          style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                          placeholder={t('settings.profiles.handle_placeholder')}
+                        />
+                      </label>
+                      <label className="text-xs col-span-2" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.profiles.tagline')}
+                        <input
+                          type="text"
+                          value={profileDraft.tagline || ""}
+                          onInput={(e) => setProfileDraft((prev) => ({ ...prev, tagline: (e.target as HTMLInputElement).value }))}
+                          className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
+                          style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                          placeholder={t('settings.profiles.tagline_placeholder')}
+                        />
+                      </label>
+                      <label className="text-xs col-span-2" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.profiles.avatar_url')}
+                        <input
+                          type="text"
+                          value={profileDraft.avatarUrl || ""}
+                          onInput={(e) => setProfileDraft((prev) => ({ ...prev, avatarUrl: (e.target as HTMLInputElement).value }))}
+                          className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
+                          style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                          placeholder="https://..."
+                        />
+                      </label>
+                      <label className="text-xs col-span-2" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.profiles.banner_url')}
+                        <input
+                          type="text"
+                          value={profileDraft.bannerUrl || ""}
+                          onInput={(e) => setProfileDraft((prev) => ({ ...prev, bannerUrl: (e.target as HTMLInputElement).value }))}
+                          className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
+                          style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                          placeholder="https://..."
+                        />
+                      </label>
+                      <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.profiles.accent_color')}
+                        <input
+                          type="color"
+                          value={profileDraft.accentColor || "#66c0f4"}
+                          onInput={(e) => setProfileDraft((prev) => ({ ...prev, accentColor: (e.target as HTMLInputElement).value }))}
+                          className="mt-1 w-full h-9 rounded bg-transparent border outline-none"
+                          style={{ borderColor: "var(--color-border)" }}
+                        />
+                      </label>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => onSaveLibraryProfile(profileDraft)}
+                        disabled={!profileDraft.displayName?.trim()}
+                        className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
                         style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
                       >
-                        {t('settings.profiles.switch')}
+                        {profileDraft.id ? t('settings.profiles.save_profile') : t('settings.profiles.create_profile')}
                       </button>
-                    )}
-                    <button
-                      onClick={() => setSelectedProfileId("new")}
-                      className="px-3 py-2 rounded text-xs font-semibold"
-                      style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}
-                    >
-                      {t('settings.profiles.new_button')}
-                    </button>
+                      {selectedProfile && libraryProfiles.length > 1 && (
+                        <button
+                          onClick={() => onDeleteLibraryProfile(selectedProfile.id)}
+                          className="px-3 py-2 rounded text-xs font-semibold"
+                          style={{ background: "var(--color-danger-bg)", color: "var(--color-danger)", border: "1px solid var(--color-danger-border)" }}
+                        >
+                          {t('common.delete')}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.profiles.display_name')}
-                      <input
-                        type="text"
-                        value={profileDraft.displayName || ""}
-                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, displayName: (e.target as HTMLInputElement).value }))}
-                        className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
-                        style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
-                      />
+                </SettingsSurface>
+
+                <SettingsSurface
+                  title="System Defaults"
+                  description="Controls that affect startup behavior, notifications, scoring, privacy blur, and capture cadence."
+                >
+                  <div className="space-y-2.5">
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input type="checkbox" checked={appSettings.startupWithWindows}
+                        onChange={(e) => onSaveSettings({ ...appSettings, startupWithWindows: e.currentTarget.checked })} />
+                      {t('settings.system.startup')}
                     </label>
-                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.profiles.handle')}
-                      <input
-                        type="text"
-                        value={profileDraft.handle || ""}
-                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, handle: (e.target as HTMLInputElement).value.replace(/^@+/, "") }))}
-                        className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
-                        style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
-                        placeholder={t('settings.profiles.handle_placeholder')}
-                      />
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input type="checkbox" checked={appSettings.updateCheckerEnabled}
+                        onChange={(e) => onSaveSettings({ ...appSettings, updateCheckerEnabled: e.currentTarget.checked })} />
+                      {t('settings.system.updates')}
                     </label>
-                    <label className="text-xs col-span-2" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.profiles.tagline')}
-                      <input
-                        type="text"
-                        value={profileDraft.tagline || ""}
-                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, tagline: (e.target as HTMLInputElement).value }))}
-                        className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
-                        style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
-                        placeholder={t('settings.profiles.tagline_placeholder')}
-                      />
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input type="checkbox" checked={appSettings.sessionToastEnabled}
+                        onChange={(e) => onSaveSettings({ ...appSettings, sessionToastEnabled: e.currentTarget.checked })} />
+                      {t('settings.system.notifications')}
                     </label>
-                    <label className="text-xs col-span-2" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.profiles.avatar_url')}
-                      <input
-                        type="text"
-                        value={profileDraft.avatarUrl || ""}
-                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, avatarUrl: (e.target as HTMLInputElement).value }))}
-                        className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
-                        style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
-                        placeholder="https://..."
-                      />
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input type="checkbox" checked={appSettings.trayTooltipEnabled}
+                        onChange={(e) => onSaveSettings({ ...appSettings, trayTooltipEnabled: e.currentTarget.checked })} />
+                      {t('settings.system.tray_tooltip')}
                     </label>
-                    <label className="text-xs col-span-2" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.profiles.banner_url')}
-                      <input
-                        type="text"
-                        value={profileDraft.bannerUrl || ""}
-                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, bannerUrl: (e.target as HTMLInputElement).value }))}
-                        className="mt-1 w-full px-2 py-1.5 rounded bg-transparent border outline-none"
-                        style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
-                        placeholder="https://..."
-                      />
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input type="checkbox" checked={appSettings.surpriseLaunchesImmediately}
+                        onChange={(e) => onSaveSettings({ ...appSettings, surpriseLaunchesImmediately: e.currentTarget.checked })} />
+                      {t('settings.system.surprise_launch')}
                     </label>
-                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.profiles.accent_color')}
-                      <input
-                        type="color"
-                        value={profileDraft.accentColor || "#66c0f4"}
-                        onInput={(e) => setProfileDraft((prev) => ({ ...prev, accentColor: (e.target as HTMLInputElement).value }))}
-                        className="mt-1 w-full h-9 rounded bg-transparent border outline-none"
-                        style={{ borderColor: "var(--color-border)" }}
-                      />
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input type="checkbox" checked={appSettings.blurNsfwContent}
+                        onChange={(e) => onSaveSettings({ ...appSettings, blurNsfwContent: e.currentTarget.checked })} />
+                      {t('settings.system.blur_nsfw')}
                     </label>
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => onSaveLibraryProfile(profileDraft)}
-                      disabled={!profileDraft.displayName?.trim()}
-                      className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
-                      style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
-                    >
-                      {profileDraft.id ? t('settings.profiles.save_profile') : t('settings.profiles.create_profile')}
-                    </button>
-                    {selectedProfile && libraryProfiles.length > 1 && (
-                      <button
-                        onClick={() => onDeleteLibraryProfile(selectedProfile.id)}
-                        className="px-3 py-2 rounded text-xs font-semibold"
-                        style={{ background: "var(--color-danger-bg)", color: "var(--color-danger)", border: "1px solid var(--color-danger-border)" }}
+                    <label className="text-sm block" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.system.rating_scale')}
+                      <select
+                        value={appSettings.ratingScale}
+                        onChange={(e) => onSaveSettings({ ...appSettings, ratingScale: (e.currentTarget.value as RatingScale) })}
+                        className="mt-1 w-full px-2 py-2 rounded text-xs outline-none"
+                        style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
                       >
-                        {t('common.delete')}
-                      </button>
-                    )}
+                        <option value="10">{t('settings.system.rating_scale_options.10')}</option>
+                        <option value="10_decimal">{t('settings.system.rating_scale_options.10_decimal')}</option>
+                        <option value="100">{t('settings.system.rating_scale_options.100')}</option>
+                        <option value="5_star">{t('settings.system.rating_scale_options.5_star')}</option>
+                        <option value="3_smiley">{t('settings.system.rating_scale_options.3_smiley')}</option>
+                      </select>
+                    </label>
+                    <label className="text-sm block" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.system.auto_screenshot')}
+                      <div className="flex items-center gap-2 mt-1">
+                        <input type="number" min="0" className="w-20 px-2 py-2 bg-transparent border rounded outline-none text-center"
+                          style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                          value={appSettings.autoScreenshotInterval || 0}
+                          onChange={e => onSaveSettings({ ...appSettings, autoScreenshotInterval: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
+                        <span className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.disable_hint')}</span>
+                      </div>
+                    </label>
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input type="checkbox" checked={appSettings.saveBackupOnExit}
+                        onChange={(e) => onSaveSettings({ ...appSettings, saveBackupOnExit: e.currentTarget.checked })} />
+                      {t('settings.system.backup_on_exit')}
+                    </label>
                   </div>
-                  <p className="text-[11px] leading-relaxed" style={{ color: "var(--color-text-dim)" }}>
-                    {t('settings.profiles.description')}
-                  </p>
-                </div>
-              </section>
+                </SettingsSurface>
 
-              <section className="space-y-2">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>F95zone</h3>
-                {f95LoggedIn ? (
-                  <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
-                    style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ background: "var(--color-warning)" }} />
-                      <span className="text-sm" style={{ color: "var(--color-warning)" }}>{t('settings.accounts.logged_in')}</span>
-                    </div>
-                    <button onClick={onF95Logout}
-                      className="text-xs px-3 py-1 rounded"
-                      style={{ background: "var(--color-warning-bg)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>
-                      {t('settings.accounts.sign_out')}
-                    </button>
-                  </div>
-                ) : (
-                  <button onClick={() => { onClose(); onF95Login(); }}
-                    className="w-full py-2 rounded-lg text-sm text-left px-3 flex items-center gap-2"
-                    style={{ background: "var(--color-panel)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /><polyline points="10 17 15 12 10 7" /><line x1="15" y1="12" x2="3" y2="12" />
-                    </svg>
-                    {t('settings.accounts.sign_in', { name: "F95zone" })}
-                  </button>
-                )}
-              </section>
-
-              {/* DLsite */}
-              <section className="space-y-2">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>DLsite</h3>
-                {dlsiteLoggedIn ? (
-                  <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
-                    style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ background: "var(--color-danger-strong)" }} />
-                      <span className="text-sm" style={{ color: "var(--color-danger-strong)" }}>{t('settings.accounts.logged_in')}</span>
-                    </div>
-                    <button onClick={onDLsiteLogout}
-                      className="text-xs px-3 py-1 rounded"
-                      style={{ background: "var(--color-danger-bg)", color: "var(--color-danger-strong)", border: "1px solid #6a2020" }}>
-                      {t('settings.accounts.sign_out')}
-                    </button>
-                  </div>
-                ) : (
-                  <button onClick={() => { onClose(); onDLsiteLogin(); }}
-                    className="w-full py-2 rounded-lg text-sm text-left px-3 flex items-center gap-2"
-                    style={{ background: "var(--color-panel)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
-                    <div className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0"
-                      style={{ background: "var(--color-danger-strong)", color: "var(--color-white)" }}>DL</div>
-                    {t('settings.accounts.sign_in', { name: "DLsite" })}
-                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>{t('settings.accounts.age_gate')}</span>
-                  </button>
-                )}
-              </section>
-
-              <section className="space-y-2">
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>FAKKU</h3>
-                {fakkuLoggedIn ? (
-                  <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
-                    style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ background: "#da4c96" }} />
-                      <span className="text-sm" style={{ color: "#da4c96" }}>{t('settings.accounts.logged_in')}</span>
-                    </div>
-                    <button onClick={onFakkuLogout}
-                      className="text-xs px-3 py-1 rounded"
-                      style={{ background: "#3b1f2f", color: "#da4c96", border: "1px solid #6a2d4b" }}>
-                      {t('settings.accounts.sign_out')}
-                    </button>
-                  </div>
-                ) : (
-                  <button onClick={() => { onClose(); onFakkuLogin(); }}
-                    className="w-full py-2 rounded-lg text-sm text-left px-3 flex items-center gap-2"
-                    style={{ background: "var(--color-panel)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
-                    <div className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0"
-                      style={{ background: "#da4c96", color: "var(--color-white)" }}>FK</div>
-                    {t('settings.accounts.sign_in', { name: "FAKKU" })}
-                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>{t('settings.accounts.age_check_bypass')}</span>
-                  </button>
-                )}
-              </section>
-
-              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.title')}</h3>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  <input type="checkbox" checked={appSettings.startupWithWindows}
-                    onChange={(e) => onSaveSettings({ ...appSettings, startupWithWindows: e.currentTarget.checked })} />
-                  {t('settings.system.startup')}
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  <input type="checkbox" checked={appSettings.updateCheckerEnabled}
-                    onChange={(e) => onSaveSettings({ ...appSettings, updateCheckerEnabled: e.currentTarget.checked })} />
-                  {t('settings.system.updates')}
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  <input type="checkbox" checked={appSettings.sessionToastEnabled}
-                    onChange={(e) => onSaveSettings({ ...appSettings, sessionToastEnabled: e.currentTarget.checked })} />
-                  {t('settings.system.notifications')}
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  <input type="checkbox" checked={appSettings.trayTooltipEnabled}
-                    onChange={(e) => onSaveSettings({ ...appSettings, trayTooltipEnabled: e.currentTarget.checked })} />
-                  {t('settings.system.tray_tooltip')}
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="When disabled, Surprise me only opens a random game page without launching it">
-                  <input type="checkbox" checked={appSettings.surpriseLaunchesImmediately}
-                    onChange={(e) => onSaveSettings({ ...appSettings, surpriseLaunchesImmediately: e.currentTarget.checked })} />
-                  {t('settings.system.surprise_launch')}
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  <input type="checkbox" checked={appSettings.blurNsfwContent}
-                    onChange={(e) => onSaveSettings({ ...appSettings, blurNsfwContent: e.currentTarget.checked })} />
-                  {t('settings.system.blur_nsfw')}
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  {t('settings.system.rating_scale')}
-                  <select
-                    value={appSettings.ratingScale}
-                    onChange={(e) => onSaveSettings({ ...appSettings, ratingScale: (e.currentTarget.value as RatingScale) })}
-                    className="ml-2 px-2 py-1 rounded text-xs outline-none"
-                    style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
-                  >
-                    <option value="10">{t('settings.system.rating_scale_options.10')}</option>
-                    <option value="10_decimal">{t('settings.system.rating_scale_options.10_decimal')}</option>
-                    <option value="100">{t('settings.system.rating_scale_options.100')}</option>
-                    <option value="5_star">{t('settings.system.rating_scale_options.5_star')}</option>
-                    <option value="3_smiley">{t('settings.system.rating_scale_options.3_smiley')}</option>
-                  </select>
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="Automatically take a screenshot while a game is running">
-                  {t('settings.system.auto_screenshot')}
-                  <input type="number" min="0" className="w-12 px-1 py-1 bg-transparent border rounded outline-none text-center ml-2"
-                    style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
-                    value={appSettings.autoScreenshotInterval || 0}
-                    onChange={e => onSaveSettings({ ...appSettings, autoScreenshotInterval: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
-                  <span className="text-[10px] ml-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.disable_hint')}</span>
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title="Create a ZIP backup of detected save files when a game session ends">
-                  <input
-                    type="checkbox"
-                    checked={appSettings.saveBackupOnExit}
-                    onChange={(e) => onSaveSettings({ ...appSettings, saveBackupOnExit: e.currentTarget.checked })}
-                  />
-                  {t('settings.system.backup_on_exit')}
-                </label>
-                <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.sidebar_layout')}</div>
-                    <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.system.sidebar_description')}
-                    </p>
-                  </div>
-                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                    <input
-                      type="checkbox"
-                      checked={!!appSettings.sidebarMinimalMode}
-                      onChange={(e) => onSaveSettings({ ...appSettings, sidebarMinimalMode: e.currentTarget.checked })}
-                    />
-                    {t('settings.system.sidebar_minimal_mode')}
-                  </label>
-                  <div className="grid grid-cols-2 gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                    {[
-                      ["sidebarShowNews", "settings.system.sidebar_show_news"],
-                      ["sidebarShowStats", "settings.system.sidebar_show_stats"],
-                      ["sidebarShowSearchTools", "settings.system.sidebar_show_search_tools"],
-                      ["sidebarShowCollections", "settings.system.sidebar_show_collections"],
-                      ["sidebarShowDevelopers", "settings.system.sidebar_show_developers"],
-                      ["sidebarShowWishlist", "settings.system.sidebar_show_wishlist"],
-                      ["sidebarShowSurpriseButton", "settings.system.sidebar_show_surprise"],
-                      ["sidebarShowAddButton", "settings.system.sidebar_show_add"],
-                      ["sidebarShowSettingsButton", "settings.system.sidebar_show_settings"],
-                      ["sidebarShowLogsButton", "settings.system.sidebar_show_logs"],
-                    ].map(([key, label]) => (
-                      <label key={key} className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={(appSettings as any)[key] !== false}
-                          onChange={(e) => onSaveSettings({ ...appSettings, [key]: e.currentTarget.checked } as AppSettingsLike)}
-                        />
-                        <span>{t(label)}</span>
+                <SettingsSurface
+                  title={t('settings.appearance.title')}
+                  description="Theme scheduling, seasonal variants, accent color, and custom-theme overrides."
+                  wide
+                >
+                  <div className="space-y-3">
+                    <label className="flex items-center gap-2 text-sm flex-wrap" style={{ color: "var(--color-text-muted)" }}>
+                      {t('settings.appearance.schedule')}
+                      <select
+                        className="ml-0 sm:ml-2 bg-transparent border rounded px-2 py-1 outline-none text-(--color-text)"
+                        style={{ borderColor: "var(--color-border)" }}
+                        value={appSettings.themeScheduleMode || "manual"}
+                        onChange={(e) => onSaveSettings({ ...appSettings, themeScheduleMode: e.currentTarget.value as "manual" | "os" | "time" })}
+                      >
+                        <option value="manual" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.manual')}</option>
+                        <option value="os" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.os')}</option>
+                        <option value="time" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.time')}</option>
+                      </select>
+                    </label>
+                    {(appSettings.themeScheduleMode || "manual") === "manual" && (
+                      <label className="flex items-center gap-2 text-sm flex-wrap" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.appearance.theme')}
+                        <select
+                          className="ml-0 sm:ml-2 bg-transparent border rounded px-2 py-1 outline-none text-(--color-text)"
+                          style={{ borderColor: "var(--color-border)" }}
+                          value={appSettings.themeMode || "dark"}
+                          onChange={(e) => onSaveSettings({ ...appSettings, themeMode: e.currentTarget.value as ThemeMode })}
+                        >
+                          {THEME_OPTIONS.map((theme) => (
+                            <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
+                              {t(theme.label)}
+                            </option>
+                          ))}
+                        </select>
                       </label>
-                    ))}
-                  </div>
-                </div>
-                <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.discord_sdk')}</div>
-                    <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.system.discord_description')}
-                    </p>
-                  </div>
-                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                    <input
-                      type="checkbox"
-                      checked={!!appSettings.discordEnabled}
-                      onChange={(e) => onSaveSettings({ ...appSettings, discordEnabled: e.currentTarget.checked })}
-                    />
-                    {t('settings.system.discord_enable')}
-                  </label>
-                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                    <input
-                      type="checkbox"
-                      checked={appSettings.discordShowElapsedTime !== false}
-                      disabled={!appSettings.discordEnabled}
-                      onChange={(e) => onSaveSettings({ ...appSettings, discordShowElapsedTime: e.currentTarget.checked })}
-                    />
-                    {t('settings.system.discord_show_elapsed')}
-                  </label>
-                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                    <input
-                      type="checkbox"
-                      checked={!!appSettings.discordShowIdlePresence}
-                      disabled={!appSettings.discordEnabled}
-                      onChange={(e) => onSaveSettings({ ...appSettings, discordShowIdlePresence: e.currentTarget.checked })}
-                    />
-                    {t('settings.system.discord_show_idle')}
-                  </label>
-                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                    <input
-                      type="checkbox"
-                      checked={appSettings.discordAllowActivityJoin !== false}
-                      disabled={!appSettings.discordEnabled}
-                      onChange={(e) => onSaveSettings({ ...appSettings, discordAllowActivityJoin: e.currentTarget.checked })}
-                    />
-                    {t('settings.system.discord_allow_join')}
-                  </label>
-                  <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "var(--color-bg-overlay)", border: "1px solid var(--color-border-soft)", color: "var(--color-text-muted)" }}>
-                    <div>{t('settings.system.discord_status_label')}: <span style={{ color: "var(--color-text)" }}>{discordStatusSummary}</span></div>
-                    {discordSnapshot && (
-                      <div className="mt-1">
-                        {t('settings.system.discord_presence_label')}: <span style={{ color: "var(--color-text)" }}>{discordSnapshot.richPresenceActive ? t('settings.system.discord_presence_active') : t('settings.system.discord_presence_idle')}</span>
+                    )}
+                    {(appSettings.themeScheduleMode || "manual") === "time" && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <label className="flex items-center gap-2 text-sm flex-wrap" style={{ color: "var(--color-text-muted)" }}>
+                          {t('settings.appearance.day_theme')}
+                          <select
+                            className="ml-0 sm:ml-2 bg-transparent border rounded px-2 py-1 outline-none text-(--color-text)"
+                            style={{ borderColor: "var(--color-border)" }}
+                            value={appSettings.dayThemeMode || "light"}
+                            onChange={(e) => onSaveSettings({ ...appSettings, dayThemeMode: e.currentTarget.value as ThemeMode })}
+                          >
+                            {DAY_THEME_OPTIONS.map((theme) => (
+                              <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
+                                {t(theme.label)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="flex items-center gap-2 text-sm flex-wrap" style={{ color: "var(--color-text-muted)" }}>
+                          {t('settings.appearance.night_theme')}
+                          <select
+                            className="ml-0 sm:ml-2 bg-transparent border rounded px-2 py-1 outline-none text-(--color-text)"
+                            style={{ borderColor: "var(--color-border)" }}
+                            value={appSettings.nightThemeMode || "dark"}
+                            onChange={(e) => onSaveSettings({ ...appSettings, nightThemeMode: e.currentTarget.value as ThemeMode })}
+                          >
+                            {NIGHT_THEME_OPTIONS.map((theme) => (
+                              <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
+                                {t(theme.label)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="flex items-center gap-2 text-sm flex-wrap" style={{ color: "var(--color-text-muted)" }}>
+                          {t('settings.appearance.light_starts')}
+                          <input
+                            type="number"
+                            min="0"
+                            max="23"
+                            className="ml-0 sm:ml-2 w-16 bg-transparent border rounded px-2 py-1 outline-none text-(--color-text)"
+                            style={{ borderColor: "var(--color-border)" }}
+                            value={Math.max(0, Math.min(23, appSettings.lightStartHour ?? defaultSettings.lightStartHour))}
+                            onChange={(e) => onSaveSettings({ ...appSettings, lightStartHour: Math.max(0, Math.min(23, parseInt(e.currentTarget.value) || 0)) })}
+                          />
+                        </label>
+                        <label className="flex items-center gap-2 text-sm flex-wrap" style={{ color: "var(--color-text-muted)" }}>
+                          {t('settings.appearance.night_theme')}
+                          <input
+                            type="number"
+                            min="0"
+                            max="23"
+                            className="ml-0 sm:ml-2 w-16 bg-transparent border rounded px-2 py-1 outline-none text-(--color-text)"
+                            style={{ borderColor: "var(--color-border)" }}
+                            value={Math.max(0, Math.min(23, appSettings.darkStartHour ?? defaultSettings.darkStartHour))}
+                            onChange={(e) => onSaveSettings({ ...appSettings, darkStartHour: Math.max(0, Math.min(23, parseInt(e.currentTarget.value) || 0)) })}
+                          />
+                        </label>
                       </div>
                     )}
-                    {discordSnapshot?.currentUser && (
-                      <div className="mt-1">
-                        {t('settings.system.discord_account_label')}: <span style={{ color: "var(--color-text)" }}>{discordSnapshot.currentUser.displayName || discordSnapshot.currentUser.username}</span>
-                        {" · "}
-                        <span>{discordSnapshot.currentUser.status}</span>
+                    <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 items-end">
+                      <label className="text-sm block" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.appearance.seasonal')}
+                        <select
+                          className="mt-1 w-full bg-transparent border rounded px-2 py-1 outline-none text-(--color-text)"
+                          style={{ borderColor: "var(--color-border)" }}
+                          value={appSettings.seasonalTheme || "auto"}
+                          onChange={(e) => onSaveSettings({ ...appSettings, seasonalTheme: e.currentTarget.value as "auto" | "winter" | "summer" | "halloween" | "none" })}
+                        >
+                          <option value="auto" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.os')}</option>
+                          <option value="winter" style={{ background: "var(--color-panel-2)" }}>Winter</option>
+                          <option value="summer" style={{ background: "var(--color-panel-2)" }}>Summer</option>
+                          <option value="halloween" style={{ background: "var(--color-panel-2)" }}>Halloween</option>
+                          <option value="none" style={{ background: "var(--color-panel-2)" }}>Off</option>
+                        </select>
+                      </label>
+                      <label className="text-sm block" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.appearance.accent')}
+                        <div className="flex items-center gap-2 mt-1">
+                          <input
+                            type="color"
+                            className="w-10 h-9 border rounded cursor-pointer"
+                            style={{ borderColor: "var(--color-border)", background: "transparent" }}
+                            value={normalizeHexColor(appSettings.accentColor || defaultSettings.accentColor, defaultSettings.accentColor)}
+                            onChange={(e) => {
+                              const accent = e.currentTarget.value;
+                              const nextStep = { ...appSettings, accentColor: accent };
+                              if (appSettings.themeMode === "custom") {
+                                const nextColors = { ...(appSettings.customThemeColors || {}), accent };
+                                nextStep.customThemeColors = nextColors;
+                              }
+                              onSaveSettings(nextStep);
+                            }}
+                          />
+                          <input
+                            type="text"
+                            className="w-28 bg-transparent border rounded px-2 py-1 outline-none text-(--color-text) font-mono text-xs"
+                            style={{ borderColor: "var(--color-border)" }}
+                            value={normalizeHexColor(appSettings.accentColor || defaultSettings.accentColor, defaultSettings.accentColor)}
+                            onChange={(e) => {
+                              const accent = normalizeHexColor(e.currentTarget.value, defaultSettings.accentColor);
+                              const nextStep = { ...appSettings, accentColor: accent };
+                              if (appSettings.themeMode === "custom") {
+                                const nextColors = { ...(appSettings.customThemeColors || {}), accent };
+                                nextStep.customThemeColors = nextColors;
+                              }
+                              onSaveSettings(nextStep);
+                            }}
+                          />
+                        </div>
+                      </label>
+                    </div>
+                    {appSettings.themeMode === "custom" && (
+                      <div className="mt-2 p-3 rounded-lg space-y-4" style={{ background: "var(--color-panel-alt)", border: "1px dashed var(--color-border-strong)" }}>
+                        <div>
+                          <h4 className="text-xs font-bold mb-1" style={{ color: "var(--color-white)" }}>{t('settings.custom_theme.title')}</h4>
+                          <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                            {t('settings.custom_theme.hint')}
+                          </p>
+                        </div>
+                        <div className="space-y-4">
+                          <div>
+                            <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.backgrounds')}</div>
+                            <div className="grid grid-cols-2 gap-3">
+                              {[
+                                { key: "bg", label: t('settings.custom_theme.labels.bg') },
+                                { key: "bg-elev", label: t('settings.custom_theme.labels.bg-elev') },
+                                { key: "bg-deep", label: t('settings.custom_theme.labels.bg-deep') },
+                                { key: "bg-overlay", label: t('settings.custom_theme.labels.bg-overlay') },
+                              ].map(cfg => (
+                                <div key={cfg.key} className="flex flex-col gap-1">
+                                  <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
+                                  <div className="flex items-center gap-1.5">
+                                    <input type="color" className="w-6 h-6 border-none bg-transparent cursor-pointer"
+                                      value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#000000")}
+                                      onChange={e => onSaveSettings({
+                                        ...appSettings,
+                                        customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
+                                      })} />
+                                    <input type="text" className="flex-1 bg-transparent border rounded px-1.5 py-0.5 text-[10px] outline-none font-mono"
+                                      style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                                      value={appSettings.customThemeColors?.[cfg.key] || ""}
+                                      onInput={e => onSaveSettings({
+                                        ...appSettings,
+                                        customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
+                                      })} />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.panels')}</div>
+                            <div className="grid grid-cols-3 gap-3">
+                              {[
+                                { key: "panel", label: t('settings.custom_theme.labels.panel') },
+                                { key: "panel-2", label: t('settings.custom_theme.labels.panel-2') },
+                                { key: "panel-3", label: t('settings.custom_theme.labels.panel-3') },
+                              ].map(cfg => (
+                                <div key={cfg.key} className="flex flex-col gap-1">
+                                  <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
+                                  <div className="flex items-center gap-1.5">
+                                    <input type="color" className="w-5 h-5 border-none bg-transparent cursor-pointer"
+                                      value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#000000")}
+                                      onChange={e => onSaveSettings({
+                                        ...appSettings,
+                                        customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
+                                      })} />
+                                    <input type="text" className="flex-1 min-w-0 bg-transparent border rounded px-1 py-0.5 text-[9px] outline-none font-mono"
+                                      style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                                      value={appSettings.customThemeColors?.[cfg.key] || ""}
+                                      onInput={e => onSaveSettings({
+                                        ...appSettings,
+                                        customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
+                                      })} />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.typography')}</div>
+                            <div className="grid grid-cols-2 gap-3">
+                              {[
+                                { key: "text", label: t('settings.custom_theme.labels.text') },
+                                { key: "text-soft", label: t('settings.custom_theme.labels.text-soft') },
+                                { key: "text-muted", label: t('settings.custom_theme.labels.text-muted') },
+                                { key: "text-dim", label: t('settings.custom_theme.labels.text-dim') },
+                              ].map(cfg => (
+                                <div key={cfg.key} className="flex flex-col gap-1">
+                                  <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
+                                  <div className="flex items-center gap-1.5">
+                                    <input type="color" className="w-6 h-6 border-none bg-transparent cursor-pointer"
+                                      value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#ffffff")}
+                                      onChange={e => onSaveSettings({
+                                        ...appSettings,
+                                        customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
+                                      })} />
+                                    <input type="text" className="flex-1 bg-transparent border rounded px-1.5 py-0.5 text-[10px] outline-none font-mono"
+                                      style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                                      value={appSettings.customThemeColors?.[cfg.key] || ""}
+                                      onInput={e => onSaveSettings({
+                                        ...appSettings,
+                                        customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
+                                      })} />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.borders')}</div>
+                            <div className="grid grid-cols-2 gap-3">
+                              {[
+                                { key: "border", label: t('settings.custom_theme.labels.border') },
+                                { key: "border-soft", label: t('settings.custom_theme.labels.border-soft') },
+                                { key: "border-strong", label: t('settings.custom_theme.labels.border-strong') },
+                                { key: "border-subtle", label: t('settings.custom_theme.labels.border-subtle') },
+                              ].map(cfg => (
+                                <div key={cfg.key} className="flex flex-col gap-1">
+                                  <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
+                                  <div className="flex items-center gap-1.5">
+                                    <input type="color" className="w-6 h-6 border-none bg-transparent cursor-pointer"
+                                      value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#000000")}
+                                      onChange={e => onSaveSettings({
+                                        ...appSettings,
+                                        customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
+                                      })} />
+                                    <input type="text" className="flex-1 bg-transparent border rounded px-1.5 py-0.5 text-[10px] outline-none font-mono"
+                                      style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                                      value={appSettings.customThemeColors?.[cfg.key] || ""}
+                                      onInput={e => onSaveSettings({
+                                        ...appSettings,
+                                        customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
+                                      })} />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="pt-2 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
+                          <button className="text-[10px] uppercase font-bold" style={{ color: "var(--color-accent)" }}
+                            onClick={() => {
+                              if (confirm(t('settings.custom_theme.reset_confirm'))) {
+                                onSaveSettings({ ...appSettings, customThemeColors: {} });
+                              }
+                            }}>
+                            {t('settings.custom_theme.reset')}
+                          </button>
+                        </div>
                       </div>
                     )}
-                    {discordSnapshot && (
-                      <div className="mt-1">
-                        {t('settings.system.discord_friends_snapshot', {
-                          playing: discordSnapshot.relationshipCounts.onlinePlayingGame,
-                          online: discordSnapshot.relationshipCounts.onlineElsewhere,
-                          offline: discordSnapshot.relationshipCounts.offline,
+                  </div>
+                </SettingsSurface>
+
+                <SettingsSurface
+                  title={t('settings.system.sidebar_layout')}
+                  description={t('settings.system.sidebar_description')}
+                >
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <label className="text-xs block" style={{ color: "var(--color-text-muted)" }}>
+                        Library view mode
+                        <select
+                          value={viewMode}
+                          onChange={(e) => onViewModeChange(e.currentTarget.value as LayoutViewMode)}
+                          className="mt-1 w-full px-3 py-2 rounded text-sm outline-none"
+                          style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                        >
+                          <option value="list" style={{ background: "var(--color-panel-2)" }}>List</option>
+                          <option value="compact" style={{ background: "var(--color-panel-2)" }}>Compact</option>
+                          <option value="grid" style={{ background: "var(--color-panel-2)" }}>Grid</option>
+                        </select>
+                      </label>
+                      <label className="text-xs block" style={{ color: "var(--color-text-muted)" }}>
+                        Sidebar width
+                        <div className="mt-2 flex items-center gap-3">
+                          <input
+                            type="range"
+                            min="200"
+                            max="600"
+                            step="10"
+                            value={sidebarWidth}
+                            onInput={(e) => onSidebarWidthChange(parseInt((e.target as HTMLInputElement).value, 10) || 256)}
+                            className="flex-1"
+                          />
+                          <span className="text-[11px] font-mono" style={{ color: "var(--color-text)" }}>{sidebarWidth}px</span>
+                        </div>
+                      </label>
+                    </div>
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input
+                        type="checkbox"
+                        checked={!!appSettings.sidebarMinimalMode}
+                        onChange={(e) => onSaveSettings({ ...appSettings, sidebarMinimalMode: e.currentTarget.checked })}
+                      />
+                      {t('settings.system.sidebar_minimal_mode')}
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      {[
+                        ["sidebarShowNews", "settings.system.sidebar_show_news"],
+                        ["sidebarShowStats", "settings.system.sidebar_show_stats"],
+                        ["sidebarShowSearchTools", "settings.system.sidebar_show_search_tools"],
+                        ["sidebarShowCollections", "settings.system.sidebar_show_collections"],
+                        ["sidebarShowDevelopers", "settings.system.sidebar_show_developers"],
+                        ["sidebarShowWishlist", "settings.system.sidebar_show_wishlist"],
+                        ["sidebarShowSurpriseButton", "settings.system.sidebar_show_surprise"],
+                        ["sidebarShowAddButton", "settings.system.sidebar_show_add"],
+                        ["sidebarShowSettingsButton", "settings.system.sidebar_show_settings"],
+                        ["sidebarShowLogsButton", "settings.system.sidebar_show_logs"],
+                      ].map(([key, label]) => (
+                        <label key={key} className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={(appSettings as any)[key] !== false}
+                            onChange={(e) => onSaveSettings({ ...appSettings, [key]: e.currentTarget.checked } as AppSettingsLike)}
+                          />
+                          <span>{t(label)}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="pt-3 border-t space-y-3" style={{ borderColor: "var(--color-border-soft)" }}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Layout presets</div>
+                          <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                            Save the current sidebar layout and switch between built-in or custom workspace profiles.
+                          </p>
+                        </div>
+                        {activeLayoutPresetId && (
+                          <span className="px-2 py-1 rounded text-[10px] font-semibold uppercase tracking-wide"
+                            style={{ background: "var(--color-accent-deep)", color: "var(--color-accent-soft)", border: "1px solid var(--color-accent)" }}>
+                            Active preset
+                          </span>
+                        )}
+                      </div>
+                      <div className="grid gap-2 md:grid-cols-3">
+                        {layoutPresets.map((preset) => {
+                          const isActive = preset.id === activeLayoutPresetId;
+                          return (
+                            <div
+                              key={preset.id}
+                              className="rounded-lg p-3 space-y-2"
+                              style={{
+                                background: isActive ? "var(--color-panel)" : "var(--color-panel-2)",
+                                border: `1px solid ${isActive ? "var(--color-accent)" : "var(--color-border-soft)"}`,
+                              }}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <div className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>{preset.name}</div>
+                                  {preset.description && (
+                                    <p className="mt-1 text-[11px] leading-relaxed" style={{ color: "var(--color-text-dim)" }}>{preset.description}</p>
+                                  )}
+                                </div>
+                                {preset.readOnly && (
+                                  <span className="text-[9px] uppercase tracking-wide" style={{ color: "var(--color-text-dim)" }}>Built-in</span>
+                                )}
+                              </div>
+                              <div className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                                {preset.config.viewMode} · {preset.config.sidebarWidth}px · {preset.config.sidebarMinimalMode ? "minimal sidebar" : "full sidebar"}
+                              </div>
+                              <div className="flex gap-2 flex-wrap">
+                                <button
+                                  onClick={() => { onApplyLayoutPreset(preset.config); setLayoutPresetStatus(`Applied '${preset.name}'.`); }}
+                                  className="px-2.5 py-1.5 rounded text-[11px] font-semibold"
+                                  style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                                >
+                                  Apply
+                                </button>
+                                {!preset.readOnly && (
+                                  <>
+                                    <button
+                                      onClick={() => handleUpdateLayoutPresetClick(preset.id, preset.name)}
+                                      className="px-2.5 py-1.5 rounded text-[11px]"
+                                      style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}
+                                    >
+                                      Update
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteLayoutPresetClick(preset.id, preset.name)}
+                                      className="px-2.5 py-1.5 rounded text-[11px]"
+                                      style={{ background: "var(--color-danger-bg)", color: "var(--color-danger)", border: "1px solid var(--color-danger-border)" }}
+                                    >
+                                      Delete
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          );
                         })}
                       </div>
-                    )}
-                    {showDiscordError && (
-                      <div className="mt-1" style={{ color: "var(--color-danger)" }}>
-                        {t('settings.system.discord_last_error')}: {discordSnapshot.lastError}
+                      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
+                        <label className="text-xs block" style={{ color: "var(--color-text-muted)" }}>
+                          Save current layout as
+                          <input
+                            type="text"
+                            value={layoutPresetName}
+                            onInput={(e) => setLayoutPresetName((e.target as HTMLInputElement).value)}
+                            placeholder="My focused layout"
+                            className="mt-1 w-full px-3 py-2 rounded text-sm outline-none"
+                            style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                          />
+                        </label>
+                        <button
+                          onClick={handleSaveLayoutPresetClick}
+                          disabled={!layoutPresetName.trim()}
+                          className="px-3 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                          style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                        >
+                          Save preset
+                        </button>
+                        {selectedCustomLayoutPreset && (
+                          <button
+                            onClick={() => handleUpdateLayoutPresetClick(selectedCustomLayoutPreset.id, selectedCustomLayoutPreset.name)}
+                            className="px-3 py-2 rounded text-xs"
+                            style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}
+                          >
+                            Update active
+                          </button>
+                        )}
                       </div>
-                    )}
+                      {layoutPresetStatus && (
+                        <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>{layoutPresetStatus}</p>
+                      )}
+                    </div>
                   </div>
-                  <button
-                    onClick={onOpenDiscordSettings}
-                    disabled={!appSettings.discordEnabled}
-                    className="w-full py-2 rounded-lg text-sm font-medium disabled:opacity-50"
-                    style={{ background: "#26314e", color: "#b9c7ff", border: "1px solid #4a5f94" }}
-                  >
-                    {t('settings.system.discord_open_settings')}
-                  </button>
-                </div>
-                <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.backup_retention')}</div>
-                    <p className="mt-1 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.system.backup_retention_hint')}
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.system.daily')}
-                      <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
-                        style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
-                        value={appSettings.backupRetentionDailyKeep || 0}
-                        onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionDailyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
-                    </label>
-                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.system.weekly')}
-                      <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
-                        style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
-                        value={appSettings.backupRetentionWeeklyKeep || 0}
-                        onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionWeeklyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
-                    </label>
-                    <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.system.monthly')}
-                      <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
-                        style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
-                        value={appSettings.backupRetentionMonthlyKeep || 0}
-                        onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionMonthlyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
-                    </label>
-                  </div>
-                  <button onClick={onApplyBackupRetentionPolicy} disabled={isBackupRetentionBusy}
-                    className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
-                    style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
-                    {backupRetentionStatus || t('settings.system.apply_backup')}
-                  </button>
-                  <button onClick={onRunDbVacuum} disabled={isDbVacuumBusy}
-                    id="settings-optimize-storage-btn"
-                    className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
-                    style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
-                    title="Prune old logs, trim the file-ops journal, and remove any orphaned temp files from the app data folder">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
-                      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-                    </svg>
-                    {dbVacuumStatus || "Optimize Storage"}
-                  </button>
-                </div>
-              </section>
+                </SettingsSurface>
 
-              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.appearance.title')}</h3>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  {t('settings.appearance.schedule')}
-                  <select
-                    className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                    style={{ borderColor: "var(--color-border)" }}
-                    value={appSettings.themeScheduleMode || "manual"}
-                    onChange={(e) => onSaveSettings({ ...appSettings, themeScheduleMode: e.currentTarget.value as "manual" | "os" | "time" })}
-                  >
-                    <option value="manual" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.manual')}</option>
-                    <option value="os" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.os')}</option>
-                    <option value="time" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.time')}</option>
-                  </select>
-                </label>
-                {(appSettings.themeScheduleMode || "manual") === "manual" && (
-                  <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                    {t('settings.appearance.theme')}
-                    <select
-                      className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                      style={{ borderColor: "var(--color-border)" }}
-                      value={appSettings.themeMode || "dark"}
-                      onChange={(e) => onSaveSettings({ ...appSettings, themeMode: e.currentTarget.value as ThemeMode })}
+                <SettingsSurface
+                  title={t('settings.system.discord_sdk')}
+                  description={t('settings.system.discord_description')}
+                >
+                  <div className="space-y-2.5">
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input
+                        type="checkbox"
+                        checked={!!appSettings.discordEnabled}
+                        onChange={(e) => onSaveSettings({ ...appSettings, discordEnabled: e.currentTarget.checked })}
+                      />
+                      {t('settings.system.discord_enable')}
+                    </label>
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input
+                        type="checkbox"
+                        checked={appSettings.discordShowElapsedTime !== false}
+                        disabled={!appSettings.discordEnabled}
+                        onChange={(e) => onSaveSettings({ ...appSettings, discordShowElapsedTime: e.currentTarget.checked })}
+                      />
+                      {t('settings.system.discord_show_elapsed')}
+                    </label>
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input
+                        type="checkbox"
+                        checked={!!appSettings.discordShowIdlePresence}
+                        disabled={!appSettings.discordEnabled}
+                        onChange={(e) => onSaveSettings({ ...appSettings, discordShowIdlePresence: e.currentTarget.checked })}
+                      />
+                      {t('settings.system.discord_show_idle')}
+                    </label>
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input
+                        type="checkbox"
+                        checked={appSettings.discordAllowActivityJoin !== false}
+                        disabled={!appSettings.discordEnabled}
+                        onChange={(e) => onSaveSettings({ ...appSettings, discordAllowActivityJoin: e.currentTarget.checked })}
+                      />
+                      {t('settings.system.discord_allow_join')}
+                    </label>
+                    <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "var(--color-bg-overlay)", border: "1px solid var(--color-border-soft)", color: "var(--color-text-muted)" }}>
+                      <div>{t('settings.system.discord_status_label')}: <span style={{ color: "var(--color-text)" }}>{discordStatusSummary}</span></div>
+                      {discordSnapshot && (
+                        <div className="mt-1">
+                          {t('settings.system.discord_presence_label')}: <span style={{ color: "var(--color-text)" }}>{discordSnapshot.richPresenceActive ? t('settings.system.discord_presence_active') : t('settings.system.discord_presence_idle')}</span>
+                        </div>
+                      )}
+                      {discordSnapshot?.currentUser && (
+                        <div className="mt-1">
+                          {t('settings.system.discord_account_label')}: <span style={{ color: "var(--color-text)" }}>{discordSnapshot.currentUser.displayName || discordSnapshot.currentUser.username}</span>
+                          {" · "}
+                          <span>{discordSnapshot.currentUser.status}</span>
+                        </div>
+                      )}
+                      {discordSnapshot && (
+                        <div className="mt-1">
+                          {t('settings.system.discord_friends_snapshot', {
+                            playing: discordSnapshot.relationshipCounts.onlinePlayingGame,
+                            online: discordSnapshot.relationshipCounts.onlineElsewhere,
+                            offline: discordSnapshot.relationshipCounts.offline,
+                          })}
+                        </div>
+                      )}
+                      {showDiscordError && (
+                        <div className="mt-1" style={{ color: "var(--color-danger)" }}>
+                          {t('settings.system.discord_last_error')}: {discordSnapshot?.lastError}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={onOpenDiscordSettings}
+                      disabled={!appSettings.discordEnabled}
+                      className="w-full py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                      style={{ background: "#26314e", color: "#b9c7ff", border: "1px solid #4a5f94" }}
                     >
-                      {THEME_OPTIONS.map((theme) => (
-                        <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
-                          {t(theme.label)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                {(appSettings.themeScheduleMode || "manual") === "time" && (
-                  <>
-                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.appearance.day_theme')}
-                      <select
-                        className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                        style={{ borderColor: "var(--color-border)" }}
-                        value={appSettings.dayThemeMode || "light"}
-                        onChange={(e) => onSaveSettings({ ...appSettings, dayThemeMode: e.currentTarget.value as ThemeMode })}
-                      >
-                        {DAY_THEME_OPTIONS.map((theme) => (
-                          <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
-                            {t(theme.label)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.appearance.night_theme')}
-                      <select
-                        className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                        style={{ borderColor: "var(--color-border)" }}
-                        value={appSettings.nightThemeMode || "dark"}
-                        onChange={(e) => onSaveSettings({ ...appSettings, nightThemeMode: e.currentTarget.value as ThemeMode })}
-                      >
-                        {NIGHT_THEME_OPTIONS.map((theme) => (
-                          <option key={theme.value} value={theme.value} style={{ background: "var(--color-panel-2)" }}>
-                            {t(theme.label)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.appearance.light_starts')}
-                      <input
-                        type="number"
-                        min="0"
-                        max="23"
-                        className="ml-2 w-14 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                        style={{ borderColor: "var(--color-border)" }}
-                        value={Math.max(0, Math.min(23, appSettings.lightStartHour ?? defaultSettings.lightStartHour))}
-                        onChange={(e) => onSaveSettings({ ...appSettings, lightStartHour: Math.max(0, Math.min(23, parseInt(e.currentTarget.value) || 0)) })}
-                      />
-                      <span className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>00-23</span>
-                    </label>
-                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.appearance.night_theme')}
-                      <input
-                        type="number"
-                        min="0"
-                        max="23"
-                        className="ml-2 w-14 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                        style={{ borderColor: "var(--color-border)" }}
-                        value={Math.max(0, Math.min(23, appSettings.darkStartHour ?? defaultSettings.darkStartHour))}
-                        onChange={(e) => onSaveSettings({ ...appSettings, darkStartHour: Math.max(0, Math.min(23, parseInt(e.currentTarget.value) || 0)) })}
-                      />
-                      <span className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>00-23</span>
-                    </label>
-                  </>
-                )}
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  {t('settings.appearance.seasonal')}
-                  <select
-                    className="ml-2 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]"
-                    style={{ borderColor: "var(--color-border)" }}
-                    value={appSettings.seasonalTheme || "auto"}
-                    onChange={(e) => onSaveSettings({ ...appSettings, seasonalTheme: e.currentTarget.value as "auto" | "winter" | "summer" | "halloween" | "none" })}
-                  >
-                    <option value="auto" style={{ background: "var(--color-panel-2)" }}>{t('settings.appearance.schedule_options.os')}</option>
-                    <option value="winter" style={{ background: "var(--color-panel-2)" }}>Winter</option>
-                    <option value="summer" style={{ background: "var(--color-panel-2)" }}>Summer</option>
-                    <option value="halloween" style={{ background: "var(--color-panel-2)" }}>Halloween</option>
-                    <option value="none" style={{ background: "var(--color-panel-2)" }}>Off</option>
-                  </select>
-                </label>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  {t('settings.appearance.accent')}
-                  <input
-                    type="color"
-                    className="ml-2 w-8 h-6 border rounded cursor-pointer"
-                    style={{ borderColor: "var(--color-border)", background: "transparent" }}
-                    value={normalizeHexColor(appSettings.accentColor || defaultSettings.accentColor, defaultSettings.accentColor)}
-                    onChange={(e) => {
-                      const accent = e.currentTarget.value;
-                      const nextStep = { ...appSettings, accentColor: accent };
-                      if (appSettings.themeMode === "custom") {
-                        const nextColors = { ...(appSettings.customThemeColors || {}), accent };
-                        nextStep.customThemeColors = nextColors;
-                      }
-                      onSaveSettings(nextStep);
-                    }}
-                  />
-                  <input
-                    type="text"
-                    className="ml-1 w-24 bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)] font-mono text-xs"
-                    style={{ borderColor: "var(--color-border)" }}
-                    value={normalizeHexColor(appSettings.accentColor || defaultSettings.accentColor, defaultSettings.accentColor)}
-                    onChange={(e) => {
-                      const accent = normalizeHexColor(e.currentTarget.value, defaultSettings.accentColor);
-                      const nextStep = { ...appSettings, accentColor: accent };
-                      if (appSettings.themeMode === "custom") {
-                        const nextColors = { ...(appSettings.customThemeColors || {}), accent };
-                        nextStep.customThemeColors = nextColors;
-                      }
-                      onSaveSettings(nextStep);
-                    }}
-                  />
-                </label>
+                      {t('settings.system.discord_open_settings')}
+                    </button>
+                  </div>
+                </SettingsSurface>
 
-                {appSettings.themeMode === "custom" && (
-                  <div className="mt-4 p-3 rounded-lg space-y-4" style={{ background: "var(--color-panel-alt)", border: "1px dashed var(--color-border-strong)" }}>
+                <SettingsSurface
+                  title="Maintenance"
+                  description="Retention policy and storage cleanup live here instead of being mixed with first-run toggles."
+                >
+                  <div className="space-y-3">
                     <div>
-                      <h4 className="text-xs font-bold mb-1" style={{ color: "var(--color-white)" }}>{t('settings.custom_theme.title')}</h4>
-                      <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
-                        {t('settings.custom_theme.hint')}
+                      <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.system.backup_retention')}</div>
+                      <p className="mt-1 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.system.backup_retention_hint')}
                       </p>
                     </div>
-
-                    <div className="space-y-4">
-                      {/* --- Backgrounds --- */}
-                      <div>
-                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.backgrounds')}</div>
-                        <div className="grid grid-cols-2 gap-3">
-                          {[
-                            { key: "bg", label: t('settings.custom_theme.labels.bg') },
-                            { key: "bg-elev", label: t('settings.custom_theme.labels.bg-elev') },
-                            { key: "bg-deep", label: t('settings.custom_theme.labels.bg-deep') },
-                            { key: "bg-overlay", label: t('settings.custom_theme.labels.bg-overlay') },
-                          ].map(cfg => (
-                            <div key={cfg.key} className="flex flex-col gap-1">
-                              <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
-                              <div className="flex items-center gap-1.5">
-                                <input type="color" className="w-6 h-6 border-none bg-transparent cursor-pointer"
-                                  value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#000000")}
-                                  onChange={e => onSaveSettings({
-                                    ...appSettings,
-                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
-                                  })} />
-                                <input type="text" className="flex-1 bg-transparent border rounded px-1.5 py-0.5 text-[10px] outline-none font-mono"
-                                  style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
-                                  value={appSettings.customThemeColors?.[cfg.key] || ""}
-                                  onInput={e => onSaveSettings({
-                                    ...appSettings,
-                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
-                                  })} />
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* --- Panels --- */}
-                      <div>
-                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.panels')}</div>
-                        <div className="grid grid-cols-3 gap-3">
-                          {[
-                            { key: "panel", label: t('settings.custom_theme.labels.panel') },
-                            { key: "panel-2", label: t('settings.custom_theme.labels.panel-2') },
-                            { key: "panel-3", label: t('settings.custom_theme.labels.panel-3') },
-                          ].map(cfg => (
-                            <div key={cfg.key} className="flex flex-col gap-1">
-                              <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
-                              <div className="flex items-center gap-1.5">
-                                <input type="color" className="w-5 h-5 border-none bg-transparent cursor-pointer"
-                                  value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#000000")}
-                                  onChange={e => onSaveSettings({
-                                    ...appSettings,
-                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
-                                  })} />
-                                <input type="text" className="flex-1 min-w-0 bg-transparent border rounded px-1 py-0.5 text-[9px] outline-none font-mono"
-                                  style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
-                                  value={appSettings.customThemeColors?.[cfg.key] || ""}
-                                  onInput={e => onSaveSettings({
-                                    ...appSettings,
-                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
-                                  })} />
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* --- Text --- */}
-                      <div>
-                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.typography')}</div>
-                        <div className="grid grid-cols-2 gap-3">
-                          {[
-                            { key: "text", label: t('settings.custom_theme.labels.text') },
-                            { key: "text-soft", label: t('settings.custom_theme.labels.text-soft') },
-                            { key: "text-muted", label: t('settings.custom_theme.labels.text-muted') },
-                            { key: "text-dim", label: t('settings.custom_theme.labels.text-dim') },
-                          ].map(cfg => (
-                            <div key={cfg.key} className="flex flex-col gap-1">
-                              <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
-                              <div className="flex items-center gap-1.5">
-                                <input type="color" className="w-6 h-6 border-none bg-transparent cursor-pointer"
-                                  value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#ffffff")}
-                                  onChange={e => onSaveSettings({
-                                    ...appSettings,
-                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
-                                  })} />
-                                <input type="text" className="flex-1 bg-transparent border rounded px-1.5 py-0.5 text-[10px] outline-none font-mono"
-                                  style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
-                                  value={appSettings.customThemeColors?.[cfg.key] || ""}
-                                  onInput={e => onSaveSettings({
-                                    ...appSettings,
-                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
-                                  })} />
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* --- Borders --- */}
-                      <div>
-                        <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.borders')}</div>
-                        <div className="grid grid-cols-2 gap-3">
-                          {[
-                            { key: "border", label: t('settings.custom_theme.labels.border') },
-                            { key: "border-soft", label: t('settings.custom_theme.labels.border-soft') },
-                            { key: "border-strong", label: t('settings.custom_theme.labels.border-strong') },
-                            { key: "border-subtle", label: t('settings.custom_theme.labels.border-subtle') },
-                          ].map(cfg => (
-                            <div key={cfg.key} className="flex flex-col gap-1">
-                              <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{cfg.label}</span>
-                              <div className="flex items-center gap-1.5">
-                                <input type="color" className="w-6 h-6 border-none bg-transparent cursor-pointer"
-                                  value={normalizeHexColor(appSettings.customThemeColors?.[cfg.key] || "", "#000000")}
-                                  onChange={e => onSaveSettings({
-                                    ...appSettings,
-                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: e.currentTarget.value }
-                                  })} />
-                                <input type="text" className="flex-1 bg-transparent border rounded px-1.5 py-0.5 text-[10px] outline-none font-mono"
-                                  style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
-                                  value={appSettings.customThemeColors?.[cfg.key] || ""}
-                                  onInput={e => onSaveSettings({
-                                    ...appSettings,
-                                    customThemeColors: { ...(appSettings.customThemeColors || {}), [cfg.key]: (e.target as HTMLInputElement).value }
-                                  })} />
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.system.daily')}
+                        <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
+                          style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                          value={appSettings.backupRetentionDailyKeep || 0}
+                          onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionDailyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
+                      </label>
+                      <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.system.weekly')}
+                        <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
+                          style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                          value={appSettings.backupRetentionWeeklyKeep || 0}
+                          onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionWeeklyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
+                      </label>
+                      <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                        {t('settings.system.monthly')}
+                        <input type="number" min="0" className="mt-1 w-full px-2 py-1 bg-transparent border rounded outline-none text-center"
+                          style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                          value={appSettings.backupRetentionMonthlyKeep || 0}
+                          onChange={(e) => onSaveSettings({ ...appSettings, backupRetentionMonthlyKeep: Math.max(0, parseInt(e.currentTarget.value) || 0) })} />
+                      </label>
                     </div>
+                    <button onClick={onApplyBackupRetentionPolicy} disabled={isBackupRetentionBusy}
+                      className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
+                      style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
+                      {backupRetentionStatus || t('settings.system.apply_backup')}
+                    </button>
+                    <button onClick={onRunDbVacuum} disabled={isDbVacuumBusy}
+                      id="settings-optimize-storage-btn"
+                      className="w-full py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
+                      style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                      </svg>
+                      {dbVacuumStatus || "Optimize Storage"}
+                    </button>
+                  </div>
+                </SettingsSurface>
 
-                    <div className="pt-2 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
-                      <button className="text-[10px] uppercase font-bold" style={{ color: "var(--color-accent)" }}
-                        onClick={() => {
-                           if (confirm(t('settings.custom_theme.reset_confirm'))) {
-                             onSaveSettings({ ...appSettings, customThemeColors: {} });
-                           }
-                        }}>
-                        {t('settings.custom_theme.reset')}
+                <SettingsSurface
+                  title={t('settings.panic.title')}
+                  description="Emergency hide/kill behavior when you need Libmaly gone immediately."
+                >
+                  <div className="space-y-3">
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input type="checkbox" checked={appSettings.bossKeyEnabled}
+                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyEnabled: e.currentTarget.checked })} />
+                      {t('settings.panic.enable')}
+                    </label>
+                    {appSettings.bossKeyEnabled && (
+                      <div className="space-y-3 pl-1">
+                        <label className="flex items-center gap-2 text-xs flex-wrap" style={{ color: "var(--color-text-muted)" }}>
+                          {t('settings.panic.hotkey')}:
+                          <select value={appSettings.bossKeyCode || 0x7A}
+                            onChange={(e) => onSaveSettings({ ...appSettings, bossKeyCode: parseInt(e.currentTarget.value) })}
+                            className="bg-transparent border rounded px-2 py-1 outline-none text-(--color-text)" style={{ borderColor: "var(--color-border)" }}>
+                            {[...Array(11)].map((_, i) => (
+                              <option key={i} value={0x70 + i} style={{ background: "var(--color-panel-2)" }}>F{i + 1}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="flex items-center gap-2 text-xs flex-wrap" style={{ color: "var(--color-text-muted)" }}>
+                          {t('settings.panic.action')}:
+                          <select value={appSettings.bossKeyAction || "hide"}
+                            onChange={(e) => onSaveSettings({ ...appSettings, bossKeyAction: e.currentTarget.value as "hide" | "kill" })}
+                            className="bg-transparent border rounded px-2 py-1 outline-none text-(--color-text)" style={{ borderColor: "var(--color-border)" }}>
+                            <option value="hide" style={{ background: "var(--color-panel-2)" }}>{t('settings.panic.action_hide')}</option>
+                            <option value="kill" style={{ background: "var(--color-panel-2)" }}>{t('settings.panic.action_kill')}</option>
+                          </select>
+                        </label>
+                        <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                          <input type="checkbox" checked={appSettings.bossKeyMuteSystem}
+                            onChange={(e) => onSaveSettings({ ...appSettings, bossKeyMuteSystem: e.currentTarget.checked })} />
+                          {t('settings.panic.mute')}
+                        </label>
+                        <label className="text-xs block" style={{ color: "var(--color-text-muted)" }}>
+                          {t('settings.panic.fallback')}
+                          <input type="text" placeholder="e.g. notepad.exe or https://google.com" className="mt-1 w-full bg-transparent border rounded px-2 py-1 outline-none text-(--color-text)"
+                            style={{ borderColor: "var(--color-border)" }} value={appSettings.bossKeyFallbackUrl || ""}
+                            onChange={(e) => onSaveSettings({ ...appSettings, bossKeyFallbackUrl: e.currentTarget.value })} />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                </SettingsSurface>
+
+                <SettingsSurface
+                  title={`${t('settings.export.title')} & ${t('settings.folders.title')}`}
+                  description="Exports, library-folder visibility, update affordances, and changelog access."
+                >
+                  <div className="space-y-3">
+                    <div className="flex gap-2">
+                      <button onClick={onExportCSV} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>{t('settings.export.csv')}</button>
+                      <button onClick={onExportHTML} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>{t('settings.export.html')}</button>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={onExportCloudState} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>
+                        {t('settings.export.cloud_export')}
+                      </button>
+                      <button onClick={onImportCloudState} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>
+                        {t('settings.export.cloud_import')}
                       </button>
                     </div>
+                    <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
+                      {libraryFolders.length === 0 ? (
+                        <p className="px-3 py-3 text-xs" style={{ color: "var(--color-text-dim)" }}>{t('settings.folders.none')}</p>
+                      ) : (
+                        libraryFolders.map((f) => {
+                          const label = f.path.replace(/\\/g, "/").split("/").pop() ?? f.path;
+                          return (
+                            <div key={f.path} className="flex items-center gap-2 px-3 py-2 border-b last:border-0"
+                              style={{ borderColor: "var(--color-border-soft)" }}>
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                              </svg>
+                              <span className="flex-1 text-xs truncate" style={{ color: "var(--color-text-muted)" }} title={f.path}>{label}</span>
+                              <button onClick={() => onRemoveFolder(f.path)}
+                                className="text-[11px] px-1.5 rounded"
+                                style={{ color: "var(--color-text-dim)" }}
+                                onMouseEnter={(e) => (e.currentTarget.style.color = "var(--color-danger)")}
+                                onMouseLeave={(e) => (e.currentTarget.style.color = "var(--color-text-dim)")}>×</button>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                    {appUpdate && (
+                      <button onClick={() => { onClose(); onAppUpdate(); }}
+                        className="w-full py-2 rounded-lg text-sm px-3 flex items-center gap-2 font-semibold"
+                        style={{ background: "var(--color-success-bg)", color: "var(--color-success)", border: "1px solid var(--color-success-border)" }}>
+                        ↑ {t('settings.system.update_available', { version: appUpdate.version })}
+                      </button>
+                    )}
+                    <button onClick={onOpenWhatsNew}
+                      className="w-full py-2 rounded-lg text-sm px-3 flex items-center gap-2 font-semibold"
+                      style={{ background: "var(--color-panel-3)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                        <path d="M2 17l10 5 10-5" />
+                        <path d="M2 12l10 5 10-5" />
+                      </svg>
+                      {t('whats_new.button')}
+                    </button>
                   </div>
-                )}
-              </section>
-
-              <section className="space-y-3 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.panic.title')}</h3>
-                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }} title={t('settings.panic.hint')}>
-                  <input type="checkbox" checked={appSettings.bossKeyEnabled}
-                    onChange={(e) => onSaveSettings({ ...appSettings, bossKeyEnabled: e.currentTarget.checked })} />
-                  {t('settings.panic.enable')}
-                </label>
-                {appSettings.bossKeyEnabled && (
-                  <div className="pl-6 space-y-3 mt-2">
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.panic.hotkey')}:
-                      <select value={appSettings.bossKeyCode || 0x7A}
-                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyCode: parseInt(e.currentTarget.value) })}
-                        className="bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]" style={{ borderColor: "var(--color-border)" }}>
-                        {[...Array(11)].map((_, i) => (
-                          <option key={i} value={0x70 + i} style={{ background: "var(--color-panel-2)" }}>F{i + 1}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.panic.action')}:
-                      <select value={appSettings.bossKeyAction || "hide"}
-                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyAction: e.currentTarget.value as "hide" | "kill" })}
-                        className="bg-transparent border rounded px-2 py-1 outline-none text-[var(--color-text)]" style={{ borderColor: "var(--color-border)" }}>
-                        <option value="hide" style={{ background: "var(--color-panel-2)" }}>{t('settings.panic.action_hide')}</option>
-                        <option value="kill" style={{ background: "var(--color-panel-2)" }}>{t('settings.panic.action_kill')}</option>
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      <input type="checkbox" checked={appSettings.bossKeyMuteSystem}
-                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyMuteSystem: e.currentTarget.checked })} />
-                      {t('settings.panic.mute')}
-                    </label>
-                    <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {t('settings.panic.fallback')}:
-                      <input type="text" placeholder="e.g. notepad.exe or https://google.com" className="bg-transparent border rounded px-2 py-1 outline-none flex-1 text-[var(--color-text)]"
-                        style={{ borderColor: "var(--color-border)" }} value={appSettings.bossKeyFallbackUrl || ""}
-                        onChange={(e) => onSaveSettings({ ...appSettings, bossKeyFallbackUrl: e.currentTarget.value })} />
-                    </label>
-                  </div>
-                )}
-              </section>
-
-              <section className="space-y-4 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.export.title')}</h3>
-                <div className="flex gap-2">
-                  <button onClick={onExportCSV} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>{t('settings.export.csv')}</button>
-                  <button onClick={onExportHTML} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>{t('settings.export.html')}</button>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={onExportCloudState} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>
-                    {t('settings.export.cloud_export')}
-                  </button>
-                  <button onClick={onImportCloudState} className="flex-1 py-2 rounded text-xs font-semibold" style={{ background: "var(--color-panel-3)", color: "var(--color-text)" }}>
-                    {t('settings.export.cloud_import')}
-                  </button>
-                </div>
-                <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
-                  {t('settings.export.hint')}
-                </p>
-              </section>
-
-              <section className="space-y-2 mt-4 border-t pt-4" style={{ borderColor: "var(--color-border-soft)" }}>
-                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('settings.folders.title')}</h3>
-                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
-                  {libraryFolders.length === 0 ? (
-                    <p className="px-3 py-3 text-xs" style={{ color: "var(--color-text-dim)" }}>{t('settings.folders.none')}</p>
-                  ) : (
-                    libraryFolders.map((f) => {
-                      const label = f.path.replace(/\\/g, "/").split("/").pop() ?? f.path;
-                      return (
-                        <div key={f.path} className="flex items-center gap-2 px-3 py-2 border-b last:border-0"
-                          style={{ borderColor: "var(--color-border-soft)" }}>
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
-                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                          </svg>
-                          <span className="flex-1 text-xs truncate" style={{ color: "var(--color-text-muted)" }} title={f.path}>{label}</span>
-                          <button onClick={() => onRemoveFolder(f.path)}
-                            className="text-[11px] px-1.5 rounded"
-                            style={{ color: "var(--color-text-dim)" }}
-                            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--color-danger)")}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = "var(--color-text-dim)")}>×</button>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </section>
-
-              {appUpdate && (
-                <section className="space-y-2">
-                  <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>{t('common.nav.logs')}</h3>
-                  <button onClick={() => { onClose(); onAppUpdate(); }}
-                    className="w-full py-2 rounded-lg text-sm px-3 flex items-center gap-2 font-semibold"
-                    style={{ background: "var(--color-success-bg)", color: "var(--color-success)", border: "1px solid var(--color-success-border)" }}>
-                    ↑ {t('settings.system.update_available', { version: appUpdate.version })}
-                  </button>
-                </section>
-              )}
-              <section className="space-y-2">
-                <button onClick={onOpenWhatsNew}
-                  className="w-full py-2 rounded-lg text-sm px-3 flex items-center gap-2 font-semibold"
-                  style={{ background: "var(--color-panel-3)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2L2 7l10 5 10-5-10-5z" />
-                    <path d="M2 17l10 5 10-5" />
-                    <path d="M2 12l10 5 10-5" />
-                  </svg>
-                  {t('whats_new.button')}
-                </button>
-              </section>
+                </SettingsSurface>
+              </div>
             </>
           )}
 
@@ -1942,7 +2693,7 @@ function SettingsModal({
                           onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
                         }} />
                       <input type="text" value={feed.url} placeholder={t('settings.rss.url')}
-                        className="w-full bg-transparent text-xs w-full outline-none" style={{ color: "var(--color-text-muted)" }}
+                        className="w-full bg-transparent text-xs outline-none" style={{ color: "var(--color-text-muted)" }}
                         onChange={(e) => {
                           const nextFeeds = [...(appSettings.rssFeeds || defaultSettings.rssFeeds)];
                           nextFeeds[idx] = { ...feed, url: (e.target as HTMLInputElement).value };
@@ -1953,7 +2704,7 @@ function SettingsModal({
                       const nextFeeds = (appSettings.rssFeeds || defaultSettings.rssFeeds).filter((_, i) => i !== idx);
                       onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
                     }}
-                      className="text-[var(--color-danger)] hover:text-white mt-1" style={{ width: 24, height: 24 }}>✕</button>
+                      className="text-(--color-danger) hover:text-white mt-1" style={{ width: 24, height: 24 }}>✕</button>
                   </div>
                 ))}
 
@@ -1961,7 +2712,7 @@ function SettingsModal({
                   const nextFeeds = [...(appSettings.rssFeeds || defaultSettings.rssFeeds), { name: "New Feed", url: "", enabled: true }];
                   onSaveSettings({ ...appSettings, rssFeeds: nextFeeds });
                 }}
-                  className="w-full py-2 flex items-center justify-center gap-2 rounded text-sm text-[var(--color-text)] hover:text-white"
+                  className="w-full py-2 flex items-center justify-center gap-2 rounded text-sm text-(--color-text) hover:text-white"
                   style={{ border: "1px dashed var(--color-border)" }}>
                   {t('settings.rss.add')}
                 </button>
@@ -2100,6 +2851,20 @@ function SettingsModal({
               </button>
 
               <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>Epic Games Store / Legendary</h3>
+                <p className="text-xs leading-relaxed mb-2" style={{ color: "var(--color-text-muted)" }}>
+                  Fetch your Epic ownership list via Legendary, import installed titles, and keep uninstalled games as Legendary-backed placeholders.
+                </p>
+                <button
+                  onClick={() => { onEpicImport(); onClose(); }}
+                  className="w-full py-2 rounded-lg text-sm font-medium"
+                  style={{ background: "#202630", color: "#f4f5f7", border: "1px solid #505766" }}
+                >
+                  Import Epic Games Store Library
+                </button>
+              </div>
+
+              <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
                 <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.import.lutris')}</h3>
                 <p className="text-xs leading-relaxed mb-2" style={{ color: "var(--color-text-muted)" }}>
                   {t('settings.import.lutris_hint')}
@@ -2110,6 +2875,48 @@ function SettingsModal({
                   style={{ background: "#2a1f3a", color: "#b08ee8", border: "1px solid #5a3a8a" }}
                 >
                   {t('settings.import.lutris')}
+                </button>
+              </div>
+
+              <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>itch.io Butler</h3>
+                <p className="text-xs leading-relaxed mb-2" style={{ color: "var(--color-text-muted)" }}>
+                  Browse owned itch.io purchases, install them with butler, and apply updates inside Libmaly.
+                </p>
+                <button
+                  onClick={() => { onItchImport(); onClose(); }}
+                  className="w-full py-2 rounded-lg text-sm font-medium"
+                  style={{ background: "#2b2316", color: "#ffcf8d", border: "1px solid #7b5a25" }}
+                >
+                  Open itch.io Butler
+                </button>
+              </div>
+
+              <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>EA App / Ubisoft / Rockstar</h3>
+                <p className="text-xs leading-relaxed mb-2" style={{ color: "var(--color-text-muted)" }}>
+                  Detect installed launcher-managed games from Windows registry and local manifests, then keep a launcher protocol for "Launch from Store".
+                </p>
+                <button
+                  onClick={() => { onProtocolStoreImport(); onClose(); }}
+                  className="w-full py-2 rounded-lg text-sm font-medium"
+                  style={{ background: "#2b1820", color: "#ffb4c9", border: "1px solid #7b3951" }}
+                >
+                  Import EA App / Ubisoft / Rockstar
+                </button>
+              </div>
+
+              <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "var(--color-text-dim)" }}>GameJolt / Battle.net</h3>
+                <p className="text-xs leading-relaxed mb-2" style={{ color: "var(--color-text-muted)" }}>
+                  Experimental: scan local manifests and registry hints for installed titles, then enrich them with best-effort public store metadata.
+                </p>
+                <button
+                  onClick={() => { onExoticImport(); onClose(); }}
+                  className="w-full py-2 rounded-lg text-sm font-medium"
+                  style={{ background: "#30261a", color: "#f2c97a", border: "1px solid #856634" }}
+                >
+                  Import GameJolt / Battle.net
                 </button>
               </div>
 
@@ -2166,7 +2973,7 @@ function SettingsModal({
                 </button>
               </div>
 
-              <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+              <div className="space-y-2 max-h-100 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
                 {games.length === 0 ? (
                   <p className="text-xs text-center py-4" style={{ color: "var(--color-text-dim)" }}>No games in library yet.</p>
                 ) : (
@@ -2202,15 +3009,102 @@ function SettingsModal({
                 <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Provider Type</label>
                 <select
                   value={syncProviderType}
-                  onChange={(e) => setSyncProviderType((e.currentTarget as HTMLSelectElement).value as "webdav" | "nextcloud" | "s3" | "git")}
+                  onChange={(e) => setSyncProviderType((e.currentTarget as HTMLSelectElement).value as "webdav" | "nextcloud" | "s3" | "git" | "google-drive" | "dropbox")}
                   className="w-full px-2 py-1.5 rounded outline-none text-sm"
                   style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
                 >
                   <option value="webdav">WebDAV</option>
                   <option value="nextcloud">Nextcloud</option>
-                  <option value="s3">S3 (Coming Soon)</option>
+                  <option value="google-drive">Google Drive</option>
+                  <option value="dropbox">Dropbox</option>
+                  <option value="s3">S3</option>
                   <option value="git">Git</option>
                 </select>
+              </div>
+
+              {syncGuide && (
+                <div className="rounded-lg p-3 space-y-2" style={{ background: "linear-gradient(180deg, var(--color-panel) 0%, var(--color-panel-2) 100%)", border: "1px solid var(--color-border)" }}>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Mini Guide</div>
+                    <div className="mt-1 text-sm font-semibold" style={{ color: "var(--color-text)" }}>{syncGuide.title}</div>
+                    <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>{syncGuide.intro}</p>
+                  </div>
+                  <div className="space-y-1">
+                    {syncGuide.steps.map((step, index) => (
+                      <div key={`step-${index}`} className="flex gap-2 text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                        <span style={{ color: "var(--color-accent)", minWidth: 16 }}>{index + 1}.</span>
+                        <span>{step}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="rounded p-2 space-y-1 text-xs" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid var(--color-border-soft)", color: "var(--color-text-muted)" }}>
+                    {syncGuide.tips.map((tip, index) => (
+                      <div key={`tip-${index}`}>Tip: {tip}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Auto-backup</div>
+                  <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                    Periodically uploads the current library state using the configured sync provider. Automatic scheduling is only enabled for Google Drive and Dropbox.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                  <input
+                    type="checkbox"
+                    checked={appSettings.cloudAutoBackupEnabled}
+                    disabled={!isAutoBackupProvider(syncProviderType) && !appSettings.cloudAutoBackupEnabled}
+                    onChange={(e) => onSaveSettings({ ...appSettings, cloudAutoBackupEnabled: e.currentTarget.checked })}
+                  />
+                  Enable periodic cloud auto-backup
+                </label>
+                <label className="text-xs block" style={{ color: "var(--color-text-muted)" }}>
+                  Interval (minutes)
+                  <input
+                    type="number"
+                    min="5"
+                    value={appSettings.cloudAutoBackupIntervalMinutes || 60}
+                    onChange={(e) => onSaveSettings({
+                      ...appSettings,
+                      cloudAutoBackupIntervalMinutes: Math.max(5, parseInt(e.currentTarget.value) || 60),
+                    })}
+                    className="mt-1 w-full px-2 py-1.5 rounded outline-none text-sm"
+                    style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                  />
+                </label>
+                <div className="text-xs space-y-1" style={{ color: "var(--color-text-muted)" }}>
+                  <div>Current provider: <span style={{ color: "var(--color-text)" }}>{getSyncProviderLabel(syncProviderType)}</span></div>
+                  <div>Last successful auto-backup: <span style={{ color: "var(--color-text)" }}>{formatTimestamp(appSettings.cloudAutoBackupLastSuccessAt)}</span></div>
+                  {autoCloudBackupStatus && (
+                    <div>Background status: <span style={{ color: "var(--color-text)" }}>{autoCloudBackupStatus}</span></div>
+                  )}
+                  {!isAutoBackupProvider(syncProviderType) && (
+                    <div style={{ color: "var(--color-warning)" }}>
+                      Switch the provider to Google Drive or Dropbox to enable scheduled auto-backups.
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={onRunCloudBackupNow}
+                  disabled={isCloudBackupNowBusy || !isAutoBackupProvider(syncProviderType)}
+                  className="w-full py-2 rounded text-xs font-semibold disabled:opacity-50"
+                  style={{ background: "var(--color-success)", color: "var(--color-white)" }}
+                >
+                  {isCloudBackupNowBusy ? (cloudBackupNowStatus || "Running backup...") : "Run Backup Now"}
+                </button>
+              </div>
+
+              <div className="rounded-lg p-3 space-y-2" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Save-file cloud sync</div>
+                <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                  Save zips can now be uploaded to the configured cloud provider. Open any game and use the new Cloud Save Zip action to create a fresh zip and push it into that provider's save-backups area.
+                </p>
+                <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>
+                  Path behavior: WebDAV, Nextcloud, S3, Git, and Dropbox store zips under a save-backups location next to the main state path. Google Drive stores them in the app data area with a save-backups prefix.
+                </p>
               </div>
 
               {/* WebDAV / Nextcloud Configuration */}
@@ -2260,10 +3154,217 @@ function SettingsModal({
                 </div>
               )}
 
+              {syncProviderType === "google-drive" && (
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Auth Method</label>
+                    <select
+                      value={googleDriveAuthMode}
+                      onChange={(e) => setGoogleDriveAuthMode((e.currentTarget as HTMLSelectElement).value as "oauth" | "manual")}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    >
+                      <option value="oauth">OAuth in browser</option>
+                      <option value="manual">Manual access token</option>
+                    </select>
+                  </div>
+                  {googleDriveAuthMode === "manual" && (
+                    <div>
+                      <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Access Token</label>
+                      <input
+                        type="password"
+                        value={googleDriveAccessToken}
+                        onChange={(e) => setGoogleDriveAccessToken((e.target as HTMLInputElement).value)}
+                        placeholder="Paste Google Drive access token"
+                        className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                        style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                      />
+                    </div>
+                  )}
+                  {googleDriveAuthMode === "oauth" && (
+                    <>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>OAuth Client ID</label>
+                    <input
+                      type="text"
+                      value={googleDriveClientId}
+                      onChange={(e) => setGoogleDriveClientId((e.target as HTMLInputElement).value)}
+                      placeholder="Google desktop OAuth client ID"
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>AppData file name</label>
+                    <input
+                      type="text"
+                      value={googleDriveFileName}
+                      onChange={(e) => setGoogleDriveFileName((e.target as HTMLInputElement).value)}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div className="rounded p-2 text-xs" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}>
+                    <div>Connection status: <span style={{ color: "var(--color-text)" }}>{googleDriveAccessToken ? "Connected" : "Not connected"}</span></div>
+                    <div>Refresh token: <span style={{ color: "var(--color-text)" }}>{googleDriveRefreshToken ? "Available" : "Missing"}</span></div>
+                  </div>
+                  <button
+                    onClick={() => { void handleStartOAuth("google-drive"); }}
+                    disabled={syncLoading}
+                    className="w-full py-2 rounded text-xs font-semibold disabled:opacity-50"
+                    style={{ background: "var(--color-accent)", color: "var(--color-white)" }}
+                  >
+                    {googleDriveAccessToken ? "Reconnect Google Drive" : "Connect Google Drive"}
+                  </button>
+                    </>
+                  )}
+                  <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
+                    {googleDriveAuthMode === "oauth"
+                      ? "The state file is stored in the account's hidden Drive app data folder. Create a desktop OAuth client in Google Cloud Console and paste its client ID here before connecting."
+                      : "If getting an access token manually is easier for you, paste it here and save the configuration without using the browser OAuth flow."}
+                  </p>
+                </div>
+              )}
+
+              {syncProviderType === "dropbox" && (
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Auth Method</label>
+                    <select
+                      value={dropboxAuthMode}
+                      onChange={(e) => setDropboxAuthMode((e.currentTarget as HTMLSelectElement).value as "oauth" | "manual")}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    >
+                      <option value="oauth">OAuth in browser</option>
+                      <option value="manual">Manual access token</option>
+                    </select>
+                  </div>
+                  {dropboxAuthMode === "manual" && (
+                    <div>
+                      <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Access Token</label>
+                      <input
+                        type="password"
+                        value={dropboxAccessToken}
+                        onChange={(e) => setDropboxAccessToken((e.target as HTMLInputElement).value)}
+                        placeholder="Paste Dropbox access token"
+                        className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                        style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                      />
+                    </div>
+                  )}
+                  {dropboxAuthMode === "oauth" && (
+                    <>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Dropbox App Key</label>
+                    <input
+                      type="text"
+                      value={dropboxClientId}
+                      onChange={(e) => setDropboxClientId((e.target as HTMLInputElement).value)}
+                      placeholder="Dropbox app key"
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Dropbox path</label>
+                    <input
+                      type="text"
+                      value={dropboxPath}
+                      onChange={(e) => setDropboxPath((e.target as HTMLInputElement).value)}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div className="rounded p-2 text-xs" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}>
+                    <div>Connection status: <span style={{ color: "var(--color-text)" }}>{dropboxAccessToken ? "Connected" : "Not connected"}</span></div>
+                    <div>Refresh token: <span style={{ color: "var(--color-text)" }}>{dropboxRefreshToken ? "Available" : "Missing"}</span></div>
+                  </div>
+                  <button
+                    onClick={() => { void handleStartOAuth("dropbox"); }}
+                    disabled={syncLoading}
+                    className="w-full py-2 rounded text-xs font-semibold disabled:opacity-50"
+                    style={{ background: "var(--color-accent)", color: "var(--color-white)" }}
+                  >
+                    {dropboxAccessToken ? "Reconnect Dropbox" : "Connect Dropbox"}
+                  </button>
+                    </>
+                  )}
+                  <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
+                    {dropboxAuthMode === "oauth"
+                      ? "Use an absolute Dropbox path such as /Apps/Libmaly/libmaly-state.json. Create a scoped Dropbox app and paste its app key here before connecting."
+                      : "If manual token management is easier for you, paste the Dropbox access token directly and save the configuration."}
+                  </p>
+                </div>
+              )}
+
               {/* S3 Configuration */}
               {syncProviderType === "s3" && (
                 <div className="space-y-2">
-                  <p className="text-xs" style={{ color: "var(--color-warning)" }}>S3 provider requires AWS SDK integration. Please use WebDAV, Nextcloud, or Git for now.</p>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Bucket</label>
+                    <input
+                      type="text"
+                      value={s3Bucket}
+                      onChange={(e) => setS3Bucket((e.target as HTMLInputElement).value)}
+                      placeholder="my-libmaly-bucket"
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Region</label>
+                    <input
+                      type="text"
+                      value={s3Region}
+                      onChange={(e) => setS3Region((e.target as HTMLInputElement).value)}
+                      placeholder="us-east-1"
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Access Key</label>
+                    <input
+                      type="text"
+                      value={s3AccessKey}
+                      onChange={(e) => setS3AccessKey((e.target as HTMLInputElement).value)}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Secret Key</label>
+                    <input
+                      type="password"
+                      value={s3SecretKey}
+                      onChange={(e) => setS3SecretKey((e.target as HTMLInputElement).value)}
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Endpoint (optional for AWS, required for many S3-compatible providers)</label>
+                    <input
+                      type="text"
+                      value={s3Endpoint}
+                      onChange={(e) => setS3Endpoint((e.target as HTMLInputElement).value)}
+                      placeholder="https://<account>.r2.cloudflarestorage.com"
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>Object Path</label>
+                    <input
+                      type="text"
+                      value={s3Path}
+                      onChange={(e) => setS3Path((e.target as HTMLInputElement).value)}
+                      placeholder="libmaly-state.json"
+                      className="w-full px-2 py-1.5 rounded outline-none text-sm"
+                      style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                  </div>
                 </div>
               )}
 
@@ -2418,11 +3519,128 @@ function SettingsModal({
             </section>
           )}
 
+          {tab === "sources" && (
+            <section className="space-y-4">
+              <div className="space-y-2">
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Universal Data-Source Engine</h3>
+                <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                  Import JSON templates that match URL patterns and extract metadata with CSS selectors, regex rules, or lightweight JS hooks.
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="p-3 rounded" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                  <div className="text-[11px] font-semibold mb-2" style={{ color: "var(--color-text)" }}>Installed templates</div>
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    {customMetadataTemplates.length === 0 && (
+                      <div className="text-xs" style={{ color: "var(--color-text-muted)" }}>No custom metadata templates installed yet.</div>
+                    )}
+                    {customMetadataTemplates.map((template) => (
+                      <div key={template.id} className="p-3 rounded" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>{template.name}</div>
+                            <div className="text-[11px] mt-1" style={{ color: "var(--color-text-dim)" }}>{template.id}</div>
+                          </div>
+                          <button
+                            onClick={() => void handleDeleteCustomMetadataTemplate(template.id)}
+                            disabled={customMetadataBusy}
+                            className="px-2 py-1 rounded text-[11px] font-semibold disabled:opacity-50"
+                            style={{ background: "var(--color-danger-bg)", color: "var(--color-danger-strong)", border: "1px solid var(--color-warning-border)" }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        {template.description && (
+                          <p className="text-[11px] mt-2 leading-relaxed" style={{ color: "var(--color-text-muted)" }}>{template.description}</p>
+                        )}
+                        <div className="flex flex-wrap gap-2 mt-2 text-[10px] uppercase tracking-wide" style={{ color: "var(--color-text-dim)" }}>
+                          <span>{template.fieldCount} field group(s)</span>
+                          <span>{template.enabled ? "enabled" : "disabled"}</span>
+                          {template.overrideBuiltin && <span>overrides built-ins</span>}
+                        </div>
+                        <div className="mt-2 text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                          {template.urlPatterns.slice(0, 2).join("\n")}
+                          {template.urlPatterns.length > 2 && `\n+${template.urlPatterns.length - 2} more pattern(s)`}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-3 rounded space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                  <div className="text-[11px] font-semibold" style={{ color: "var(--color-text)" }}>Template JSON</div>
+                  <textarea
+                    value={customMetadataJson}
+                    onChange={(e) => setCustomMetadataJson((e.target as HTMLTextAreaElement).value)}
+                    placeholder={[
+                      '{',
+                      '  "id": "example-store",',
+                      '  "name": "Example Store",',
+                      '  "urlPatterns": ["https://example\\.com/game/.+"],',
+                      '  "fields": {',
+                      '    "title": [{ "type": "css", "selector": "h1" }],',
+                      '    "cover_url": [{ "type": "css", "selector": "meta[property=\\"og:image\\"]", "attr": "content", "absoluteUrl": true }],',
+                      '    "tags": [{ "type": "regex", "pattern": "Tags?:\\s*([^<]+)", "group": 1, "split": ",", "multiple": true }],',
+                      '    "screenshots": [{ "type": "js", "selector": ".gallery img", "attr": "src", "multiple": true, "absoluteUrl": true, "script": "return values.filter(Boolean);" }]',
+                      '  }',
+                      '}'
+                    ].join('\n')}
+                    className="w-full h-72 px-3 py-2 rounded outline-none text-[11px] font-mono resize-none"
+                    style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => void handleImportCustomMetadataJson()}
+                      disabled={customMetadataBusy}
+                      className="px-3 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                      style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                    >
+                      {customMetadataBusy ? "Working..." : "Import JSON"}
+                    </button>
+                    <button
+                      onClick={() => void handleImportCustomMetadataFile()}
+                      disabled={customMetadataBusy}
+                      className="px-3 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                      style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                    >
+                      Import File
+                    </button>
+                    <button
+                      onClick={() => void handleLoadInstalledCustomMetadataJson()}
+                      disabled={customMetadataBusy}
+                      className="px-3 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                      style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                    >
+                      Load Installed JSON
+                    </button>
+                    <button
+                      onClick={() => void handleExportCustomMetadata()}
+                      disabled={customMetadataBusy || customMetadataTemplates.length === 0}
+                      className="px-3 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                      style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                    >
+                      Export All
+                    </button>
+                  </div>
+                  {customMetadataStatus && (
+                    <div className="p-2 rounded text-xs leading-relaxed" style={{ background: "var(--color-panel-2)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}>
+                      {customMetadataStatus}
+                    </div>
+                  )}
+                  <div className="text-[11px] leading-relaxed" style={{ color: "var(--color-text-dim)" }}>
+                    Supported field names: title, version, developer, publisher, overview, overview_html, cover_url, screenshots, tags, genres, relations, engine, os, language, censored, release_date, last_updated, rating, price, circle, series, author, illustration, voice_actor, music, age_rating, product_format, file_format, file_size.
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
           {tab === "consistency" && (
             <section className="space-y-3">
-              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Data Consistency Tests</h3>
+              <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Data & Release Reliability Tests</h3>
               <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                Run integration tests to verify data integrity across scan, launch, crash, and recovery scenarios.
+                Run storage integrity checks plus dry-run release scenarios for crash recovery, auto-heal, sync merge, metadata fallback, and backup restore.
               </p>
               
               <button
@@ -2431,7 +3649,7 @@ function SettingsModal({
                 className="w-full py-2 rounded text-xs font-semibold disabled:opacity-50"
                 style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
               >
-                {testsRunning ? "Running Tests..." : "Run Consistency Tests"}
+                {testsRunning ? "Running Tests..." : "Run Consistency & Reliability Tests"}
               </button>
 
               {Object.keys(testResults).length > 0 && (
@@ -2469,16 +3687,70 @@ function SettingsModal({
               )}
 
               <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
-                💡 Tip: Run these tests after scanning games, launching games, or recovering from a crash to ensure data integrity.
+                Tip: Run these checks before release candidates, after path migrations, and after changing sync or metadata configuration.
               </p>
             </section>
           )}
 
-          {tab === "apikeys" && (
+          {tab === "vault" && (
             <section className="space-y-4">
+              <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>OAuth & API Vault</h3>
+                <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                  Secrets now live in the OS credential vault and are scoped to the active Libmaly profile instead of plaintext files.
+                </p>
+                <div className="text-xs" style={{ color: "var(--color-text-dim)" }}>
+                  Active profile: <span style={{ color: "var(--color-text)" }}>{activeLibraryProfileId || vaultSummary?.profileId || "default"}</span>
+                </div>
+                {vaultSummary && (
+                  <div className="grid gap-2">
+                    {Array.from(new Set(vaultSummary.entries.map((entry) => entry.group))).map((group) => {
+                      const groupEntries = vaultSummary.entries.filter((entry) => entry.group === group);
+                      const storedCount = groupEntries.filter((entry) => entry.hasValue).length;
+                      return (
+                        <div key={group} className="rounded p-2 text-xs" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)", color: "var(--color-text-muted)" }}>
+                          <div style={{ color: "var(--color-text)" }}>{group}</div>
+                          <div>{storedCount}/{groupEntries.length} entries currently present in the secure vault.</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>Storefront Sessions</h4>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                    <span>F95zone cookies</span>
+                    {f95LoggedIn ? (
+                      <button onClick={onF95Logout} className="px-3 py-1 rounded" style={{ background: "var(--color-warning-bg)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>Clear Session</button>
+                    ) : (
+                      <button onClick={() => { onClose(); onF95Login(); }} className="px-3 py-1 rounded" style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>Sign In</button>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between gap-3 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                    <span>DLsite cookies</span>
+                    {dlsiteLoggedIn ? (
+                      <button onClick={onDLsiteLogout} className="px-3 py-1 rounded" style={{ background: "var(--color-danger-bg)", color: "var(--color-danger-strong)", border: "1px solid var(--color-danger-border)" }}>Clear Session</button>
+                    ) : (
+                      <button onClick={() => { onClose(); onDLsiteLogin(); }} className="px-3 py-1 rounded" style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>Sign In</button>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between gap-3 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                    <span>FAKKU cookies</span>
+                    {fakkuLoggedIn ? (
+                      <button onClick={onFakkuLogout} className="px-3 py-1 rounded" style={{ background: "#3b1f2f", color: "#da4c96", border: "1px solid #6a2d4b" }}>Clear Session</button>
+                    ) : (
+                      <button onClick={() => { onClose(); onFakkuLogin(); }} className="px-3 py-1 rounded" style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>Sign In</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
               <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>Third-party API Keys</h3>
               <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                Configure API keys for third-party metadata providers to fetch game information from IGDB, RAWG, and MobyGames.
+                Configure API keys for third-party metadata providers and helper integrations. These values are stored in the active profile's secure vault.
               </p>
 
               {/* IGDB */}
@@ -2516,6 +3788,7 @@ function SettingsModal({
                       try {
                         await invoke("set_api_key", { provider: "igdb_client_id", key: igdbClientId });
                         await invoke("set_api_key", { provider: "igdb_client_secret", key: igdbClientSecret });
+                        await loadVaultSummary();
                       } catch (e) {
                         console.error("Failed to save IGDB keys:", e);
                       }
@@ -2553,6 +3826,7 @@ function SettingsModal({
                       setApiKeySaving(true);
                       try {
                         await invoke("set_api_key", { provider: "rawg", key: rawgApiKey });
+                        await loadVaultSummary();
                       } catch (e) {
                         console.error("Failed to save RAWG key:", e);
                       }
@@ -2590,6 +3864,7 @@ function SettingsModal({
                       setApiKeySaving(true);
                       try {
                         await invoke("set_api_key", { provider: "mobygames", key: mobygamesApiKey });
+                        await loadVaultSummary();
                       } catch (e) {
                         console.error("Failed to save MobyGames key:", e);
                       }
@@ -2601,6 +3876,53 @@ function SettingsModal({
                   >
                     {apiKeySaving ? "Saving..." : "Save MobyGames Key"}
                   </button>
+                </div>
+              </div>
+
+              <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>itch.io Butler</h4>
+                <p className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                  Optional API key cache for owned-library browsing and install flows. The itch import modal reuses the active profile's vault entry.
+                </p>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[11px] block mb-1" style={{ color: "var(--color-text-dim)" }}>API Key</label>
+                    <input
+                      type="password"
+                      value={itchApiKey}
+                      onChange={(e) => setItchApiKey((e.target as HTMLInputElement).value)}
+                      placeholder="Enter itch.io API Key"
+                      className="w-full px-3 py-2 rounded text-xs bg-transparent border outline-none"
+                      style={{ background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                    />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      setApiKeySaving(true);
+                      try {
+                        await invoke("set_api_key", { provider: "itch_io", key: itchApiKey });
+                        await loadVaultSummary();
+                      } catch (e) {
+                        console.error("Failed to save itch.io key:", e);
+                      }
+                      setApiKeySaving(false);
+                    }}
+                    disabled={apiKeySaving}
+                    className="w-full py-1.5 rounded text-xs font-medium disabled:opacity-50"
+                    style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                  >
+                    {apiKeySaving ? "Saving..." : "Save itch.io Key"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-lg p-4 space-y-2" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>Sync Vault Status</h4>
+                <p className="text-[11px] leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                  Sync passwords, access tokens, refresh tokens, and cloud credentials are now stored in the secure OS vault for the current profile. The Sync tab still edits the provider configuration, but secret values are no longer written into plaintext `sync_config.json`.
+                </p>
+                <div className="text-xs" style={{ color: "var(--color-text-dim)" }}>
+                  Current sync provider: <span style={{ color: "var(--color-text)" }}>{syncConfig ? getSyncProviderLabel(syncConfig.provider) : "Not configured"}</span>
                 </div>
               </div>
             </section>
@@ -2625,7 +3947,18 @@ function SettingsModal({
           )}
         </div>
       </div>
-    </div >
+      </div>
+      {syncConflictReport && (
+        <SyncConflictModal
+          report={syncConflictReport}
+          onResolve={(result) => {
+            setSyncConflictReport(null);
+            setSyncResult(result);
+          }}
+          onCancel={() => setSyncConflictReport(null)}
+        />
+      )}
+    </>
   );
 }
 

@@ -102,6 +102,26 @@ export function parseDeepLinkUrl(rawUrl: string): { mode: "path" | "name"; value
   }
 }
 
+export function parseSyncOAuthCallbackUrl(rawUrl: string): { provider: "google-drive" | "dropbox"; rawUrl: string } | null {
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== "libmaly:" || u.hostname !== "oauth") return null;
+    const provider = decodeURIComponent(u.pathname.slice(1));
+    if (provider === "google-drive" || provider === "dropbox") {
+      return { provider, rawUrl };
+    }
+    return null;
+  } catch {
+    const match = rawUrl.match(/^libmaly:\/\/oauth\/(google-drive|dropbox)(\?.*)?$/i);
+    if (!match?.[1]) return null;
+    const provider = match[1].toLowerCase();
+    if (provider === "google-drive" || provider === "dropbox") {
+      return { provider, rawUrl };
+    }
+    return null;
+  }
+}
+
 // ─── Season Detection ─────────────────────────────────────────────────────────
 
 export function resolveSeasonFromDate(date: Date): "winter" | "summer" | "halloween" | "none" {
@@ -160,6 +180,7 @@ export function metadataSourceLabel(source?: string) {
   if (source === "igdb") return "IGDB";
   if (source === "rawg") return "RAWG";
   if (source === "mobygames") return "MobyGames";
+  if (source?.startsWith("custom:")) return source.slice("custom:".length).replace(/[-_]+/g, " ").trim() || "Custom Source";
   return "Unknown";
 }
 

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type SyncProviderType = "webdav" | "nextcloud" | "s3" | "git";
+export type SyncProviderType = "webdav" | "nextcloud" | "s3" | "git" | "google-drive" | "dropbox";
 
 export interface WebdavConfig {
   url: string;
@@ -33,11 +33,33 @@ export interface GitConfig {
   sshKeyPath?: string;
 }
 
+export interface GoogleDriveConfig {
+  accessToken: string;
+  fileName: string;
+  clientId?: string;
+  refreshToken?: string;
+}
+
+export interface DropboxConfig {
+  accessToken: string;
+  path: string;
+  clientId?: string;
+  refreshToken?: string;
+}
+
+export interface SyncOAuthStartResult {
+  authorizationUrl: string;
+  providerType: SyncProviderType;
+  redirectUri: string;
+}
+
 export type SyncProviderConfig =
   | { provider: "webdav"; config: WebdavConfig }
   | { provider: "nextcloud"; config: NextcloudConfig }
   | { provider: "s3"; config: S3Config }
-  | { provider: "git"; config: GitConfig };
+  | { provider: "git"; config: GitConfig }
+  | { provider: "google-drive"; config: GoogleDriveConfig }
+  | { provider: "dropbox"; config: DropboxConfig };
 
 export interface SyncMetadata {
   lastSyncAt: number;
@@ -57,6 +79,37 @@ export interface SyncConflict {
   localValue: string;
   remoteValue: string;
   baseValue: string;
+}
+
+export type SyncConflictResolutionChoice = "local" | "remote" | "base";
+
+export interface SyncConflictPreviewItem {
+  key: string;
+  label: string;
+  resolution: string;
+  reason: string;
+  localCount: number;
+  remoteCount: number;
+  baseCount: number;
+  localValue: string | null;
+  remoteValue: string | null;
+  baseValue: string | null;
+  requiresManual: boolean;
+}
+
+export interface SyncConflictPreviewReport {
+  resolvedEntries: Record<string, string>;
+  items: SyncConflictPreviewItem[];
+  conflictCount: number;
+  changedKeys: string[];
+}
+
+export interface SyncSaveBackupResult {
+  zipPath: string;
+  files: number;
+  directories: string[];
+  remotePath: string;
+  providerType: SyncProviderType;
 }
 
 /**
@@ -89,10 +142,18 @@ export async function syncDownload(): Promise<SyncResult> {
 
 /**
  * Resolve sync conflicts with user-provided resolution map
- * @param resolution Map of key -> "local" or "remote"
+ * @param resolution Map of key -> "local", "remote", or "base"
  */
-export async function syncResolveConflicts(resolution: Record<string, string>): Promise<SyncResult> {
+export async function syncResolveConflicts(resolution: Record<string, SyncConflictResolutionChoice>): Promise<SyncResult> {
   return invoke("sync_resolve_conflicts", { resolution });
+}
+
+export async function syncPreviewConflicts(): Promise<SyncConflictPreviewReport> {
+  return invoke("sync_preview_conflicts");
+}
+
+export async function syncUploadSaveBackup(gamePath: string): Promise<SyncSaveBackupResult> {
+  return invoke("sync_upload_save_backup", { gamePath });
 }
 
 /**
@@ -100,6 +161,14 @@ export async function syncResolveConflicts(resolution: Record<string, string>): 
  */
 export async function syncCheckRemote(): Promise<boolean> {
   return invoke("sync_check_remote");
+}
+
+export async function syncStartOAuth(provider: "google-drive" | "dropbox", clientId: string): Promise<SyncOAuthStartResult> {
+  return invoke("sync_start_oauth", { provider, clientId });
+}
+
+export async function syncCompleteOAuthCallback(callbackUrl: string): Promise<SyncProviderConfig> {
+  return invoke("sync_complete_oauth_callback", { callbackUrl });
 }
 
 /**
@@ -128,4 +197,41 @@ export function createS3Config(config: S3Config): SyncProviderConfig {
  */
 export function createGitConfig(config: GitConfig): SyncProviderConfig {
   return { provider: "git", config };
+}
+
+/**
+ * Helper to create a Google Drive configuration
+ */
+export function createGoogleDriveConfig(config: GoogleDriveConfig): SyncProviderConfig {
+  return { provider: "google-drive", config };
+}
+
+/**
+ * Helper to create a Dropbox configuration
+ */
+export function createDropboxConfig(config: DropboxConfig): SyncProviderConfig {
+  return { provider: "dropbox", config };
+}
+
+export function isAutoBackupProvider(provider: SyncProviderType): boolean {
+  return provider === "google-drive" || provider === "dropbox";
+}
+
+export function getSyncProviderLabel(provider: SyncProviderType): string {
+  switch (provider) {
+    case "webdav":
+      return "WebDAV";
+    case "nextcloud":
+      return "Nextcloud";
+    case "s3":
+      return "S3";
+    case "git":
+      return "Git";
+    case "google-drive":
+      return "Google Drive";
+    case "dropbox":
+      return "Dropbox";
+    default:
+      return provider;
+  }
 }

@@ -1891,7 +1891,7 @@ fn prune_old_snapshots(max_keep: usize) {
     if files.len() <= max_keep {
         return;
     }
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (path, _) in files.into_iter().skip(max_keep) {
         let _ = std::fs::remove_file(path);
     }
@@ -1925,7 +1925,7 @@ fn prune_dir_with_retention(dir: &Path, policy: &BackupRetentionPolicy) -> (usiz
             Some((path, modified))
         })
         .collect::<Vec<_>>();
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     let mut keep_paths = HashSet::<String>::new();
     let mut seen_days = HashSet::<String>::new();
@@ -3008,7 +3008,6 @@ fn clean_candidate_path(raw: &str) -> Option<String> {
     }
 }
 
-#[cfg(windows)]
 fn is_allowed_store_uri(uri: &str) -> bool {
     let lower = uri.trim().to_lowercase();
     [
@@ -3633,9 +3632,7 @@ fn parse_gamejolt_candidate(value: &Value) -> Option<ExoticStoreCandidate> {
     let exe_hint = json_string_field(value, &["exe", "executable", "launchExe", "launchExecutable", "executablePath"])
         .or_else(|| json_nested_string_field(value, &["install", "executable"]));
     let resolved_exe = candidate_from_paths(exe_hint, install_dir.clone());
-    if resolved_exe.is_none() {
-        return None;
-    }
+    resolved_exe.as_ref()?;
     let game_id = json_string_field(value, &["game_id", "gameId", "id"])
         .or_else(|| json_nested_string_field(value, &["game", "id"]))
         .or_else(|| json_string_field(value, &["slug", "game_slug", "gameSlug"]))
@@ -3967,7 +3964,7 @@ fn import_protocol_store_games() -> Result<Vec<InteropGameEntry>, String> {
         .into_values()
         .filter_map(finalize_protocol_store_candidate)
         .collect();
-    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    entries.sort_by_key(|entry| entry.name.to_lowercase());
     entries.dedup_by(|a, b| {
         a.source == b.source
             && a.game_id.eq_ignore_ascii_case(&b.game_id)
@@ -4231,7 +4228,7 @@ fn list_wine_prefixes() -> Vec<PrefixInfo> {
             })
             .collect();
 
-        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out.sort_by_key(|entry| entry.name.to_lowercase());
         out
     }
 }
@@ -4853,7 +4850,7 @@ fn import_lutris_games() -> Vec<LutrisGameEntry> {
             }
         }
 
-        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out.sort_by_key(|entry| entry.name.to_lowercase());
         out
     }
 }
@@ -5040,7 +5037,7 @@ fn import_playnite_games() -> Vec<InteropGameEntry> {
                 overview: None,
             });
         }
-        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out.sort_by_key(|entry| entry.name.to_lowercase());
         out
     }
 }
@@ -5179,7 +5176,7 @@ fn import_gog_galaxy_games() -> Vec<InteropGameEntry> {
                 overview: None,
             });
         }
-        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out.sort_by_key(|entry| entry.name.to_lowercase());
         out
     }
 }
@@ -6181,7 +6178,7 @@ fn suggest_auto_heal_paths(
                     .map(|(score, reason)| (score, reason, candidate))
             })
             .collect();
-        ranked.sort_by(|a, b| b.0.cmp(&a.0));
+        ranked.sort_by_key(|entry| std::cmp::Reverse(entry.0));
 
         let Some((best_score, best_reason, best_candidate)) = ranked.first() else {
             unresolved_paths.push(game.path.clone());
@@ -6704,7 +6701,7 @@ fn import_steam_playtime() -> Vec<SteamEntry> {
         }
     });
     // Sort by playtime descending for convenience
-    results.sort_by(|a, b| b.played_minutes.cmp(&a.played_minutes));
+    results.sort_by_key(|entry| std::cmp::Reverse(entry.played_minutes));
     results
 }
 
@@ -6738,7 +6735,7 @@ fn import_steam_library() -> Vec<SteamLibraryEntry> {
             }
         }
     }
-    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    entries.sort_by_key(|entry| entry.name.to_lowercase());
     entries
 }
 
@@ -6804,7 +6801,7 @@ async fn fetch_steam_owned_games(api_key: String, profile_ref: String) -> Result
         })
         .collect();
 
-    games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    games.sort_by_key(|game| game.name.to_lowercase());
     Ok(games)
 }
 
@@ -6926,7 +6923,7 @@ fn fetch_epic_owned_games() -> Result<Vec<EpicOwnedGame>, String> {
     }
 
     let mut games: Vec<EpicOwnedGame> = by_app_name.into_values().collect();
-    games.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    games.sort_by_key(|game| game.title.to_lowercase());
     Ok(games)
 }
 
@@ -7002,8 +6999,8 @@ fn parse_localconfig_vdf(src: &str, out: &mut Vec<SteamEntry>) {
     let mut current_app: Option<(String, usize)> = None;
     let mut collected: HashMap<String, SteamEntry> = HashMap::new();
 
-    let mut lines = src.lines().peekable();
-    while let Some(line) = lines.next() {
+    let lines = src.lines();
+    for line in lines {
         let trimmed = line.trim();
 
         if trimmed.is_empty() {
@@ -7049,10 +7046,8 @@ fn parse_localconfig_vdf(src: &str, out: &mut Vec<SteamEntry>) {
             if let Some((app_id, _)) = &current_app {
                 if let Some(entry) = collected.get_mut(app_id) {
                     match key.to_ascii_lowercase().as_str() {
-                        "name" => {
-                            if entry.name.is_empty() && !value.trim().is_empty() {
-                                entry.name = value.to_string();
-                            }
+                        "name" if entry.name.is_empty() && !value.trim().is_empty() => {
+                            entry.name = value.to_string();
                         }
                         "playtime" | "playtime_forever" => {
                             let parsed = value.parse().unwrap_or(0);
@@ -7191,7 +7186,7 @@ fn list_snapshots() -> Result<Vec<SnapshotResult>, String> {
             reason: snapshot.reason,
         });
     }
-    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    out.sort_by_key(|entry| std::cmp::Reverse(entry.created_at));
     Ok(out)
 }
 

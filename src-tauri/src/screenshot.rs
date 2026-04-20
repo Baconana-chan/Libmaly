@@ -143,7 +143,7 @@ pub fn get_screenshots(game_exe: String) -> Result<Vec<Screenshot>, String> {
             }
         })
         .collect();
-    shots.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    shots.sort_by_key(|shot| std::cmp::Reverse(shot.timestamp));
     Ok(shots)
 }
 

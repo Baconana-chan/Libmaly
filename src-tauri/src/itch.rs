@@ -780,6 +780,7 @@ fn locate_butler() -> Option<PathBuf> {
 }
 
 fn common_butler_paths() -> Vec<PathBuf> {
+    #[allow(unused_mut)]
     let mut candidates = Vec::new();
     #[cfg(windows)]
     {
@@ -866,9 +867,9 @@ fn spawn_stderr_drain(stderr: ChildStderr) {
     });
 }
 
-fn apply_no_window(command: &mut Command) {
+fn apply_no_window(_command: &mut Command) {
     #[cfg(windows)]
     {
-        command.creation_flags(CREATE_NO_WINDOW);
+        _command.creation_flags(CREATE_NO_WINDOW);
     }
 }

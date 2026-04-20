@@ -39,7 +39,7 @@ pub fn detect_save_paths(game_path: &str, engine: Option<&str>, company_name: Op
 }
 
 /// Detect Unity save paths
-fn detect_unity_saves(game_path: &str, company_name: Option<&str>, game_name: Option<&str>, paths: &mut Vec<SavePathInfo>) {
+fn detect_unity_saves(game_path: &str, _company_name: Option<&str>, _game_name: Option<&str>, paths: &mut Vec<SavePathInfo>) {
     let game_path = Path::new(game_path);
     
     // Check local folder next to exe
@@ -55,7 +55,7 @@ fn detect_unity_saves(game_path: &str, company_name: Option<&str>, game_name: Op
     // Check Windows AppData/LocalLow
     #[cfg(target_os = "windows")]
     {
-        if let (Some(company), Some(name)) = (company_name, game_name) {
+        if let (Some(company), Some(name)) = (_company_name, _game_name) {
             let appdata_local = std::env::var("USERPROFILE").unwrap_or_default();
             let save_path = PathBuf::from(appdata_local)
                 .join("AppData")
@@ -76,7 +76,7 @@ fn detect_unity_saves(game_path: &str, company_name: Option<&str>, game_name: Op
     // Check macOS ~/Library/Application Support
     #[cfg(target_os = "macos")]
     {
-        if let (Some(company), Some(name)) = (company_name, game_name) {
+        if let (Some(company), Some(name)) = (_company_name, _game_name) {
             let home = std::env::var("HOME").unwrap_or_default();
             let save_path = PathBuf::from(home)
                 .join("Library")
@@ -97,7 +97,7 @@ fn detect_unity_saves(game_path: &str, company_name: Option<&str>, game_name: Op
     // Check Linux ~/.config
     #[cfg(target_os = "linux")]
     {
-        if let Some(name) = game_name {
+        if let Some(name) = _game_name {
             let home = std::env::var("HOME").unwrap_or_default();
             let save_path = PathBuf::from(home)
                 .join(".config")
@@ -116,7 +116,7 @@ fn detect_unity_saves(game_path: &str, company_name: Option<&str>, game_name: Op
 }
 
 /// Detect Unreal save paths
-fn detect_unreal_saves(game_path: &str, _company_name: Option<&str>, game_name: Option<&str>, paths: &mut Vec<SavePathInfo>) {
+fn detect_unreal_saves(game_path: &str, _company_name: Option<&str>, _game_name: Option<&str>, paths: &mut Vec<SavePathInfo>) {
     let game_path = Path::new(game_path);
     
     // Check Saved/SaveGames folder next to exe
@@ -132,7 +132,7 @@ fn detect_unreal_saves(game_path: &str, _company_name: Option<&str>, game_name: 
     // Check Windows AppData/Local
     #[cfg(target_os = "windows")]
     {
-        if let Some(name) = game_name {
+        if let Some(name) = _game_name {
             let appdata_local = std::env::var("LOCALAPPDATA").unwrap_or_default();
             let save_path = PathBuf::from(appdata_local)
                 .join(name)
@@ -166,7 +166,7 @@ fn detect_unreal_saves(game_path: &str, _company_name: Option<&str>, game_name: 
 }
 
 /// Detect Ren'Py save paths
-fn detect_renpy_saves(game_path: &str, game_name: Option<&str>, paths: &mut Vec<SavePathInfo>) {
+fn detect_renpy_saves(game_path: &str, _game_name: Option<&str>, paths: &mut Vec<SavePathInfo>) {
     let game_path = Path::new(game_path);
     
     // Check saves folder next to exe
@@ -182,7 +182,7 @@ fn detect_renpy_saves(game_path: &str, game_name: Option<&str>, paths: &mut Vec<
     // Check AppData/Roaming for Windows
     #[cfg(target_os = "windows")]
     {
-        if let Some(name) = game_name {
+        if let Some(name) = _game_name {
             let appdata = std::env::var("APPDATA").unwrap_or_default();
             let save_path = PathBuf::from(appdata)
                 .join("RenPy")

@@ -596,7 +596,7 @@ fn load_templates() -> Result<Vec<CustomMetadataTemplate>, String> {
 
 pub fn list_template_summaries() -> Result<Vec<CustomMetadataTemplateSummary>, String> {
     let mut templates = load_templates()?;
-    templates.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    templates.sort_by_key(|template| template.name.to_lowercase());
     Ok(templates.iter().map(template_summary).collect())
 }
 
@@ -736,7 +736,7 @@ pub fn custom_metadata_import_templates(json_text: String) -> Result<Vec<CustomM
             next.push(template);
         }
     }
-    next.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    next.sort_by_key(|template| template.name.to_lowercase());
     store.templates = next;
     store.version = CUSTOM_METADATA_STORE_VERSION;
     save_store(&store)?;

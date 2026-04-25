@@ -200,6 +200,22 @@ interface StorageBootstrap {
   entries: Record<string, string>;
 }
 
+interface ExplorerQuickLaunchStatus {
+  supported: boolean;
+  registered: boolean;
+  menuTitle: string;
+  executablePath?: string | null;
+  command?: string | null;
+}
+
+interface ExplorerZipInstallStatus {
+  supported: boolean;
+  registered: boolean;
+  menuTitle: string;
+  executablePath?: string | null;
+  command?: string | null;
+}
+
 interface ConsistencyTestResult {
   passed: boolean;
   message: string;
@@ -564,10 +580,102 @@ function SettingsModal({
   const [customMetadataJson, setCustomMetadataJson] = useState("");
   const [customMetadataBusy, setCustomMetadataBusy] = useState(false);
   const [customMetadataStatus, setCustomMetadataStatus] = useState<string | null>(null);
+  const [explorerQuickLaunchStatus, setExplorerQuickLaunchStatus] = useState<ExplorerQuickLaunchStatus | null>(null);
+  const [explorerQuickLaunchBusy, setExplorerQuickLaunchBusy] = useState(false);
+  const [explorerQuickLaunchMessage, setExplorerQuickLaunchMessage] = useState<string | null>(null);
+  const [explorerZipInstallStatus, setExplorerZipInstallStatus] = useState<ExplorerZipInstallStatus | null>(null);
+  const [explorerZipInstallBusy, setExplorerZipInstallBusy] = useState(false);
+  const [explorerZipInstallMessage, setExplorerZipInstallMessage] = useState<string | null>(null);
 
   // API Keys state
   const [igdbClientId, setIgdbClientId] = useState("");
   const [igdbClientSecret, setIgdbClientSecret] = useState("");
+
+  useEffect(() => {
+    if (platform !== "windows") return;
+    invoke<ExplorerQuickLaunchStatus>("get_explorer_quick_launch_status")
+      .then(setExplorerQuickLaunchStatus)
+      .catch(() => {
+        setExplorerQuickLaunchStatus(null);
+      });
+    invoke<ExplorerZipInstallStatus>("get_explorer_zip_install_status")
+      .then(setExplorerZipInstallStatus)
+      .catch(() => {
+        setExplorerZipInstallStatus(null);
+      });
+  }, [platform]);
+
+  const refreshExplorerQuickLaunchStatus = async () => {
+    if (platform !== "windows") return;
+    const status = await invoke<ExplorerQuickLaunchStatus>("get_explorer_quick_launch_status");
+    setExplorerQuickLaunchStatus(status);
+  };
+
+  const handleRegisterExplorerQuickLaunch = async () => {
+    setExplorerQuickLaunchBusy(true);
+    setExplorerQuickLaunchMessage(null);
+    try {
+      const status = await invoke<ExplorerQuickLaunchStatus>("register_explorer_quick_launch");
+      setExplorerQuickLaunchStatus(status);
+      setExplorerQuickLaunchMessage("Explorer quick-launch registered for .exe files.");
+    } catch (error) {
+      setExplorerQuickLaunchMessage(`Could not register Explorer quick-launch: ${String(error)}`);
+      await refreshExplorerQuickLaunchStatus().catch(() => {});
+    } finally {
+      setExplorerQuickLaunchBusy(false);
+    }
+  };
+
+  const handleUnregisterExplorerQuickLaunch = async () => {
+    setExplorerQuickLaunchBusy(true);
+    setExplorerQuickLaunchMessage(null);
+    try {
+      const status = await invoke<ExplorerQuickLaunchStatus>("unregister_explorer_quick_launch");
+      setExplorerQuickLaunchStatus(status);
+      setExplorerQuickLaunchMessage("Explorer quick-launch removed from .exe files.");
+    } catch (error) {
+      setExplorerQuickLaunchMessage(`Could not remove Explorer quick-launch: ${String(error)}`);
+      await refreshExplorerQuickLaunchStatus().catch(() => {});
+    } finally {
+      setExplorerQuickLaunchBusy(false);
+    }
+  };
+
+  const refreshExplorerZipInstallStatus = async () => {
+    if (platform !== "windows") return;
+    const status = await invoke<ExplorerZipInstallStatus>("get_explorer_zip_install_status");
+    setExplorerZipInstallStatus(status);
+  };
+
+  const handleRegisterExplorerZipInstall = async () => {
+    setExplorerZipInstallBusy(true);
+    setExplorerZipInstallMessage(null);
+    try {
+      const status = await invoke<ExplorerZipInstallStatus>("register_explorer_zip_install");
+      setExplorerZipInstallStatus(status);
+      setExplorerZipInstallMessage("Explorer ZIP install registered for .zip files.");
+    } catch (error) {
+      setExplorerZipInstallMessage(`Could not register Explorer ZIP install: ${String(error)}`);
+      await refreshExplorerZipInstallStatus().catch(() => {});
+    } finally {
+      setExplorerZipInstallBusy(false);
+    }
+  };
+
+  const handleUnregisterExplorerZipInstall = async () => {
+    setExplorerZipInstallBusy(true);
+    setExplorerZipInstallMessage(null);
+    try {
+      const status = await invoke<ExplorerZipInstallStatus>("unregister_explorer_zip_install");
+      setExplorerZipInstallStatus(status);
+      setExplorerZipInstallMessage("Explorer ZIP install removed from .zip files.");
+    } catch (error) {
+      setExplorerZipInstallMessage(`Could not remove Explorer ZIP install: ${String(error)}`);
+      await refreshExplorerZipInstallStatus().catch(() => {});
+    } finally {
+      setExplorerZipInstallBusy(false);
+    }
+  };
   const [rawgApiKey, setRawgApiKey] = useState("");
   const [mobygamesApiKey, setMobygamesApiKey] = useState("");
   const [itchApiKey, setItchApiKey] = useState("");
@@ -1896,6 +2004,84 @@ function SettingsModal({
                         onChange={(e) => onSaveSettings({ ...appSettings, startupWithWindows: e.currentTarget.checked })} />
                       {t('settings.system.startup')}
                     </label>
+                    {platform === "windows" && (
+                      <div className="rounded-lg px-3 py-3 space-y-2" style={{ background: "var(--color-bg-overlay)", border: "1px solid var(--color-border-soft)" }}>
+                        <div className="text-sm" style={{ color: "var(--color-text)" }}>Explorer quick-launch for `.exe`</div>
+                        <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                          Adds a right-click entry in Explorer so users can launch a game executable through Libmaly even when the app is closed.
+                        </p>
+                        <div className="text-[11px]" style={{ color: explorerQuickLaunchStatus?.registered ? "var(--color-success)" : "var(--color-text-dim)" }}>
+                          Status: {explorerQuickLaunchStatus?.registered ? "Registered" : "Not registered"}
+                        </div>
+                        {explorerQuickLaunchStatus?.command && (
+                          <div className="text-[10px] break-all" style={{ color: "var(--color-text-dim)" }}>
+                            Command: {explorerQuickLaunchStatus.command}
+                          </div>
+                        )}
+                        {explorerQuickLaunchMessage && (
+                          <div className="text-[11px]" style={{ color: explorerQuickLaunchMessage.startsWith("Could not") ? "var(--color-danger)" : "var(--color-text-muted)" }}>
+                            {explorerQuickLaunchMessage}
+                          </div>
+                        )}
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => void handleRegisterExplorerQuickLaunch()}
+                            disabled={explorerQuickLaunchBusy}
+                            className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                            style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                          >
+                            {explorerQuickLaunchBusy ? "Working..." : explorerQuickLaunchStatus?.registered ? "Re-register" : "Register"}
+                          </button>
+                          <button
+                            onClick={() => void handleUnregisterExplorerQuickLaunch()}
+                            disabled={explorerQuickLaunchBusy || !explorerQuickLaunchStatus?.registered}
+                            className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                            style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {platform === "windows" && (
+                      <div className="rounded-lg px-3 py-3 space-y-2" style={{ background: "var(--color-bg-overlay)", border: "1px solid var(--color-border-soft)" }}>
+                        <div className="text-sm" style={{ color: "var(--color-text)" }}>Explorer install for `.zip`</div>
+                        <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                          Adds a right-click entry in Explorer so users can install ZIP archives into a Libmaly library folder directly from the file manager.
+                        </p>
+                        <div className="text-[11px]" style={{ color: explorerZipInstallStatus?.registered ? "var(--color-success)" : "var(--color-text-dim)" }}>
+                          Status: {explorerZipInstallStatus?.registered ? "Registered" : "Not registered"}
+                        </div>
+                        {explorerZipInstallStatus?.command && (
+                          <div className="text-[10px] break-all" style={{ color: "var(--color-text-dim)" }}>
+                            Command: {explorerZipInstallStatus.command}
+                          </div>
+                        )}
+                        {explorerZipInstallMessage && (
+                          <div className="text-[11px]" style={{ color: explorerZipInstallMessage.startsWith("Could not") ? "var(--color-danger)" : "var(--color-text-muted)" }}>
+                            {explorerZipInstallMessage}
+                          </div>
+                        )}
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => void handleRegisterExplorerZipInstall()}
+                            disabled={explorerZipInstallBusy}
+                            className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                            style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                          >
+                            {explorerZipInstallBusy ? "Working..." : explorerZipInstallStatus?.registered ? "Re-register" : "Register"}
+                          </button>
+                          <button
+                            onClick={() => void handleUnregisterExplorerZipInstall()}
+                            disabled={explorerZipInstallBusy || !explorerZipInstallStatus?.registered}
+                            className="flex-1 py-2 rounded text-xs font-semibold disabled:opacity-50"
+                            style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                       <input type="checkbox" checked={appSettings.updateCheckerEnabled}
                         onChange={(e) => onSaveSettings({ ...appSettings, updateCheckerEnabled: e.currentTarget.checked })} />

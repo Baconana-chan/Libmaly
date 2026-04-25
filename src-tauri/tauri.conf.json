@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "libmaly",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "identifier": "com.baconana.libmaly",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -26,6 +26,30 @@
             {
               "name": "name",
               "description": "Game title to launch (exact or partial match)",
+              "required": true,
+              "takesValue": true,
+              "index": 1
+            }
+          ]
+        },
+        "quick-launch-exe": {
+          "description": "Quick-launch a local executable path",
+          "args": [
+            {
+              "name": "path",
+              "description": "Executable path to launch",
+              "required": true,
+              "takesValue": true,
+              "index": 1
+            }
+          ]
+        },
+        "quick-install-zip": {
+          "description": "Install a zip archive into a Libmaly library folder",
+          "args": [
+            {
+              "name": "path",
+              "description": "ZIP archive path to install",
               "required": true,
               "takesValue": true,
               "index": 1

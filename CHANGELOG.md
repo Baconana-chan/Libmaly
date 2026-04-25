@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.1 - 2026-04-25
+
+### 🪟 Windows Shell Integration
+- **Explorer quick-launch for `.exe`** — added an optional Windows Explorer context-menu action to launch executables through Libmaly even when the app is closed.
+- **Settings-managed registration** — users can now register or remove the Explorer quick-launch entry directly from Settings without editing the registry manually.
+- **Direct executable handoff** — Libmaly now accepts a dedicated CLI launch path for quick-launch requests and can start a selected `.exe` immediately, even if it is not already saved in the library.
+- **Explorer install for `.zip`** — added an optional Windows Explorer context-menu action to install ZIP archives into a Libmaly library folder directly from the file manager.
+- **ZIP install flow with library selection** — when a ZIP install is triggered, Libmaly can install straight into the only registered library folder or ask which library root to use if multiple folders are configured.
+- **Post-install archive scan** — after extracting a ZIP archive, Libmaly now scans the installed folder for launchable executables and adds detected games to the library automatically.
+
 ## 1.8.0 - 2026-04-20
 
 ### 🛒 Launcher & Store Integrations

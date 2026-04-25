@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 // ── Result type returned to the frontend ──────────────────────────────────
@@ -16,6 +17,16 @@ pub struct UpdateResult {
     pub backup_dir: String,
     pub warnings: Vec<String>,
     pub extracted_temp: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ZipInstallResult {
+    pub zip_path: String,
+    pub library_root: String,
+    pub installed_dir: String,
+    pub source_dir: String,
+    pub warnings: Vec<String>,
 }
 
 // ── Save / config detection ────────────────────────────────────────────────
@@ -150,6 +161,140 @@ fn unwrap_single_dir(dir: &Path) -> PathBuf {
         }
     }
     dir.to_path_buf()
+}
+
+fn sanitize_folder_name(input: &str) -> String {
+    let mut out = String::new();
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '-' | '_' | '.' | '(' | ')') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let compact = out
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trimmed = compact.trim_matches(&[' ', '.', '_'][..]).trim().to_string();
+    if trimmed.is_empty() {
+        "Imported Game".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn unique_child_dir(parent: &Path, base_name: &str) -> PathBuf {
+    let candidate = parent.join(base_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    for idx in 2..=999 {
+        let next = parent.join(format!("{} ({})", base_name, idx));
+        if !next.exists() {
+            return next;
+        }
+    }
+    parent.join(format!(
+        "{} ({})",
+        base_name,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    ))
+}
+
+fn copy_dir_contents(src_root: &Path, dst_root: &Path, warnings: &mut Vec<String>) -> Result<(), String> {
+    fs::create_dir_all(dst_root).map_err(|e| e.to_string())?;
+    for entry in WalkDir::new(src_root).into_iter().filter_map(|e| e.ok()) {
+        let rel = match entry.path().strip_prefix(src_root) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let dst = dst_root.join(rel);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
+        } else {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::copy(entry.path(), &dst)
+                .map_err(|e| e.to_string())
+                .map(|_| ())
+                .or_else(|e| {
+                    warnings.push(format!("copy {} -> {}: {}", entry.path().display(), dst.display(), e));
+                    Err(e)
+                })?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn install_zip_game_to_library(
+    zip_path: String,
+    library_root: String,
+) -> Result<ZipInstallResult, String> {
+    let source_zip = PathBuf::from(&zip_path);
+    if !source_zip.exists() {
+        return Err(format!("ZIP path does not exist: {}", zip_path));
+    }
+    if source_zip
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .as_deref()
+        != Some("zip")
+    {
+        return Err("Only .zip archives are currently supported for Explorer install".to_string());
+    }
+
+    let library_root_path = PathBuf::from(&library_root);
+    if !library_root_path.exists() || !library_root_path.is_dir() {
+        return Err(format!("Library root is not a folder: {}", library_root));
+    }
+
+    let temp_dir = std::env::temp_dir().join(format!(
+        "libmaly-zip-install-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    ));
+    extract_zip_native(&source_zip, &temp_dir)
+        .map_err(|e| format!("ZIP extraction failed: {}", e))?;
+    let source_dir = unwrap_single_dir(&temp_dir);
+
+    let source_name = if source_dir != temp_dir {
+        source_dir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Imported Game".to_string())
+    } else {
+        source_zip
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Imported Game".to_string())
+    };
+    let folder_name = sanitize_folder_name(&source_name);
+    let install_dir = unique_child_dir(&library_root_path, &folder_name);
+
+    let mut warnings = Vec::new();
+    let result = copy_dir_contents(&source_dir, &install_dir, &mut warnings);
+    let _ = fs::remove_dir_all(&temp_dir);
+    result?;
+
+    Ok(ZipInstallResult {
+        zip_path,
+        library_root,
+        installed_dir: install_dir.to_string_lossy().to_string(),
+        source_dir: source_dir.to_string_lossy().to_string(),
+        warnings,
+    })
 }
 
 // ── Core merge logic ───────────────────────────────────────────────────────

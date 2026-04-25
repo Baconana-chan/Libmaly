@@ -1,26 +1,39 @@
 ## 🚀 Release & Distribution
 
+Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the desktop roadmap stays focused on the current Tauri app.
+
 - [ ] **Release on itch.io** — create landing page, configure game categories, and set up Butler for automated build pushes.
 - [ ] **Release on Epic Games Store** — fulfill self-service publishing requirements and integrate basic EGS SDK features.
+- [ ] **Release on WinGet / Scoop** — publish portable/installer manifests so Windows users can install and update Libmaly from package managers.
 
 ---
 
 ## 🎨 UI / UX
 
 - [ ] **Theme Marketplace/Gallery** — browse and install community-made JSON themes from a trusted relay
+- [ ] **Game detail layout presets** — switch between metadata-first, screenshots-first, and notes-first page layouts per profile
+- [ ] **Quick side panel** — optional secondary panel for notes / achievements / media without fully leaving the current view
 ---
 
 ## 📊 Stats & Tracking
+
+- [ ] **Session timeline explorer** — zoomable per-day/per-week timeline to inspect exactly when and how long each session happened
+- [ ] **Tag / developer breakdowns** — charts for most-played genres, tags, engines, developers, and collections over time
 
 ---
 
 ## 📸 Screenshots 
 
 - [ ] **Instant Replay (Short Clips)** — capture the last 15–30 seconds of gameplay as a GIF or MP4 (experimental Rust-side buffer)
+- [ ] **Auto-highlight detection** — optionally detect scene changes / rapid motion and suggest “best moment” screenshots from replay buffers
 
 ---
 
 ## 🌐 Sources & Extensibility
+
+- [ ] **Interactive game maps integration** — attach maps from an external provider (for example Map Genie–style services or community map sources) directly on the game page / overlay when a game is supported
+- [ ] **Guide / wiki provider slots** — configurable external links/providers for walkthroughs, maps, patch notes, and modding resources per game
+- [ ] **Metadata post-processing rules** — user-defined cleanup/merge rules for titles, tags, developers, and source priority after multi-source fetches
 
 ---
 
@@ -67,11 +80,16 @@
 
 ## 🛒 Launcher & Store Integrations
 
+- [ ] **RetroArch / emulator launcher integration** — import ROM launch targets and launch through configured emulator profiles without treating them as plain `.exe` entries
+- [ ] **SteamGridDB / artwork sync** — fetch alternate covers, heroes, logos, and icons to improve library presentation for imported/non-store games
+
 ---
 
 ## 🛠️ Technical
 
 - [ ] **Plugin system** — allow JS/WASM plugins to add metadata sources or UI panels
+- [ ] **Desktop UI modularisation** — split the current monolithic App/page orchestration into feature modules so desktop UI can grow without App.tsx remaining the main bottleneck
+- [ ] **Shared frontend core extraction** — move reusable non-UI logic into shared modules so future desktop/mobile/web surfaces can reuse data logic without sharing layouts
 - [ ] **REST/WebSocket API Mode** — open API for third-party developers:
   - [ ] **Remote Control** — launch games, control volume, and monitor status from external apps
   - [ ] **State Access** — read library metadata, stats, and notes for external dashboards/sidecar apps

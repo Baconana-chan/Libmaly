@@ -529,6 +529,14 @@ interface SaveBackupResult {
   directories: string[];
 }
 
+interface ZipInstallResult {
+  zipPath: string;
+  libraryRoot: string;
+  installedDir: string;
+  sourceDir: string;
+  warnings: string[];
+}
+
 interface VacuumReport {
   tempFilesRemoved: number;
   tempBytesFreed: number;
@@ -1435,7 +1443,7 @@ interface Collection {
 
 type SortMode = "name" | "lastPlayed" | "playtime" | "custom";
 type FilterMode = "all" | "favs" | "hidden" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku" | "igdb" | "rawg" | "mobygames" | "unlinked" | "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play" | string;
-type LaunchRequest = { mode: "path" | "name"; value: string };
+type LaunchRequest = { mode: "path" | "name"; value: string; autoHide?: boolean };
 
 function achievementTrackerUiState(items: GameAchievementItem[] | undefined): { summary: string | null; openGoals: boolean } {
   const list = items ?? [];
@@ -4908,6 +4916,90 @@ function InteropImportModal({
   );
 }
 
+function ZipInstallModal({
+  zipPath,
+  libraryFolders,
+  defaultFolderPath,
+  onInstall,
+  onClose,
+}: {
+  zipPath: string;
+  libraryFolders: LibraryFolder[];
+  defaultFolderPath: string;
+  onInstall: (libraryRoot: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [selectedRoot, setSelectedRoot] = useState(defaultFolderPath);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const runInstall = async () => {
+    if (!selectedRoot.trim()) {
+      setError("Choose a library folder first.");
+      return;
+    }
+    setWorking(true);
+    setError(null);
+    try {
+      await onInstall(selectedRoot);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.82)" }}
+      onClick={(e) => { if (e.target === e.currentTarget && !working) onClose(); }}
+    >
+      <div className="rounded-xl shadow-2xl w-[560px] max-w-[92vw] flex flex-col"
+        style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center gap-3 px-5 py-3 border-b" style={{ borderColor: "var(--color-border-card)" }}>
+          <h2 className="font-bold text-sm" style={{ color: "var(--color-white)" }}>Install ZIP via Libmaly</h2>
+          <div className="flex-1" />
+          <button onClick={onClose} disabled={working} className="text-sm disabled:opacity-40" style={{ color: "var(--color-text-dim)" }}>✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-3 text-sm" style={{ color: "var(--color-text-muted)" }}>
+          <p>Choose which library folder should receive this archive.</p>
+          <div className="rounded-lg px-3 py-2 text-xs break-all" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+            ZIP: {zipPath}
+          </div>
+          <label className="text-sm block">
+            Library folder
+            <select
+              value={selectedRoot}
+              onChange={(e) => setSelectedRoot(e.currentTarget.value)}
+              className="mt-2 w-full px-3 py-2 rounded text-sm outline-none"
+              style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+            >
+              {libraryFolders.map((folder) => (
+                <option key={folder.path} value={folder.path}>{folder.path}</option>
+              ))}
+            </select>
+          </label>
+          <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>
+            Libmaly will extract the archive into a new folder inside the selected library and then scan it for launchable executables.
+          </p>
+          {error && <p className="text-xs" style={{ color: "var(--color-danger)" }}>{error}</p>}
+        </div>
+        <div className="flex justify-end gap-2 px-5 py-3 border-t" style={{ borderColor: "var(--color-border-card)" }}>
+          <button onClick={onClose} disabled={working} className="px-3 py-1.5 rounded text-xs disabled:opacity-50"
+            style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
+            Cancel
+          </button>
+          <button onClick={() => void runInstall()} disabled={working} className="px-4 py-1.5 rounded text-xs font-semibold disabled:opacity-50"
+            style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>
+            {working ? "Installing..." : "Install"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Migration Wizard ────────────────────────────────────────────────────────
 export default function App() {
   const { t } = useTranslation();
@@ -4957,6 +5049,7 @@ export default function App() {
   const [keepDataOnDelete, setKeepDataOnDelete] = useState(true);
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [showSaveTransferModal, setShowSaveTransferModal] = useState(false);
+  const [showZipInstallModal, setShowZipInstallModal] = useState(false);
   const [showF95Login, setShowF95Login] = useState(false);
   const [f95LoggedIn, setF95LoggedIn] = useState(false);
   const [showDLsiteLogin, setShowDLsiteLogin] = useState(false);
@@ -5655,6 +5748,8 @@ export default function App() {
   const [showAppUpdateModal, setShowAppUpdateModal] = useState(false);
   const [showCmdPalette, setShowCmdPalette] = useState(false);
   const [pendingLaunchRequest, setPendingLaunchRequest] = useState<LaunchRequest | null>(null);
+  const [pendingZipInstallPath, setPendingZipInstallPath] = useState<string | null>(null);
+  const [zipInstallInProgress, setZipInstallInProgress] = useState(false);
   /** Controls the "+ Add" dropdown in the sidebar */
   const [showAddMenu, setShowAddMenu] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -6139,10 +6234,23 @@ export default function App() {
       const roots = folders.length > 0 ? folders : (legacyPath ? [{ path: legacyPath }] : []);
       getMatches().then((matches: any) => {
         const sub = matches?.subcommand;
-        if (sub?.name !== "launch") return;
-        const nameArg = sub?.matches?.args?.name?.value;
-        const value = typeof nameArg === "string" ? nameArg : Array.isArray(nameArg) ? nameArg[0] : null;
-        if (value && value.trim()) setPendingLaunchRequest({ mode: "name", value: value.trim() });
+        if (sub?.name === "launch") {
+          const nameArg = sub?.matches?.args?.name?.value;
+          const value = typeof nameArg === "string" ? nameArg : Array.isArray(nameArg) ? nameArg[0] : null;
+          if (value && value.trim()) setPendingLaunchRequest({ mode: "name", value: value.trim() });
+          return;
+        }
+        if (sub?.name === "quick-launch-exe") {
+          const pathArg = sub?.matches?.args?.path?.value;
+          const value = typeof pathArg === "string" ? pathArg : Array.isArray(pathArg) ? pathArg[0] : null;
+          if (value && value.trim()) setPendingLaunchRequest({ mode: "path", value: value.trim(), autoHide: true });
+          return;
+        }
+        if (sub?.name === "quick-install-zip") {
+          const pathArg = sub?.matches?.args?.path?.value;
+          const value = typeof pathArg === "string" ? pathArg : Array.isArray(pathArg) ? pathArg[0] : null;
+          if (value && value.trim()) setPendingZipInstallPath(value.trim());
+        }
       }).catch(() => { });
       getCurrentDeepLinks().then(async (urls) => {
         const arr = Array.isArray(urls) ? urls : [];
@@ -7451,6 +7559,55 @@ export default function App() {
     openGameView(newGame);
   };
 
+  const installZipIntoLibrary = async (zipPath: string, libraryRoot: string) => {
+    setZipInstallInProgress(true);
+    try {
+      const result = await invoke<ZipInstallResult>("install_zip_game_to_library", {
+        zipPath,
+        libraryRoot,
+      });
+      const scanned = await invoke<[Game[], DirMtime[]]>("scan_games", {
+        path: result.installedDir,
+      });
+      const installedGames = Array.isArray(scanned?.[0]) ? scanned[0] : [];
+
+      if (installedGames.length > 0) {
+        setGames((prev) => {
+          const next = [...prev];
+          const seen = new Set(prev.map((g) => normalizePathForMatch(g.path)));
+          for (const game of installedGames) {
+            const key = normalizePathForMatch(game.path);
+            if (seen.has(key)) continue;
+            next.push({ ...game, uninstalled: false });
+            seen.add(key);
+          }
+          saveCache(SK_GAMES, next);
+          return next;
+        });
+
+        const primary = installedGames[0];
+        openGameView(primary);
+        setActiveMainTab("library");
+        alert(
+          result.warnings.length > 0
+            ? `Archive installed to:\n${result.installedDir}\n\nFound ${installedGames.length} executable(s).\n\nWarnings:\n${result.warnings.join("\n")}`
+            : `Archive installed to:\n${result.installedDir}\n\nFound ${installedGames.length} executable(s).`,
+        );
+      } else {
+        alert(
+          result.warnings.length > 0
+            ? `Archive installed to:\n${result.installedDir}\n\nNo launchable executables were detected automatically.\n\nWarnings:\n${result.warnings.join("\n")}`
+            : `Archive installed to:\n${result.installedDir}\n\nNo launchable executables were detected automatically.`,
+        );
+      }
+
+      setPendingZipInstallPath(null);
+      setShowZipInstallModal(false);
+    } finally {
+      setZipInstallInProgress(false);
+    }
+  };
+
   // Remove a library folder (and its games from the list)
   const handleRemoveFolder = (folderPath: string) => {
     const newFolders = libraryFolders.filter((f) => f.path !== folderPath);
@@ -8499,19 +8656,54 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!pendingLaunchRequest || !isAppReady || games.length === 0) return;
+    if (!pendingZipInstallPath) return;
+    if (zipInstallInProgress) return;
+    if (libraryFolders.length === 0) {
+      alert("Add a library folder in Libmaly before installing ZIP archives from Explorer.");
+      setPendingZipInstallPath(null);
+      setShowZipInstallModal(false);
+      return;
+    }
+    if (libraryFolders.length === 1) {
+      void installZipIntoLibrary(pendingZipInstallPath, libraryFolders[0].path).catch((e) => {
+        alert("Failed to install ZIP archive: " + e);
+        setPendingZipInstallPath(null);
+        setShowZipInstallModal(false);
+      });
+      return;
+    }
+    setShowZipInstallModal(true);
+  }, [pendingZipInstallPath, libraryFolders, zipInstallInProgress]);
 
-    const launchByPath = (requestedPath: string) => {
+  useEffect(() => {
+    if (!pendingLaunchRequest) return;
+    if (!pendingLaunchRequest.autoHide && !isAppReady) return;
+
+    const hideIfRequested = async () => {
+      if (!pendingLaunchRequest.autoHide) return;
+      try {
+        await getCurrentWindow().hide();
+      } catch {
+        // Ignore window-hide failures during quick launch.
+      }
+    };
+
+    const launchByPath = async (requestedPath: string) => {
       const wanted = normalizePathForMatch(requestedPath);
       const game = games.find((g) => normalizePathForMatch(g.path) === wanted);
-      if (!game) return false;
-      openGameView(game);
-      setActiveMainTab("library");
-      launchGame(game.path);
+      if (game) {
+        openGameView(game);
+        setActiveMainTab("library");
+        await launchGame(game.path);
+        await hideIfRequested();
+        return true;
+      }
+      await launchGame(requestedPath);
+      await hideIfRequested();
       return true;
     };
 
-    const launchByName = (rawName: string) => {
+    const launchByName = async (rawName: string) => {
       const q = rawName.trim().toLowerCase();
       if (!q) return false;
       const ranked = games
@@ -8530,19 +8722,22 @@ export default function App() {
       const game = ranked[0].g;
       openGameView(game);
       setActiveMainTab("library");
-      launchGame(game.path);
+      await launchGame(game.path);
+      await hideIfRequested();
       return true;
     };
 
-    const ok = pendingLaunchRequest.mode === "path"
-      ? launchByPath(pendingLaunchRequest.value)
-      : launchByName(pendingLaunchRequest.value);
+    void (async () => {
+      const ok = pendingLaunchRequest.mode === "path"
+        ? await launchByPath(pendingLaunchRequest.value)
+        : await launchByName(pendingLaunchRequest.value);
 
-    if (!ok) {
-      const target = pendingLaunchRequest.mode === "path" ? "path" : "name";
-      alert(`Could not launch game by ${target}: ${pendingLaunchRequest.value}`);
-    }
-    setPendingLaunchRequest(null);
+      if (!ok) {
+        const target = pendingLaunchRequest.mode === "path" ? "path" : "name";
+        alert(`Could not launch game by ${target}: ${pendingLaunchRequest.value}`);
+      }
+      setPendingLaunchRequest(null);
+    })();
   }, [pendingLaunchRequest, isAppReady, games, customizations, metadata]);
 
   const confirmDelete = async () => {
@@ -10973,6 +11168,22 @@ export default function App() {
       {
         showWhatsNewModal && (
           <WhatsNewModal onClose={() => setShowWhatsNewModal(false)} />
+        )
+      }
+      {
+        showZipInstallModal && pendingZipInstallPath && libraryFolders.length > 1 && (
+          <ZipInstallModal
+            zipPath={pendingZipInstallPath}
+            libraryFolders={libraryFolders}
+            defaultFolderPath={libraryFolders[0]?.path ?? ""}
+            onInstall={async (libraryRoot) => {
+              await installZipIntoLibrary(pendingZipInstallPath, libraryRoot);
+            }}
+            onClose={() => {
+              setShowZipInstallModal(false);
+              setPendingZipInstallPath(null);
+            }}
+          />
         )
       }
       {

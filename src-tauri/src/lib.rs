@@ -57,7 +57,7 @@ mod vault;
 use vault::{delete_secret as vault_delete_secret, get_secret as vault_get_secret, legacy_global_file_path, profile_file_path};
 
 mod updater;
-use updater::{preview_update, update_game};
+use updater::{install_zip_game_to_library, preview_update, update_game};
 
 mod itch;
 use itch::{
@@ -2665,6 +2665,212 @@ struct GameEndedPayload {
     path: String,
     duration_secs: u64,
     lifecycle: Option<ProcessLifecycleDiagnostic>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExplorerQuickLaunchStatus {
+    supported: bool,
+    registered: bool,
+    menu_title: String,
+    executable_path: Option<String>,
+    command: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExplorerZipInstallStatus {
+    supported: bool,
+    registered: bool,
+    menu_title: String,
+    executable_path: Option<String>,
+    command: Option<String>,
+}
+
+#[cfg(windows)]
+const EXPLORER_QUICK_LAUNCH_REG_PATH: &str =
+    r"Software\Classes\SystemFileAssociations\.exe\shell\LibmalyQuickLaunch";
+#[cfg(windows)]
+const EXPLORER_QUICK_LAUNCH_MENU_TITLE: &str = "Launch with Libmaly";
+#[cfg(windows)]
+const EXPLORER_ZIP_INSTALL_REG_PATH: &str =
+    r"Software\Classes\SystemFileAssociations\.zip\shell\LibmalyZipInstall";
+#[cfg(windows)]
+const EXPLORER_ZIP_INSTALL_MENU_TITLE: &str = "Install with Libmaly";
+
+#[cfg(windows)]
+fn current_exe_string() -> Result<String, String> {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn explorer_quick_launch_command(exe_path: &str) -> String {
+    format!("\"{}\" quick-launch-exe \"%1\"", exe_path.replace('"', "\"\""))
+}
+
+#[cfg(windows)]
+fn explorer_zip_install_command(exe_path: &str) -> String {
+    format!("\"{}\" quick-install-zip \"%1\"", exe_path.replace('"', "\"\""))
+}
+
+#[cfg(windows)]
+fn get_explorer_quick_launch_status_impl() -> Result<ExplorerQuickLaunchStatus, String> {
+    let exe_path = current_exe_string()?;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let registered = hkcu
+        .open_subkey_with_flags(EXPLORER_QUICK_LAUNCH_REG_PATH, KEY_READ)
+        .is_ok();
+    Ok(ExplorerQuickLaunchStatus {
+        supported: true,
+        registered,
+        menu_title: EXPLORER_QUICK_LAUNCH_MENU_TITLE.to_string(),
+        executable_path: Some(exe_path.clone()),
+        command: Some(explorer_quick_launch_command(&exe_path)),
+    })
+}
+
+#[tauri::command]
+fn get_explorer_quick_launch_status() -> Result<ExplorerQuickLaunchStatus, String> {
+    #[cfg(windows)]
+    {
+        return get_explorer_quick_launch_status_impl();
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(ExplorerQuickLaunchStatus {
+            supported: false,
+            registered: false,
+            menu_title: "Launch with Libmaly".to_string(),
+            executable_path: None,
+            command: None,
+        })
+    }
+}
+
+#[tauri::command]
+fn register_explorer_quick_launch() -> Result<ExplorerQuickLaunchStatus, String> {
+    #[cfg(windows)]
+    {
+        let exe_path = current_exe_string()?;
+        let command = explorer_quick_launch_command(&exe_path);
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (shell_key, _) = hkcu
+            .create_subkey(EXPLORER_QUICK_LAUNCH_REG_PATH)
+            .map_err(|e| e.to_string())?;
+        shell_key
+            .set_value("", &EXPLORER_QUICK_LAUNCH_MENU_TITLE)
+            .map_err(|e| e.to_string())?;
+        shell_key
+            .set_value("Icon", &exe_path)
+            .map_err(|e| e.to_string())?;
+        shell_key
+            .set_value("MultiSelectModel", &"Single")
+            .map_err(|e| e.to_string())?;
+        let (command_key, _) = shell_key.create_subkey("command").map_err(|e| e.to_string())?;
+        command_key
+            .set_value("", &command)
+            .map_err(|e| e.to_string())?;
+        return get_explorer_quick_launch_status_impl();
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Explorer quick-launch is only supported on Windows".to_string())
+    }
+}
+
+#[tauri::command]
+fn unregister_explorer_quick_launch() -> Result<ExplorerQuickLaunchStatus, String> {
+    #[cfg(windows)]
+    {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let _ = hkcu.delete_subkey_all(EXPLORER_QUICK_LAUNCH_REG_PATH);
+        return get_explorer_quick_launch_status_impl();
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Explorer quick-launch is only supported on Windows".to_string())
+    }
+}
+
+#[cfg(windows)]
+fn get_explorer_zip_install_status_impl() -> Result<ExplorerZipInstallStatus, String> {
+    let exe_path = current_exe_string()?;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let registered = hkcu
+        .open_subkey_with_flags(EXPLORER_ZIP_INSTALL_REG_PATH, KEY_READ)
+        .is_ok();
+    Ok(ExplorerZipInstallStatus {
+        supported: true,
+        registered,
+        menu_title: EXPLORER_ZIP_INSTALL_MENU_TITLE.to_string(),
+        executable_path: Some(exe_path.clone()),
+        command: Some(explorer_zip_install_command(&exe_path)),
+    })
+}
+
+#[tauri::command]
+fn get_explorer_zip_install_status() -> Result<ExplorerZipInstallStatus, String> {
+    #[cfg(windows)]
+    {
+        return get_explorer_zip_install_status_impl();
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(ExplorerZipInstallStatus {
+            supported: false,
+            registered: false,
+            menu_title: "Install with Libmaly".to_string(),
+            executable_path: None,
+            command: None,
+        })
+    }
+}
+
+#[tauri::command]
+fn register_explorer_zip_install() -> Result<ExplorerZipInstallStatus, String> {
+    #[cfg(windows)]
+    {
+        let exe_path = current_exe_string()?;
+        let command = explorer_zip_install_command(&exe_path);
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (shell_key, _) = hkcu
+            .create_subkey(EXPLORER_ZIP_INSTALL_REG_PATH)
+            .map_err(|e| e.to_string())?;
+        shell_key
+            .set_value("", &EXPLORER_ZIP_INSTALL_MENU_TITLE)
+            .map_err(|e| e.to_string())?;
+        shell_key
+            .set_value("Icon", &exe_path)
+            .map_err(|e| e.to_string())?;
+        shell_key
+            .set_value("MultiSelectModel", &"Single")
+            .map_err(|e| e.to_string())?;
+        let (command_key, _) = shell_key.create_subkey("command").map_err(|e| e.to_string())?;
+        command_key
+            .set_value("", &command)
+            .map_err(|e| e.to_string())?;
+        return get_explorer_zip_install_status_impl();
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Explorer ZIP install is only supported on Windows".to_string())
+    }
+}
+
+#[tauri::command]
+fn unregister_explorer_zip_install() -> Result<ExplorerZipInstallStatus, String> {
+    #[cfg(windows)]
+    {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let _ = hkcu.delete_subkey_all(EXPLORER_ZIP_INSTALL_REG_PATH);
+        return get_explorer_zip_install_status_impl();
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Explorer ZIP install is only supported on Windows".to_string())
+    }
 }
 
 #[tauri::command]
@@ -8031,6 +8237,12 @@ pub fn run() {
             list_executables_in_folder,
             run_integrity_check,
             suggest_auto_heal_paths,
+            get_explorer_quick_launch_status,
+            register_explorer_quick_launch,
+            unregister_explorer_quick_launch,
+            get_explorer_zip_install_status,
+            register_explorer_zip_install,
+            unregister_explorer_zip_install,
             get_platform,
             detect_wine_runners,
             list_wine_prefixes,
@@ -8094,6 +8306,7 @@ pub fn run() {
             fakku_is_logged_in,
             update_game,
             preview_update,
+            install_zip_game_to_library,
             get_screenshots,
             export_screenshots_zip,
             open_screenshots_folder,

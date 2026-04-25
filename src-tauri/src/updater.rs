@@ -51,7 +51,7 @@ const PROTECTED_DIR_NAMES: &[&str] = &[
     "log",
     "logs",
     // RPG Maker
-    "save",         // www/save
+    "save", // www/save
     // Ren'Py
     "saves",
     // Unity
@@ -60,13 +60,12 @@ const PROTECTED_DIR_NAMES: &[&str] = &[
 
 /// File extensions that are always save/config data regardless of location.
 const PROTECTED_EXTENSIONS: &[&str] = &[
-    "sav", "save", "rpgsave", "rpgrmvp", "rvdata", "rvdata2",
-    "lsd",           // RPG Maker 2000
-    "dat",           // many engines store saves as .dat
-    "xml",           // Ren'Py / some custom engines
-    "json",          // only in well-known save dirs (checked separately)
-    "ini",           // user configuration
-    "cfg",           // user configuration
+    "sav", "save", "rpgsave", "rpgrmvp", "rvdata", "rvdata2", "lsd",  // RPG Maker 2000
+    "dat",  // many engines store saves as .dat
+    "xml",  // Ren'Py / some custom engines
+    "json", // only in well-known save dirs (checked separately)
+    "ini",  // user configuration
+    "cfg",  // user configuration
 ];
 
 /// Returns true if a path (relative to game root) should be treated as protected.
@@ -177,7 +176,10 @@ fn sanitize_folder_name(input: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    let trimmed = compact.trim_matches(&[' ', '.', '_'][..]).trim().to_string();
+    let trimmed = compact
+        .trim_matches(&[' ', '.', '_'][..])
+        .trim()
+        .to_string();
     if trimmed.is_empty() {
         "Imported Game".to_string()
     } else {
@@ -206,7 +208,11 @@ fn unique_child_dir(parent: &Path, base_name: &str) -> PathBuf {
     ))
 }
 
-fn copy_dir_contents(src_root: &Path, dst_root: &Path, warnings: &mut Vec<String>) -> Result<(), String> {
+fn copy_dir_contents(
+    src_root: &Path,
+    dst_root: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
     fs::create_dir_all(dst_root).map_err(|e| e.to_string())?;
     for entry in WalkDir::new(src_root).into_iter().filter_map(|e| e.ok()) {
         let rel = match entry.path().strip_prefix(src_root) {
@@ -226,9 +232,14 @@ fn copy_dir_contents(src_root: &Path, dst_root: &Path, warnings: &mut Vec<String
             fs::copy(entry.path(), &dst)
                 .map_err(|e| e.to_string())
                 .map(|_| ())
-                .or_else(|e| {
-                    warnings.push(format!("copy {} -> {}: {}", entry.path().display(), dst.display(), e));
-                    Err(e)
+                .map_err(|e| {
+                    warnings.push(format!(
+                        "copy {} -> {}: {}",
+                        entry.path().display(),
+                        dst.display(),
+                        e
+                    ));
+                    e
                 })?;
         }
     }
@@ -311,7 +322,11 @@ fn merge_dirs(
     let mut updated = 0u32;
     let mut skipped = 0u32;
 
-    for entry in WalkDir::new(src).min_depth(1).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(src)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let abs_src = entry.path();
         let rel = match abs_src.strip_prefix(src_root) {
             Ok(r) => r.to_path_buf(),
@@ -319,8 +334,7 @@ fn merge_dirs(
         };
 
         // Check if this path is under any protected directory
-        let prot = is_protected(&rel)
-            || protected_rel.iter().any(|p| rel.starts_with(p));
+        let prot = is_protected(&rel) || protected_rel.iter().any(|p| rel.starts_with(p));
 
         if entry.file_type().is_dir() {
             if !prot {
@@ -344,7 +358,12 @@ fn merge_dirs(
         }
         match fs::copy(abs_src, &dst_file) {
             Ok(_) => updated += 1,
-            Err(e) => warnings.push(format!("copy {} -> {}: {}", rel.display(), dst_file.display(), e)),
+            Err(e) => warnings.push(format!(
+                "copy {} -> {}: {}",
+                rel.display(),
+                dst_file.display(),
+                e
+            )),
         }
     }
 
@@ -354,10 +373,7 @@ fn merge_dirs(
 // ── Tauri command ──────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn update_game(
-    game_exe: String,
-    new_source: String,
-) -> Result<UpdateResult, String> {
+pub async fn update_game(game_exe: String, new_source: String) -> Result<UpdateResult, String> {
     let exe_path = Path::new(&game_exe);
     let game_dir = exe_path
         .parent()
@@ -381,11 +397,13 @@ pub async fn update_game(
 
         if ext == "zip" {
             // Extract to a temp directory next to the game folder
-            let temp = game_dir
-                .parent()
-                .unwrap_or(&game_dir)
-                .join(format!(".libmaly_update_extract_{}", std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()));
+            let temp = game_dir.parent().unwrap_or(&game_dir).join(format!(
+                ".libmaly_update_extract_{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            ));
             extract_zip_native(&source_path, &temp)
                 .map_err(|e| format!("ZIP extraction failed: {}", e))?;
             extracted_temp = Some(temp.to_string_lossy().to_string());
@@ -405,7 +423,12 @@ pub async fn update_game(
     let mut protected_rel: HashSet<PathBuf> = HashSet::new();
     let mut protected_dirs_display: Vec<String> = Vec::new();
 
-    for entry in WalkDir::new(&game_dir).min_depth(1).max_depth(4).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(&game_dir)
+        .min_depth(1)
+        .max_depth(4)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         if !entry.file_type().is_dir() {
             continue;
         }
@@ -431,12 +454,17 @@ pub async fn update_game(
                 }
                 // Copy the entire protected dir to backup
                 for entry in WalkDir::new(&src_prot).into_iter().filter_map(|e| e.ok()) {
-                    let entry_rel = entry.path().strip_prefix(&src_prot).unwrap_or(Path::new(""));
+                    let entry_rel = entry
+                        .path()
+                        .strip_prefix(&src_prot)
+                        .unwrap_or(Path::new(""));
                     let bak_entry = bak_prot.join(entry_rel);
                     if entry.file_type().is_dir() {
                         let _ = fs::create_dir_all(&bak_entry);
                     } else {
-                        if let Some(p) = bak_entry.parent() { let _ = fs::create_dir_all(p); }
+                        if let Some(p) = bak_entry.parent() {
+                            let _ = fs::create_dir_all(p);
+                        }
                         if let Err(e) = fs::copy(entry.path(), &bak_entry) {
                             warnings.push(format!("backup {}: {}", entry.path().display(), e));
                         }
@@ -456,14 +484,21 @@ pub async fn update_game(
         for rel in &protected_rel {
             let bak_prot = backup_dir.join(rel);
             let dst_prot = game_dir.join(rel);
-            if !bak_prot.exists() { continue; }
+            if !bak_prot.exists() {
+                continue;
+            }
             for entry in WalkDir::new(&bak_prot).into_iter().filter_map(|e| e.ok()) {
-                let entry_rel = entry.path().strip_prefix(&bak_prot).unwrap_or(Path::new(""));
+                let entry_rel = entry
+                    .path()
+                    .strip_prefix(&bak_prot)
+                    .unwrap_or(Path::new(""));
                 let dst_e = dst_prot.join(entry_rel);
                 if entry.file_type().is_dir() {
                     let _ = fs::create_dir_all(&dst_e);
                 } else {
-                    if let Some(p) = dst_e.parent() { let _ = fs::create_dir_all(p); }
+                    if let Some(p) = dst_e.parent() {
+                        let _ = fs::create_dir_all(p);
+                    }
                     if let Err(e) = fs::copy(entry.path(), &dst_e) {
                         warnings.push(format!("restore {}: {}", entry.path().display(), e));
                     }
@@ -490,10 +525,7 @@ pub async fn update_game(
 /// Scan a folder or zip and return a preview: which files would be updated
 /// and which protected directories were found — without making any changes.
 #[tauri::command]
-pub async fn preview_update(
-    game_exe: String,
-    new_source: String,
-) -> Result<UpdatePreview, String> {
+pub async fn preview_update(game_exe: String, new_source: String) -> Result<UpdatePreview, String> {
     let exe_path = Path::new(&game_exe);
     let game_dir = exe_path
         .parent()
@@ -514,8 +546,15 @@ pub async fn preview_update(
 
     // Collect protected dirs in old game dir
     let mut protected_dirs: Vec<String> = Vec::new();
-    for entry in WalkDir::new(&game_dir).min_depth(1).max_depth(4).into_iter().filter_map(|e| e.ok()) {
-        if !entry.file_type().is_dir() { continue; }
+    for entry in WalkDir::new(&game_dir)
+        .min_depth(1)
+        .max_depth(4)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_dir() {
+            continue;
+        }
         let dir_name = entry.file_name().to_string_lossy().to_lowercase();
         if PROTECTED_DIR_NAMES.iter().any(|p| dir_name == *p) {
             if let Ok(rel) = entry.path().strip_prefix(&game_dir) {
@@ -527,20 +566,33 @@ pub async fn preview_update(
     // Count changed files if new_dir is available
     let mut files_to_update: u32 = 0;
     let mut new_files: u32 = 0;
-    let source_is_zip = source_path.extension()
+    let source_is_zip = source_path
+        .extension()
         .map(|e| e.to_string_lossy().to_lowercase() == "zip")
         .unwrap_or(false);
 
     if let Some(ref new_dir) = new_dir_opt {
-        for entry in WalkDir::new(new_dir).min_depth(1).into_iter().filter_map(|e| e.ok()) {
-            if entry.file_type().is_dir() { continue; }
+        for entry in WalkDir::new(new_dir)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if entry.file_type().is_dir() {
+                continue;
+            }
             let rel = match entry.path().strip_prefix(new_dir) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
-            if is_protected(rel) { continue; }
+            if is_protected(rel) {
+                continue;
+            }
             let dst = game_dir.join(rel);
-            if dst.exists() { files_to_update += 1; } else { new_files += 1; }
+            if dst.exists() {
+                files_to_update += 1;
+            } else {
+                new_files += 1;
+            }
         }
     }
 
@@ -550,7 +602,9 @@ pub async fn preview_update(
             Ok(Ok(archive)) => Some(archive.len() as u32),
             _ => None,
         }
-    } else { None };
+    } else {
+        None
+    };
 
     Ok(UpdatePreview {
         game_dir: game_dir.to_string_lossy().to_string(),

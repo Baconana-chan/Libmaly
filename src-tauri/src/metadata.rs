@@ -1,3 +1,5 @@
+use crate::data_paths::app_data_root;
+use crate::vault;
 use reqwest::Client;
 use reqwest_cookie_store::{CookieStore, CookieStoreMutex};
 use scraper::{Html, Selector};
@@ -5,11 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::LazyLock;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use crate::data_paths::app_data_root;
-use crate::vault;
 
 // ── Search Suggestion Cache & Rate Limiter ───────────────────────────────
 
@@ -44,10 +44,13 @@ impl SearchCache {
     }
 
     fn set(&mut self, key: String, items: Vec<SearchResultItem>) {
-        self.cache.insert(key, CachedResult {
-            items,
-            timestamp: now_ms() / 1000,
-        });
+        self.cache.insert(
+            key,
+            CachedResult {
+                items,
+                timestamp: now_ms() / 1000,
+            },
+        );
         // Clean old entries periodically
         let now = now_ms() / 1000;
         self.cache.retain(|_, cached| now - cached.timestamp < 3600); // 1 hour max
@@ -64,7 +67,8 @@ impl SearchCache {
     }
 }
 
-static SEARCH_CACHE: LazyLock<Mutex<SearchCache>> = LazyLock::new(|| Mutex::new(SearchCache::new()));
+static SEARCH_CACHE: LazyLock<Mutex<SearchCache>> =
+    LazyLock::new(|| Mutex::new(SearchCache::new()));
 
 // ── Cookie store with disk persistence ────────────────────────────────────
 
@@ -182,13 +186,21 @@ fn format_relation_entry(label: &str, title: &str, target: Option<&str>) -> Opti
         return None;
     }
 
-    Some(match target.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(target) => format!("{}: {} ({})", relation_label, relation_title, target),
-        None => format!("{}: {}", relation_label, relation_title),
-    })
+    Some(
+        match target.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(target) => format!("{}: {} ({})", relation_label, relation_title, target),
+            None => format!("{}: {}", relation_label, relation_title),
+        },
+    )
 }
 
-fn push_relation_entry(relations: &mut Vec<String>, seen: &mut HashSet<String>, label: &str, title: Option<&str>, target: Option<&str>) {
+fn push_relation_entry(
+    relations: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    label: &str,
+    title: Option<&str>,
+    target: Option<&str>,
+) {
     if let Some(entry) = title.and_then(|value| format_relation_entry(label, value, target)) {
         if seen.insert(entry.clone()) {
             relations.push(entry);
@@ -196,8 +208,12 @@ fn push_relation_entry(relations: &mut Vec<String>, seen: &mut HashSet<String>, 
     }
 }
 
-fn push_relation_entries<I>(relations: &mut Vec<String>, seen: &mut HashSet<String>, label: &str, items: I)
-where
+fn push_relation_entries<I>(
+    relations: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    label: &str,
+    items: I,
+) where
     I: IntoIterator<Item = (Option<String>, Option<String>)>,
 {
     for (title, target) in items {
@@ -208,10 +224,19 @@ where
 fn igdb_game_url(slug: Option<&str>, url: Option<&str>) -> Option<String> {
     url.map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .or_else(|| slug.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()).map(|slug| format!("https://www.igdb.com/games/{}", slug)))
+        .or_else(|| {
+            slug.map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .map(|slug| format!("https://www.igdb.com/games/{}", slug))
+        })
 }
 
-async fn fetch_rawg_relation_page(api_key: &str, slug: &str, endpoint: &str, page_size: usize) -> Result<Vec<(Option<String>, Option<String>)>, String> {
+async fn fetch_rawg_relation_page(
+    api_key: &str,
+    slug: &str,
+    endpoint: &str,
+    page_size: usize,
+) -> Result<Vec<(Option<String>, Option<String>)>, String> {
     #[derive(Deserialize)]
     struct RawgRelationListResponse {
         results: Option<Vec<RawgRelationItem>>,
@@ -235,13 +260,19 @@ async fn fetch_rawg_relation_page(api_key: &str, slug: &str, endpoint: &str, pag
         .map_err(|e| format!("RAWG relation request failed for {}: {}", endpoint, e))?;
 
     if !resp.status().is_success() {
-        return Err(format!("RAWG relation request HTTP {} for {}", resp.status(), endpoint));
+        return Err(format!(
+            "RAWG relation request HTTP {} for {}",
+            resp.status(),
+            endpoint
+        ));
     }
 
-    let parsed: RawgRelationListResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse RAWG relation response for {}: {}", endpoint, e))?;
+    let parsed: RawgRelationListResponse = resp.json().await.map_err(|e| {
+        format!(
+            "Failed to parse RAWG relation response for {}: {}",
+            endpoint, e
+        )
+    })?;
 
     Ok(parsed
         .results
@@ -431,7 +462,11 @@ fn has_text(value: Option<&String>) -> bool {
     value.map(|x| !x.trim().is_empty()).unwrap_or(false)
 }
 
-fn validate_metadata_shape(source_id: &str, source_label: &str, meta: &GameMetadata) -> Result<(), String> {
+fn validate_metadata_shape(
+    source_id: &str,
+    source_label: &str,
+    meta: &GameMetadata,
+) -> Result<(), String> {
     if !has_text(meta.title.as_ref()) {
         return Err(match source_id {
             "f95" => "Missing F95 thread title selector".to_string(),
@@ -866,9 +901,8 @@ fn fakku_login_looks_successful(body: &str) -> bool {
         || lower.contains("sign out")
         || lower.contains("log out")
         || lower.contains("my account");
-    let has_login = lower.contains("/login")
-        || lower.contains("sign in")
-        || lower.contains("log in");
+    let has_login =
+        lower.contains("/login") || lower.contains("sign in") || lower.contains("log in");
     has_logout && !has_login
 }
 
@@ -1066,184 +1100,184 @@ pub async fn fetch_f95_metadata(url: String) -> Result<GameMetadata, String> {
         let body = resp.text().await.map_err(|e| e.to_string())?;
         let doc = Html::parse_document(&body);
 
-    // ── Title ────────────────────────────────────────────────────────
-    // Remove all <a class="labelLink">...</a> spans (prefix badges like RPGM, Completed)
-    // Then strip [v1.0] [Developer] brackets and trim
-    let title = {
-        // Get just the direct text nodes (not inside labelLink children)
-        let full_text: String = {
-            let s = sel("h1.p-title-value");
-            doc.select(&s)
-                .next()
-                .map(|el| {
-                    // Collect text of child nodes that are NOT labelLink/label-append
-                    let mut result = String::new();
-                    for node in el.children() {
-                        use scraper::node::Node;
-                        match node.value() {
-                            Node::Text(t) => result.push_str(t),
-                            Node::Element(e) => {
-                                // Skip labelLink and label-append elements
-                                let cls = e.attr("class").unwrap_or("");
-                                if !cls.contains("labelLink") && !cls.contains("label-append") {
-                                    // Include text of other elements (shouldn't normally exist)
-                                    if let Some(er) = scraper::ElementRef::wrap(node) {
-                                        result.push_str(&er.text().collect::<String>());
+        // ── Title ────────────────────────────────────────────────────────
+        // Remove all <a class="labelLink">...</a> spans (prefix badges like RPGM, Completed)
+        // Then strip [v1.0] [Developer] brackets and trim
+        let title = {
+            // Get just the direct text nodes (not inside labelLink children)
+            let full_text: String = {
+                let s = sel("h1.p-title-value");
+                doc.select(&s)
+                    .next()
+                    .map(|el| {
+                        // Collect text of child nodes that are NOT labelLink/label-append
+                        let mut result = String::new();
+                        for node in el.children() {
+                            use scraper::node::Node;
+                            match node.value() {
+                                Node::Text(t) => result.push_str(t),
+                                Node::Element(e) => {
+                                    // Skip labelLink and label-append elements
+                                    let cls = e.attr("class").unwrap_or("");
+                                    if !cls.contains("labelLink") && !cls.contains("label-append") {
+                                        // Include text of other elements (shouldn't normally exist)
+                                        if let Some(er) = scraper::ElementRef::wrap(node) {
+                                            result.push_str(&er.text().collect::<String>());
+                                        }
                                     }
                                 }
+                                _ => {}
                             }
-                            _ => {}
                         }
-                    }
-                    result
-                })
-                .unwrap_or_default()
-        };
-        // Strip [v1.0] [Developer] etc.
-        let bracket_pos = full_text.find('[').unwrap_or(full_text.len());
-        full_text[..bracket_pos].trim().to_string()
-    };
-
-    // ── First post HTML ───────────────────────────────────────────────
-    let post_sel = sel(".message-body .bbWrapper");
-    let post_html = doc
-        .select(&post_sel)
-        .next()
-        .map(|el| el.inner_html())
-        .unwrap_or_default();
-
-    // ── Cover image ──────────────────────────────────────────────────
-    // First real attachment image in the first post
-    let cover_url = {
-        let img_sel =
-            sel(".message-body .bbWrapper .lbContainer img, .message-body .bbWrapper .bbImage");
-        doc.select(&img_sel)
-            .next()
-            .and_then(|el| {
-                el.value()
-                    .attr("src")
-                    .or_else(|| el.value().attr("data-src"))
-            })
-            .map(|s| s.to_string())
-    };
-
-    // ── Screenshots ──────────────────────────────────────────────────
-    // Strategy: collect href from <a class="js-lbImage"> (these are full-resolution URLs)
-    // The first one may be the cover banner — we'll skip it if it matches cover_url
-    let screenshots: Vec<String> = {
-        let a_sel = sel(".message-body .bbWrapper a.js-lbImage");
-        let from_links: Vec<String> = doc
-            .select(&a_sel)
-            .filter_map(|el| el.value().attr("href").map(|s| s.to_string()))
-            .filter(|u| u.contains("attachments.f95zone.to") || u.contains("f95zone.to"))
-            .collect();
-
-        if !from_links.is_empty() {
-            // Skip the first if it's the same as the cover
-            let skip = cover_url
-                .as_ref()
-                .map(|c| from_links.first() == Some(c))
-                .unwrap_or(false);
-            from_links
-                .into_iter()
-                .skip(if skip { 1 } else { 0 })
-                .take(8)
-                .collect()
-        } else {
-            // Fallback: bbImage src, deduped, skip cover, convert thumb -> full
-            let img_sel = sel(".message-body .bbWrapper .bbImage");
-            doc.select(&img_sel)
-                .skip(1)
-                .filter_map(|el| {
-                    let src = el
-                        .value()
-                        .attr("src")
-                        .or_else(|| el.value().attr("data-src"))?;
-                    Some(src.replace("/thumb/", "/"))
-                })
-                .take(8)
-                .collect()
-        }
-    };
-
-    // ── Overview text ────────────────────────────────────────────────
-    // Extract HTML between Overview header and the next <b>Field</b>: block
-    let (overview, overview_html_f95) = {
-        let idx = post_html
-            .find("<b>Overview</b>")
-            .or_else(|| post_html.find("<b>Overview:</b>"));
-        if let Some(i) = idx {
-            let after = &post_html[i..];
-            // cut off at the next <b>Something</b>: pattern
-            let end = {
-                let search = &after[15..]; // skip past the <b>Overview</b> itself
-                search
-                    .find("<b>")
-                    .map(|e| e + 15)
-                    .unwrap_or(after.len().min(4000))
+                        result
+                    })
+                    .unwrap_or_default()
             };
-            let fragment_html = after[..end].to_string();
-            let d = Html::parse_fragment(&fragment_html);
-            let plain: String = d
-                .root_element()
-                .text()
-                .collect::<String>()
-                .lines()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty() && *l != "Overview" && *l != "Overview:")
-                .collect::<Vec<_>>()
-                .join("\n\n"); // preserve paragraphs
-            let overview = if plain.is_empty() { None } else { Some(plain) };
-            (overview, None::<String>)
-        } else {
-            (None, None)
-        }
-    };
+            // Strip [v1.0] [Developer] etc.
+            let bracket_pos = full_text.find('[').unwrap_or(full_text.len());
+            full_text[..bracket_pos].trim().to_string()
+        };
 
-    // ── Metadata fields via <b>Label</b>: pattern ────────────────────
-    let version = extract_field(&post_html, "Version");
-    let developer = extract_field(&post_html, "Developer");
-    let censored = extract_field(&post_html, "Censored");
-    let os = extract_field(&post_html, "OS");
-    let language = extract_field(&post_html, "Language");
-    let engine = extract_field(&post_html, "Engine");
-    let release_date = extract_field(&post_html, "Release Date");
-    let last_updated = extract_field(&post_html, "Thread Updated");
+        // ── First post HTML ───────────────────────────────────────────────
+        let post_sel = sel(".message-body .bbWrapper");
+        let post_html = doc
+            .select(&post_sel)
+            .next()
+            .map(|el| el.inner_html())
+            .unwrap_or_default();
 
-    // ── Tags / Genre ─────────────────────────────────────────────────
-    let tags: Vec<String> = {
-        // Genre is in a spoiler, try to parse link text inside it
-        let tag_sel = sel(".js-tagList .tagItem, .p-body-pageContent a[href*='tags']");
-        let from_tags: Vec<String> = doc
-            .select(&tag_sel)
-            .map(|el| el.text().collect::<String>().trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect();
-
-        if !from_tags.is_empty() {
-            from_tags
-        } else {
-            // fallback: parse the genre spoiler
-            let genre_idx = post_html.find("<b>Genre</b>");
-            genre_idx
-                .map(|i| {
-                    let after = &post_html[i..];
-                    let end = after.find("</div>").unwrap_or(2000.min(after.len()));
-                    let frag = Html::parse_fragment(&after[..end]);
-                    frag.root_element()
-                        .text()
-                        .collect::<String>()
-                        .split(',')
-                        .map(|t| t.trim().to_string())
-                        .filter(|t| !t.is_empty() && t != "Genre")
-                        .collect()
+        // ── Cover image ──────────────────────────────────────────────────
+        // First real attachment image in the first post
+        let cover_url = {
+            let img_sel =
+                sel(".message-body .bbWrapper .lbContainer img, .message-body .bbWrapper .bbImage");
+            doc.select(&img_sel)
+                .next()
+                .and_then(|el| {
+                    el.value()
+                        .attr("src")
+                        .or_else(|| el.value().attr("data-src"))
                 })
-                .unwrap_or_default()
-        }
-    };
+                .map(|s| s.to_string())
+        };
 
-    // ── Rating ───────────────────────────────────────────────────────
-    let rating = text_of(&doc, ".bratr-vote-content").map(|s| s.trim().to_string());
+        // ── Screenshots ──────────────────────────────────────────────────
+        // Strategy: collect href from <a class="js-lbImage"> (these are full-resolution URLs)
+        // The first one may be the cover banner — we'll skip it if it matches cover_url
+        let screenshots: Vec<String> = {
+            let a_sel = sel(".message-body .bbWrapper a.js-lbImage");
+            let from_links: Vec<String> = doc
+                .select(&a_sel)
+                .filter_map(|el| el.value().attr("href").map(|s| s.to_string()))
+                .filter(|u| u.contains("attachments.f95zone.to") || u.contains("f95zone.to"))
+                .collect();
+
+            if !from_links.is_empty() {
+                // Skip the first if it's the same as the cover
+                let skip = cover_url
+                    .as_ref()
+                    .map(|c| from_links.first() == Some(c))
+                    .unwrap_or(false);
+                from_links
+                    .into_iter()
+                    .skip(if skip { 1 } else { 0 })
+                    .take(8)
+                    .collect()
+            } else {
+                // Fallback: bbImage src, deduped, skip cover, convert thumb -> full
+                let img_sel = sel(".message-body .bbWrapper .bbImage");
+                doc.select(&img_sel)
+                    .skip(1)
+                    .filter_map(|el| {
+                        let src = el
+                            .value()
+                            .attr("src")
+                            .or_else(|| el.value().attr("data-src"))?;
+                        Some(src.replace("/thumb/", "/"))
+                    })
+                    .take(8)
+                    .collect()
+            }
+        };
+
+        // ── Overview text ────────────────────────────────────────────────
+        // Extract HTML between Overview header and the next <b>Field</b>: block
+        let (overview, overview_html_f95) = {
+            let idx = post_html
+                .find("<b>Overview</b>")
+                .or_else(|| post_html.find("<b>Overview:</b>"));
+            if let Some(i) = idx {
+                let after = &post_html[i..];
+                // cut off at the next <b>Something</b>: pattern
+                let end = {
+                    let search = &after[15..]; // skip past the <b>Overview</b> itself
+                    search
+                        .find("<b>")
+                        .map(|e| e + 15)
+                        .unwrap_or(after.len().min(4000))
+                };
+                let fragment_html = after[..end].to_string();
+                let d = Html::parse_fragment(&fragment_html);
+                let plain: String = d
+                    .root_element()
+                    .text()
+                    .collect::<String>()
+                    .lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty() && *l != "Overview" && *l != "Overview:")
+                    .collect::<Vec<_>>()
+                    .join("\n\n"); // preserve paragraphs
+                let overview = if plain.is_empty() { None } else { Some(plain) };
+                (overview, None::<String>)
+            } else {
+                (None, None)
+            }
+        };
+
+        // ── Metadata fields via <b>Label</b>: pattern ────────────────────
+        let version = extract_field(&post_html, "Version");
+        let developer = extract_field(&post_html, "Developer");
+        let censored = extract_field(&post_html, "Censored");
+        let os = extract_field(&post_html, "OS");
+        let language = extract_field(&post_html, "Language");
+        let engine = extract_field(&post_html, "Engine");
+        let release_date = extract_field(&post_html, "Release Date");
+        let last_updated = extract_field(&post_html, "Thread Updated");
+
+        // ── Tags / Genre ─────────────────────────────────────────────────
+        let tags: Vec<String> = {
+            // Genre is in a spoiler, try to parse link text inside it
+            let tag_sel = sel(".js-tagList .tagItem, .p-body-pageContent a[href*='tags']");
+            let from_tags: Vec<String> = doc
+                .select(&tag_sel)
+                .map(|el| el.text().collect::<String>().trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+
+            if !from_tags.is_empty() {
+                from_tags
+            } else {
+                // fallback: parse the genre spoiler
+                let genre_idx = post_html.find("<b>Genre</b>");
+                genre_idx
+                    .map(|i| {
+                        let after = &post_html[i..];
+                        let end = after.find("</div>").unwrap_or(2000.min(after.len()));
+                        let frag = Html::parse_fragment(&after[..end]);
+                        frag.root_element()
+                            .text()
+                            .collect::<String>()
+                            .split(',')
+                            .map(|t| t.trim().to_string())
+                            .filter(|t| !t.is_empty() && t != "Genre")
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+        };
+
+        // ── Rating ───────────────────────────────────────────────────────
+        let rating = text_of(&doc, ".bratr-vote-content").map(|s| s.trim().to_string());
 
         Ok(GameMetadata {
             source: "f95".into(),
@@ -1303,217 +1337,221 @@ pub async fn fetch_dlsite_metadata(url: String) -> Result<GameMetadata, String> 
         let body = resp.text().await.map_err(|e| e.to_string())?;
         let doc = Html::parse_document(&body);
 
-    // ── Title ────────────────────────────────────────────────────────
-    let title = text_of(&doc, "#work_name")
-        .or_else(|| text_of(&doc, "h1.title"))
-        .or_else(|| text_of(&doc, ".work_name"));
+        // ── Title ────────────────────────────────────────────────────────
+        let title = text_of(&doc, "#work_name")
+            .or_else(|| text_of(&doc, "h1.title"))
+            .or_else(|| text_of(&doc, ".work_name"));
 
-    // ── Cover ────────────────────────────────────────────────────────
-    let cover_url = {
-        let sel_list = [
-            "#work_img_main img",
-            ".work_thumb img",
-            ".slider_item img",
-            "#mainVisual img",
-        ];
-        sel_list.iter().find_map(|s| {
-            let sel = sel(s);
-            doc.select(&sel).next().and_then(|el| {
-                el.value()
-                    .attr("src")
-                    .or_else(|| el.value().attr("data-src"))
-                    .map(|u| {
-                        if u.starts_with("//") {
-                            format!("https:{}", u)
-                        } else {
-                            u.to_string()
-                        }
-                    })
-            })
-        })
-    };
-
-    // ── Screenshots ──────────────────────────────────────────────────
-    // DLsite stores slider images in several selectors; also try the parts area thumbnails
-    let screenshots: Vec<String> = {
-        let selectors = [
-            ".product-slider-data div[data-src]",
-            ".work_parts_slider li img",
-            ".slider_item img",
-            "#work_slider li img",
-            ".work_secondary_slider_img img",
-        ];
-        let mut urls: Vec<String> = Vec::new();
-        for s in &selectors {
-            let img_sel = sel(s);
-            for el in doc.select(&img_sel) {
-                let src = el
-                    .value()
-                    .attr("data-src")
-                    .or_else(|| el.value().attr("src"))
-                    .or_else(|| el.value().attr("data-lazy-src"))
-                    .unwrap_or("");
-                if src.is_empty() {
-                    continue;
-                }
-                let full = if src.starts_with("//") {
-                    format!("https:{}", src)
-                } else {
-                    src.to_string()
-                };
-                // skip tiny icons and main cover (already in cover_url)
-                if full.contains("dlsite")
-                    && !full.contains("_img_sam")
-                    && !full.contains("no_image")
-                {
-                    urls.push(full);
-                }
-            }
-            if !urls.is_empty() {
-                break;
-            }
-        }
-        // Fallback: look in raw HTML for img.dlsite.jp URLs in a slider context
-        if urls.is_empty() {
-            let slider_re: Vec<_> = body
-                .split('"')
-                .filter(|s| s.contains("img.dlsite.jp") && s.contains("work"))
-                .map(|s| {
-                    if s.starts_with("//") {
-                        format!("https:{}", s)
-                    } else {
-                        s.to_string()
-                    }
+        // ── Cover ────────────────────────────────────────────────────────
+        let cover_url = {
+            let sel_list = [
+                "#work_img_main img",
+                ".work_thumb img",
+                ".slider_item img",
+                "#mainVisual img",
+            ];
+            sel_list.iter().find_map(|s| {
+                let sel = sel(s);
+                doc.select(&sel).next().and_then(|el| {
+                    el.value()
+                        .attr("src")
+                        .or_else(|| el.value().attr("data-src"))
+                        .map(|u| {
+                            if u.starts_with("//") {
+                                format!("https:{}", u)
+                            } else {
+                                u.to_string()
+                            }
+                        })
                 })
-                .filter(|s| !s.is_empty())
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
-            urls.extend(slider_re);
-        }
-        urls.dedup();
-        urls.into_iter().take(8).collect()
-    };
+            })
+        };
 
-    // ── Description (HTML with potential inline images) ────────────────
-    let (overview, overview_html) = {
-        let selectors = [
-            "#work_parts_area",
-            ".work_parts_container",
-            ".work_intro",
-            "#work_description",
-            ".work_parts",
-        ];
-        let mut plain = None;
-        let mut html_frag = None;
-        for s in &selectors {
-            let qsel = sel(s);
-            if let Some(el) = doc.select(&qsel).next() {
-                let inner = el.inner_html();
-                if !inner.trim().is_empty() {
-                    // Plain text (for search/display fallback)
-                    let txt: String = el.text().collect::<String>();
-                    plain = Some(txt.trim().to_string());
-                    // Keep HTML — fix protocol-relative image srcs
-                    html_frag = Some(inner.replace("//img.dlsite.jp", "https://img.dlsite.jp"));
+        // ── Screenshots ──────────────────────────────────────────────────
+        // DLsite stores slider images in several selectors; also try the parts area thumbnails
+        let screenshots: Vec<String> = {
+            let selectors = [
+                ".product-slider-data div[data-src]",
+                ".work_parts_slider li img",
+                ".slider_item img",
+                "#work_slider li img",
+                ".work_secondary_slider_img img",
+            ];
+            let mut urls: Vec<String> = Vec::new();
+            for s in &selectors {
+                let img_sel = sel(s);
+                for el in doc.select(&img_sel) {
+                    let src = el
+                        .value()
+                        .attr("data-src")
+                        .or_else(|| el.value().attr("src"))
+                        .or_else(|| el.value().attr("data-lazy-src"))
+                        .unwrap_or("");
+                    if src.is_empty() {
+                        continue;
+                    }
+                    let full = if src.starts_with("//") {
+                        format!("https:{}", src)
+                    } else {
+                        src.to_string()
+                    };
+                    // skip tiny icons and main cover (already in cover_url)
+                    if full.contains("dlsite")
+                        && !full.contains("_img_sam")
+                        && !full.contains("no_image")
+                    {
+                        urls.push(full);
+                    }
+                }
+                if !urls.is_empty() {
                     break;
                 }
             }
-        }
-        (plain, html_frag)
-    };
+            // Fallback: look in raw HTML for img.dlsite.jp URLs in a slider context
+            if urls.is_empty() {
+                let slider_re: Vec<_> = body
+                    .split('"')
+                    .filter(|s| s.contains("img.dlsite.jp") && s.contains("work"))
+                    .map(|s| {
+                        if s.starts_with("//") {
+                            format!("https:{}", s)
+                        } else {
+                            s.to_string()
+                        }
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                urls.extend(slider_re);
+            }
+            urls.dedup();
+            urls.into_iter().take(8).collect()
+        };
 
-    // ── Info table ───────────────────────────────────────────────────
-    // DLsite uses table.work_outline with <th> / <td> pairs inside <tr>
-    // Supports both English and Japanese header names
-    let mut table_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    {
-        let tr_sel = sel("table.work_outline tr");
-        for row in doc.select(&tr_sel) {
-            let th_sel = sel("th");
-            let td_sel = sel("td");
-            if let (Some(th), Some(td)) = (row.select(&th_sel).next(), row.select(&td_sel).next()) {
-                let key = th.text().collect::<String>().trim().to_string();
-                let val = td
-                    .text()
-                    .collect::<String>()
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .trim()
-                    .to_string();
-                if !key.is_empty() && !val.is_empty() {
-                    table_map.insert(key, val);
+        // ── Description (HTML with potential inline images) ────────────────
+        let (overview, overview_html) = {
+            let selectors = [
+                "#work_parts_area",
+                ".work_parts_container",
+                ".work_intro",
+                "#work_description",
+                ".work_parts",
+            ];
+            let mut plain = None;
+            let mut html_frag = None;
+            for s in &selectors {
+                let qsel = sel(s);
+                if let Some(el) = doc.select(&qsel).next() {
+                    let inner = el.inner_html();
+                    if !inner.trim().is_empty() {
+                        // Plain text (for search/display fallback)
+                        let txt: String = el.text().collect::<String>();
+                        plain = Some(txt.trim().to_string());
+                        // Keep HTML — fix protocol-relative image srcs
+                        html_frag = Some(inner.replace("//img.dlsite.jp", "https://img.dlsite.jp"));
+                        break;
+                    }
+                }
+            }
+            (plain, html_frag)
+        };
+
+        // ── Info table ───────────────────────────────────────────────────
+        // DLsite uses table.work_outline with <th> / <td> pairs inside <tr>
+        // Supports both English and Japanese header names
+        let mut table_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        {
+            let tr_sel = sel("table.work_outline tr");
+            for row in doc.select(&tr_sel) {
+                let th_sel = sel("th");
+                let td_sel = sel("td");
+                if let (Some(th), Some(td)) =
+                    (row.select(&th_sel).next(), row.select(&td_sel).next())
+                {
+                    let key = th.text().collect::<String>().trim().to_string();
+                    let val = td
+                        .text()
+                        .collect::<String>()
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .trim()
+                        .to_string();
+                    if !key.is_empty() && !val.is_empty() {
+                        table_map.insert(key, val);
+                    }
                 }
             }
         }
-    }
 
-    let get_table =
-        |keys: &[&str]| -> Option<String> { keys.iter().find_map(|k| table_map.get(*k).cloned()) };
+        let get_table = |keys: &[&str]| -> Option<String> {
+            keys.iter().find_map(|k| table_map.get(*k).cloned())
+        };
 
-    let developer = get_table(&["Maker", "Circle", "メーカー", "サークル"])
-        .or_else(|| text_of(&doc, "span.maker_name"));
-    let circle = get_table(&["Circle", "サークル", "Maker", "メーカー"]);
-    let release_date = get_table(&["Release date", "Sale date", "販売日", "リリース日"]);
-    let last_updated = get_table(&["Update information", "更新情報"]);
-    let series = get_table(&["Series name", "シリーズ名"]);
-    let author = get_table(&["Author", "作者", "著者"]);
-    let illustration = get_table(&["Illustration", "イラスト"]);
-    let voice_actor = get_table(&["Voice Actor", "声優"]);
-    let music = get_table(&["Music", "音楽"]);
-    let age_rating = get_table(&["Age", "年齢指定", "対象年齢"]);
-    let product_format = get_table(&["Product format", "作品形式"]);
-    let file_format = get_table(&["File format", "ファイル形式"]);
-    let file_size = get_table(&["File size", "ファイル容量"]);
-    let language_dl = get_table(&["Supported languages", "対応言語"]);
+        let developer = get_table(&["Maker", "Circle", "メーカー", "サークル"])
+            .or_else(|| text_of(&doc, "span.maker_name"));
+        let circle = get_table(&["Circle", "サークル", "Maker", "メーカー"]);
+        let release_date = get_table(&["Release date", "Sale date", "販売日", "リリース日"]);
+        let last_updated = get_table(&["Update information", "更新情報"]);
+        let series = get_table(&["Series name", "シリーズ名"]);
+        let author = get_table(&["Author", "作者", "著者"]);
+        let illustration = get_table(&["Illustration", "イラスト"]);
+        let voice_actor = get_table(&["Voice Actor", "声優"]);
+        let music = get_table(&["Music", "音楽"]);
+        let age_rating = get_table(&["Age", "年齢指定", "対象年齢"]);
+        let product_format = get_table(&["Product format", "作品形式"]);
+        let file_format = get_table(&["File format", "ファイル形式"]);
+        let file_size = get_table(&["File size", "ファイル容量"]);
+        let language_dl = get_table(&["Supported languages", "対応言語"]);
 
-    // ── Genres / Tags ────────────────────────────────────────────────
-    let tags: Vec<String> = {
-        // Try genre links, then table Genre row
-        let tag_sel = sel(".work_genre a, #work_genre a, .genre_tag a, [id^='genre'] a");
-        let from_links: Vec<String> = doc
-            .select(&tag_sel)
-            .map(|el| el.text().collect::<String>().trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect();
-        if !from_links.is_empty() {
-            from_links
-        } else {
-            get_table(&["Genre", "ジャンル"])
-                .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
-                .unwrap_or_default()
-        }
-    };
+        // ── Genres / Tags ────────────────────────────────────────────────
+        let tags: Vec<String> = {
+            // Try genre links, then table Genre row
+            let tag_sel = sel(".work_genre a, #work_genre a, .genre_tag a, [id^='genre'] a");
+            let from_links: Vec<String> = doc
+                .select(&tag_sel)
+                .map(|el| el.text().collect::<String>().trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            if !from_links.is_empty() {
+                from_links
+            } else {
+                get_table(&["Genre", "ジャンル"])
+                    .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
+                    .unwrap_or_default()
+            }
+        };
 
-    // ── Price ────────────────────────────────────────────────────────
-    let price = text_of(&doc, ".price_table .price, .work_buy .price, .work_price")
-        .or_else(|| get_table(&["Price", "価格"]));
+        // ── Price ────────────────────────────────────────────────────────
+        let price = text_of(&doc, ".price_table .price, .work_buy .price, .work_price")
+            .or_else(|| get_table(&["Price", "価格"]));
 
-    // ── Rating ───────────────────────────────────────────────────────
-    // DLsite renders the rating client-side via Vue.js, so CSS selectors may
-    // return the raw template literal "{{ product.rate_average_2dp }}".
-    // Extract the real value directly from the JSON data block in the HTML.
-    let rating_from_json = body.find("\"rate_average_2dp\":").and_then(|pos| {
-        let rest = &body[pos + "\"rate_average_2dp\":".len()..];
-        let end = rest
-            .find(|c: char| !c.is_ascii_digit() && c != '.')
-            .unwrap_or(rest.len());
-        let val = rest[..end].trim().to_string();
-        if val.is_empty() || val == "0" || val == "0.0" {
-            None
-        } else {
-            Some(val)
-        }
-    });
+        // ── Rating ───────────────────────────────────────────────────────
+        // DLsite renders the rating client-side via Vue.js, so CSS selectors may
+        // return the raw template literal "{{ product.rate_average_2dp }}".
+        // Extract the real value directly from the JSON data block in the HTML.
+        let rating_from_json = body.find("\"rate_average_2dp\":").and_then(|pos| {
+            let rest = &body[pos + "\"rate_average_2dp\":".len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit() && c != '.')
+                .unwrap_or(rest.len());
+            let val = rest[..end].trim().to_string();
+            if val.is_empty() || val == "0" || val == "0.0" {
+                None
+            } else {
+                Some(val)
+            }
+        });
 
-    let rating = text_of(
-        &doc,
-        ".star_rating .rate_average_star, .average_count, .work_rating .average",
-    )
-    .filter(|r| !r.contains("{"))
-    .or(rating_from_json)
-    .or_else(|| text_of(&doc, ".work_review_site_rating").filter(|r| !r.contains("{")));
+        let rating = text_of(
+            &doc,
+            ".star_rating .rate_average_star, .average_count, .work_rating .average",
+        )
+        .filter(|r| !r.contains("{"))
+        .or(rating_from_json)
+        .or_else(|| text_of(&doc, ".work_review_site_rating").filter(|r| !r.contains("{")));
 
         Ok(GameMetadata {
             source: "dlsite".into(),
@@ -1855,113 +1893,128 @@ async fn fetch_store_metadata(url: String) -> Result<GameMetadata, String> {
             .map_err(|e| format!("{source_label} body parse failed: {e}"))?;
         let doc = Html::parse_document(&body);
 
-    let title = extract_meta(&doc, "og:title")
-        .or_else(|| extract_meta(&doc, "twitter:title"))
-        .or_else(|| text_first(&doc, &["h1.product-title", "h1[itemprop='name']", "h1.title", "h1"]));
+        let title = extract_meta(&doc, "og:title")
+            .or_else(|| extract_meta(&doc, "twitter:title"))
+            .or_else(|| {
+                text_first(
+                    &doc,
+                    &["h1.product-title", "h1[itemprop='name']", "h1.title", "h1"],
+                )
+            });
 
-    let overview = extract_meta(&doc, "og:description")
-        .or_else(|| extract_meta(&doc, "twitter:description"))
-        .or_else(|| extract_meta(&doc, "description"))
-        .or_else(|| text_first(&doc, &[".product-description", ".entry-content", ".description", "[itemprop='description']"]));
+        let overview = extract_meta(&doc, "og:description")
+            .or_else(|| extract_meta(&doc, "twitter:description"))
+            .or_else(|| extract_meta(&doc, "description"))
+            .or_else(|| {
+                text_first(
+                    &doc,
+                    &[
+                        ".product-description",
+                        ".entry-content",
+                        ".description",
+                        "[itemprop='description']",
+                    ],
+                )
+            });
 
-    let cover_url = extract_meta(&doc, "og:image")
-        .or_else(|| extract_meta(&doc, "twitter:image"))
-        .map(|x| absolutize_url(&source_url, &x));
+        let cover_url = extract_meta(&doc, "og:image")
+            .or_else(|| extract_meta(&doc, "twitter:image"))
+            .map(|x| absolutize_url(&source_url, &x));
 
-    let mut screenshots = Vec::<String>::new();
-    let mut seen = HashSet::<String>::new();
-    for src in [
-        "img.product-gallery__image",
-        ".product-gallery img",
-        ".gallery img",
-        ".thumbnails img",
-        ".swiper-slide img",
-        ".slick-slide img",
-        "img",
-    ] {
-        let s = sel(src);
-        for img in doc.select(&s) {
-            let raw = img
-                .value()
-                .attr("data-src")
-                .or_else(|| img.value().attr("data-original"))
-                .or_else(|| img.value().attr("src"))
-                .unwrap_or("")
-                .trim();
-            if raw.is_empty() {
-                continue;
-            }
-            let abs = absolutize_url(&source_url, raw);
-            let l = abs.to_lowercase();
-            if l.contains("logo") || l.contains("icon") || l.contains("avatar") {
-                continue;
-            }
-            if seen.insert(l) {
-                screenshots.push(abs);
-                if screenshots.len() >= 8 {
-                    break;
+        let mut screenshots = Vec::<String>::new();
+        let mut seen = HashSet::<String>::new();
+        for src in [
+            "img.product-gallery__image",
+            ".product-gallery img",
+            ".gallery img",
+            ".thumbnails img",
+            ".swiper-slide img",
+            ".slick-slide img",
+            "img",
+        ] {
+            let s = sel(src);
+            for img in doc.select(&s) {
+                let raw = img
+                    .value()
+                    .attr("data-src")
+                    .or_else(|| img.value().attr("data-original"))
+                    .or_else(|| img.value().attr("src"))
+                    .unwrap_or("")
+                    .trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                let abs = absolutize_url(&source_url, raw);
+                let l = abs.to_lowercase();
+                if l.contains("logo") || l.contains("icon") || l.contains("avatar") {
+                    continue;
+                }
+                if seen.insert(l) {
+                    screenshots.push(abs);
+                    if screenshots.len() >= 8 {
+                        break;
+                    }
                 }
             }
-        }
-        if screenshots.len() >= 8 {
-            break;
-        }
-    }
-    if let Some(cover) = &cover_url {
-        screenshots.retain(|s| s != cover);
-    }
-
-    let mut tags = Vec::<String>::new();
-    if let Some(kw) = extract_meta(&doc, "keywords") {
-        tags.extend(split_keywords_to_tags(&kw));
-    }
-    for selector in [
-        "a[rel='tag']",
-        ".tag a",
-        ".tags a",
-        ".genre a",
-        ".categories a",
-    ] {
-        let s = sel(selector);
-        for el in doc.select(&s) {
-            let txt = el.text().collect::<String>().trim().to_string();
-            if txt.len() < 2 {
-                continue;
+            if screenshots.len() >= 8 {
+                break;
             }
-            if !tags.iter().any(|x| x.eq_ignore_ascii_case(&txt)) {
-                tags.push(txt);
+        }
+        if let Some(cover) = &cover_url {
+            screenshots.retain(|s| s != cover);
+        }
+
+        let mut tags = Vec::<String>::new();
+        if let Some(kw) = extract_meta(&doc, "keywords") {
+            tags.extend(split_keywords_to_tags(&kw));
+        }
+        for selector in [
+            "a[rel='tag']",
+            ".tag a",
+            ".tags a",
+            ".genre a",
+            ".categories a",
+        ] {
+            let s = sel(selector);
+            for el in doc.select(&s) {
+                let txt = el.text().collect::<String>().trim().to_string();
+                if txt.len() < 2 {
+                    continue;
+                }
+                if !tags.iter().any(|x| x.eq_ignore_ascii_case(&txt)) {
+                    tags.push(txt);
+                }
+                if tags.len() >= 24 {
+                    break;
+                }
             }
             if tags.len() >= 24 {
                 break;
             }
         }
-        if tags.len() >= 24 {
-            break;
-        }
-    }
 
-    let developer = text_first(
-        &doc,
-        &[
-            "[itemprop='brand']",
-            ".maker a",
-            ".developer a",
-            ".developer",
-            ".brand",
-            ".circle a",
-        ],
-    );
-    let release_date = text_first(
-        &doc,
-        &[
-            "time[itemprop='datePublished']",
-            "time[datetime]",
-            ".release-date",
-            ".date",
-            ".product-release",
-        ],
-    );
-    let price = text_first(&doc, &[".price", "[itemprop='price']", ".product-price"]);
+        let developer = text_first(
+            &doc,
+            &[
+                "[itemprop='brand']",
+                ".maker a",
+                ".developer a",
+                ".developer",
+                ".brand",
+                ".circle a",
+            ],
+        );
+        let release_date = text_first(
+            &doc,
+            &[
+                "time[itemprop='datePublished']",
+                "time[datetime]",
+                ".release-date",
+                ".date",
+                ".product-release",
+            ],
+        );
+        let price = text_first(&doc, &[".price", "[itemprop='price']", ".product-price"]);
 
         Ok(GameMetadata {
             source: source_id.to_string(),
@@ -2279,7 +2332,11 @@ async fn fetch_ddg_site_suggestions(
     }
 
     // Check rate limit (2 seconds minimum between requests per search engine)
-    if !SEARCH_CACHE.lock().unwrap().check_rate_limit(search_engine, 2) {
+    if !SEARCH_CACHE
+        .lock()
+        .unwrap()
+        .check_rate_limit(search_engine, 2)
+    {
         return Vec::new(); // Rate limited, return empty
     }
 
@@ -2352,48 +2409,45 @@ async fn fetch_ddg_site_suggestions(
         Err(_) => return Vec::new(),
     };
     let doc = Html::parse_document(&body);
-    
+
     // Use specific selectors for each search engine
     let results: Vec<(String, String)> = match parse_engine {
-        "google" => {
-            doc.select(&sel("div.g a[href]"))
-                .filter_map(|el| {
-                    let url = el.attr("href").unwrap_or("").trim().to_string();
-                    let title = el.text().collect::<String>().trim().to_string();
-                    if !url.is_empty() && !title.is_empty() && url.to_lowercase().contains(site) {
-                        Some((url, title))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
-        "bing" => {
-            doc.select(&sel("li.b_algo h2 a[href]"))
-                .filter_map(|el| {
-                    let url = el.attr("href").unwrap_or("").trim().to_string();
-                    let title = el.text().collect::<String>().trim().to_string();
-                    if !url.is_empty() && !title.is_empty() && url.to_lowercase().contains(site) {
-                        Some((url, title))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
-        "brave" => {
-            doc.select(&sel("div.web-result a[href]"))
-                .filter_map(|el| {
-                    let url = el.attr("href").unwrap_or("").trim().to_string();
-                    let title = el.text().collect::<String>().trim().to_string();
-                    if !url.is_empty() && !title.is_empty() && url.to_lowercase().contains(site) {
-                        Some((url, title))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
+        "google" => doc
+            .select(&sel("div.g a[href]"))
+            .filter_map(|el| {
+                let url = el.attr("href").unwrap_or("").trim().to_string();
+                let title = el.text().collect::<String>().trim().to_string();
+                if !url.is_empty() && !title.is_empty() && url.to_lowercase().contains(site) {
+                    Some((url, title))
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        "bing" => doc
+            .select(&sel("li.b_algo h2 a[href]"))
+            .filter_map(|el| {
+                let url = el.attr("href").unwrap_or("").trim().to_string();
+                let title = el.text().collect::<String>().trim().to_string();
+                if !url.is_empty() && !title.is_empty() && url.to_lowercase().contains(site) {
+                    Some((url, title))
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        "brave" => doc
+            .select(&sel("div.web-result a[href]"))
+            .filter_map(|el| {
+                let url = el.attr("href").unwrap_or("").trim().to_string();
+                let title = el.text().collect::<String>().trim().to_string();
+                if !url.is_empty() && !title.is_empty() && url.to_lowercase().contains(site) {
+                    Some((url, title))
+                } else {
+                    None
+                }
+            })
+            .collect(),
         _ => {
             // DuckDuckGo: use the original selector
             doc.select(&sel(".result-link"))
@@ -2409,7 +2463,7 @@ async fn fetch_ddg_site_suggestions(
                 .collect()
         }
     };
-    
+
     let mut out = Vec::<SearchResultItem>::new();
     for (url, title) in results {
         if out.len() >= limit {
@@ -2422,15 +2476,18 @@ async fn fetch_ddg_site_suggestions(
             source: source.to_string(),
         });
     }
-    
+
     // Cache the results
     SEARCH_CACHE.lock().unwrap().set(cache_key, out.clone());
-    
+
     out
 }
 
 #[tauri::command]
-pub async fn search_suggest_links(query: String, search_engine: Option<String>) -> Result<Vec<SearchResultItem>, String> {
+pub async fn search_suggest_links(
+    query: String,
+    search_engine: Option<String>,
+) -> Result<Vec<SearchResultItem>, String> {
     let search_engine = search_engine.unwrap_or_else(|| "duckduckgo".to_string());
     let mut results = Vec::new();
     let mut seen_urls = std::collections::HashSet::<String>::new();
@@ -2489,17 +2546,17 @@ pub async fn search_suggest_links(query: String, search_engine: Option<String>) 
                             .unwrap_or("Unknown")
                             .to_string();
                         let url = a.attr("href").unwrap_or("").to_string();
-                        let cover_url = el
-                            .select(&img_sel)
-                            .next()
-                            .and_then(|i| i.attr("src"))
-                            .map(|s| {
-                                if s.starts_with("//") {
-                                    format!("https:{}", s)
-                                } else {
-                                    s.to_string()
-                                }
-                            });
+                        let cover_url =
+                            el.select(&img_sel)
+                                .next()
+                                .and_then(|i| i.attr("src"))
+                                .map(|s| {
+                                    if s.starts_with("//") {
+                                        format!("https:{}", s)
+                                    } else {
+                                        s.to_string()
+                                    }
+                                });
                         if !url.is_empty()
                             && !url.contains("category")
                             && push_result(SearchResultItem {
@@ -2552,15 +2609,15 @@ pub async fn search_suggest_links(query: String, search_engine: Option<String>) 
                     if f95_count >= 4 {
                         break;
                     }
-                let url = el.attr("href").unwrap_or("").to_string();
-                if url.contains("f95zone.to/threads") {
-                    let title = el.text().collect::<String>().trim().to_string();
-                    if push_result(SearchResultItem {
-                        title,
-                        url: normalize_f95_thread_url(&url),
-                        cover_url: None,
-                        source: "F95zone".into(),
-                    }) {
+                    let url = el.attr("href").unwrap_or("").to_string();
+                    if url.contains("f95zone.to/threads") {
+                        let title = el.text().collect::<String>().trim().to_string();
+                        if push_result(SearchResultItem {
+                            title,
+                            url: normalize_f95_thread_url(&url),
+                            cover_url: None,
+                            source: "F95zone".into(),
+                        }) {
                             f95_count += 1;
                         }
                     }
@@ -2599,7 +2656,9 @@ pub async fn search_suggest_links(query: String, search_engine: Option<String>) 
                         if vndb_count >= 5 {
                             break;
                         }
-                        let Some(id) = item.id.clone() else { continue; };
+                        let Some(id) = item.id.clone() else {
+                            continue;
+                        };
                         let title = item
                             .title
                             .clone()
@@ -2627,7 +2686,9 @@ pub async fn search_suggest_links(query: String, search_engine: Option<String>) 
         if mg_count >= 3 {
             break;
         }
-        for item in fetch_ddg_site_suggestions(q, "mangagamer.com", "MangaGamer", 3, &search_engine).await {
+        for item in
+            fetch_ddg_site_suggestions(q, "mangagamer.com", "MangaGamer", 3, &search_engine).await
+        {
             if mg_count >= 3 {
                 break;
             }
@@ -2770,8 +2831,10 @@ static IGDB_ACCESS_TOKEN: Mutex<Option<(String, String, u64)>> = Mutex::new(None
 
 async fn get_igdb_access_token() -> Result<String, String> {
     let profile_id = vault::current_profile_id();
-    let client_id = get_api_key("igdb_client_id".to_string()).ok_or("IGDB Client ID not configured")?;
-    let client_secret = get_api_key("igdb_client_secret".to_string()).ok_or("IGDB Client Secret not configured")?;
+    let client_id =
+        get_api_key("igdb_client_id".to_string()).ok_or("IGDB Client ID not configured")?;
+    let client_secret =
+        get_api_key("igdb_client_secret".to_string()).ok_or("IGDB Client Secret not configured")?;
 
     // Check if we have a valid cached token
     {
@@ -2828,10 +2891,7 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
     let token = get_igdb_access_token().await?;
 
     // Extract game ID from URL (e.g., https://www.igdb.com/games/counter-strike)
-    let game_id = url
-        .split('/')
-        .next_back()
-        .ok_or("Invalid IGDB URL")?;
+    let game_id = url.split('/').next_back().ok_or("Invalid IGDB URL")?;
 
     // GraphQL query for game details
     let query = format!(
@@ -2862,7 +2922,10 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
     let resp = http()
         .post("https://api.igdb.com/v4/games")
         .header("Authorization", format!("Bearer {}", token))
-        .header("Client-ID", get_api_key("igdb_client_id".to_string()).unwrap_or_default())
+        .header(
+            "Client-ID",
+            get_api_key("igdb_client_id".to_string()).unwrap_or_default(),
+        )
         .body(query)
         .send()
         .await
@@ -3010,8 +3073,16 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
         }
     }
 
-    let developer = if developers.is_empty() { None } else { Some(developers.join(", ")) };
-    let _publisher = if publishers.is_empty() { None } else { Some(publishers.join(", ")) };
+    let developer = if developers.is_empty() {
+        None
+    } else {
+        Some(developers.join(", "))
+    };
+    let _publisher = if publishers.is_empty() {
+        None
+    } else {
+        Some(publishers.join(", "))
+    };
 
     let release_date = game
         .release_dates
@@ -3025,10 +3096,12 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
 
     let rating = game.rating.map(|r| (r / 10.0).to_string()); // Convert to 0-10 scale
 
-    let os = game
-        .platforms
-        .as_ref()
-        .map(|p| p.iter().filter_map(|pl| pl.name.clone()).collect::<Vec<_>>().join(", "));
+    let os = game.platforms.as_ref().map(|p| {
+        p.iter()
+            .filter_map(|pl| pl.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
 
     let mut relations = Vec::new();
     let mut seen_relations = HashSet::new();
@@ -3048,21 +3121,27 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
         &mut relations,
         &mut seen_relations,
         "version",
-        game.version_parent.as_ref().and_then(|value| value.name.as_deref()),
+        game.version_parent
+            .as_ref()
+            .and_then(|value| value.name.as_deref()),
         version_parent_url.as_deref(),
     );
     push_relation_entry(
         &mut relations,
         &mut seen_relations,
         "parent game",
-        game.parent_game.as_ref().and_then(|value| value.name.as_deref()),
+        game.parent_game
+            .as_ref()
+            .and_then(|value| value.name.as_deref()),
         parent_game_url.as_deref(),
     );
     push_relation_entry(
         &mut relations,
         &mut seen_relations,
         "franchise",
-        game.franchise.as_ref().and_then(|value| value.name.as_deref()),
+        game.franchise
+            .as_ref()
+            .and_then(|value| value.name.as_deref()),
         franchise_url.as_deref(),
     );
     push_relation_entries(
@@ -3095,82 +3174,118 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
         &mut relations,
         &mut seen_relations,
         "dlc",
-        game.dlcs.clone().unwrap_or_default().into_iter().map(|value| {
-            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
-            (value.name, url)
-        }),
+        game.dlcs
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
     );
     push_relation_entries(
         &mut relations,
         &mut seen_relations,
         "expanded game",
-        game.expanded_games.clone().unwrap_or_default().into_iter().map(|value| {
-            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
-            (value.name, url)
-        }),
+        game.expanded_games
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
     );
     push_relation_entries(
         &mut relations,
         &mut seen_relations,
         "expansion",
-        game.expansions.clone().unwrap_or_default().into_iter().map(|value| {
-            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
-            (value.name, url)
-        }),
+        game.expansions
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
     );
     push_relation_entries(
         &mut relations,
         &mut seen_relations,
         "fork",
-        game.forks.clone().unwrap_or_default().into_iter().map(|value| {
-            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
-            (value.name, url)
-        }),
+        game.forks
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
     );
     push_relation_entries(
         &mut relations,
         &mut seen_relations,
         "port",
-        game.ports.clone().unwrap_or_default().into_iter().map(|value| {
-            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
-            (value.name, url)
-        }),
+        game.ports
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
     );
     push_relation_entries(
         &mut relations,
         &mut seen_relations,
         "remake",
-        game.remakes.clone().unwrap_or_default().into_iter().map(|value| {
-            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
-            (value.name, url)
-        }),
+        game.remakes
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
     );
     push_relation_entries(
         &mut relations,
         &mut seen_relations,
         "remaster",
-        game.remasters.clone().unwrap_or_default().into_iter().map(|value| {
-            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
-            (value.name, url)
-        }),
+        game.remasters
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
     );
     push_relation_entries(
         &mut relations,
         &mut seen_relations,
         "similar",
-        game.similar_games.clone().unwrap_or_default().into_iter().map(|value| {
-            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
-            (value.name, url)
-        }),
+        game.similar_games
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
     );
     push_relation_entries(
         &mut relations,
         &mut seen_relations,
         "standalone expansion",
-        game.standalone_expansions.clone().unwrap_or_default().into_iter().map(|value| {
-            let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
-            (value.name, url)
-        }),
+        game.standalone_expansions
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let url = igdb_game_url(value.slug.as_deref(), value.url.as_deref());
+                (value.name, url)
+            }),
     );
     if relations.len() > 16 {
         relations.truncate(16);
@@ -3218,18 +3333,14 @@ pub async fn fetch_igdb_metadata(url: String) -> Result<GameMetadata, String> {
 
 #[tauri::command]
 pub async fn fetch_rawg_metadata(url: String) -> Result<GameMetadata, String> {
-    let api_key = load_api_keys().rawg_api_key.ok_or("RAWG API key not configured")?;
+    let api_key = load_api_keys()
+        .rawg_api_key
+        .ok_or("RAWG API key not configured")?;
 
     // Extract game slug from URL (e.g., https://rawg.io/games/counter-strike)
-    let slug = url
-        .split('/')
-        .next_back()
-        .ok_or("Invalid RAWG URL")?;
+    let slug = url.split('/').next_back().ok_or("Invalid RAWG URL")?;
 
-    let req_url = format!(
-        "https://api.rawg.io/api/games/{}?key={}",
-        slug, api_key
-    );
+    let req_url = format!("https://api.rawg.io/api/games/{}?key={}", slug, api_key);
 
     let resp = http()
         .get(&req_url)
@@ -3314,24 +3425,33 @@ pub async fn fetch_rawg_metadata(url: String) -> Result<GameMetadata, String> {
         .map(|g| g.iter().filter_map(|genre| genre.name.clone()).collect())
         .unwrap_or_default();
 
-    let developer = game
-        .developers
-        .as_ref()
-        .map(|d| d.iter().filter_map(|dev| dev.name.clone()).collect::<Vec<_>>().join(", "));
+    let developer = game.developers.as_ref().map(|d| {
+        d.iter()
+            .filter_map(|dev| dev.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
 
-    let _publisher = game
-        .publishers
-        .as_ref()
-        .map(|p| p.iter().filter_map(|pub_item| pub_item.name.clone()).collect::<Vec<_>>().join(", "));
+    let _publisher = game.publishers.as_ref().map(|p| {
+        p.iter()
+            .filter_map(|pub_item| pub_item.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
 
-    let os = game
-        .parent_platforms
-        .as_ref()
-        .map(|p| p.iter().filter_map(|pp| pp.platform.as_ref().and_then(|pl| pl.name.clone())).collect::<Vec<_>>().join(", "));
+    let os = game.parent_platforms.as_ref().map(|p| {
+        p.iter()
+            .filter_map(|pp| pp.platform.as_ref().and_then(|pl| pl.name.clone()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
 
     let rating = game.metacritic.map(|m| (m as f64 / 10.0).to_string());
 
-    let relation_slug = game.slug.clone().or_else(|| game.id.map(|id| id.to_string()));
+    let relation_slug = game
+        .slug
+        .clone()
+        .or_else(|| game.id.map(|id| id.to_string()));
     let mut relations = Vec::new();
     let mut seen_relations = HashSet::new();
     if let Some(slug) = relation_slug.as_deref() {
@@ -3406,7 +3526,9 @@ pub async fn fetch_rawg_metadata(url: String) -> Result<GameMetadata, String> {
 
 #[tauri::command]
 pub async fn fetch_mobygames_metadata(url: String) -> Result<GameMetadata, String> {
-    let api_key = load_api_keys().mobygames_api_key.ok_or("MobyGames API key not configured")?;
+    let api_key = load_api_keys()
+        .mobygames_api_key
+        .ok_or("MobyGames API key not configured")?;
 
     // Extract game ID from URL (e.g., https://www.mobygames.com/game/counter-strike)
     let parts: Vec<&str> = url.split('/').collect();
@@ -3493,28 +3615,41 @@ pub async fn fetch_mobygames_metadata(url: String) -> Result<GameMetadata, Strin
         .and_then(|g| g.first().cloned())
         .ok_or("Game not found in MobyGames")?;
 
-    let cover_url = game.sample_cover_image.as_ref().and_then(|i| i.image.clone());
+    let cover_url = game
+        .sample_cover_image
+        .as_ref()
+        .and_then(|i| i.image.clone());
 
     let tags: Vec<String> = game
         .genres
         .as_ref()
-        .map(|g| g.iter().filter_map(|genre| genre.genre_name.clone()).collect())
+        .map(|g| {
+            g.iter()
+                .filter_map(|genre| genre.genre_name.clone())
+                .collect()
+        })
         .unwrap_or_default();
 
-    let developer = game
-        .developers
-        .as_ref()
-        .map(|d| d.iter().filter_map(|dev| dev.developer_name.clone()).collect::<Vec<_>>().join(", "));
+    let developer = game.developers.as_ref().map(|d| {
+        d.iter()
+            .filter_map(|dev| dev.developer_name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
 
-    let publisher = game
-        .publishers
-        .as_ref()
-        .map(|p| p.iter().filter_map(|pub_item| pub_item.publisher_name.clone()).collect::<Vec<_>>().join(", "));
+    let publisher = game.publishers.as_ref().map(|p| {
+        p.iter()
+            .filter_map(|pub_item| pub_item.publisher_name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
 
-    let os = game
-        .platforms
-        .as_ref()
-        .map(|p| p.iter().filter_map(|pl| pl.platform_name.clone()).collect::<Vec<_>>().join(", "));
+    let os = game.platforms.as_ref().map(|p| {
+        p.iter()
+            .filter_map(|pl| pl.platform_name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
 
     let release_date = game.release_date.as_ref().and_then(|rd| {
         if let (Some(y), Some(m), Some(d)) = (rd.y, rd.m, rd.d) {

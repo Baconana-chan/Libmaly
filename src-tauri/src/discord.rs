@@ -139,8 +139,7 @@ type Discord_Client_UserUpdatedCallback = unsafe extern "C" fn(u64, *mut c_void)
 #[allow(non_camel_case_types)]
 type Discord_Client_IsDiscordAppInstalledCallback = unsafe extern "C" fn(bool, *mut c_void);
 #[allow(non_camel_case_types)]
-type Discord_Client_UpdateRichPresenceCallback =
-    unsafe extern "C" fn(*mut c_void, *mut c_void);
+type Discord_Client_UpdateRichPresenceCallback = unsafe extern "C" fn(*mut c_void, *mut c_void);
 #[allow(non_camel_case_types)]
 type Discord_Client_UpdateStatusCallback = unsafe extern "C" fn(*mut c_void, *mut c_void);
 #[allow(non_camel_case_types)]
@@ -210,9 +209,13 @@ struct DiscordApi {
         Option<Discord_FreeFn>,
         *mut c_void,
     ),
-    client_get_current_user_v2: unsafe extern "C" fn(*mut Discord_Client, *mut Discord_UserHandle) -> bool,
-    client_get_relationships_by_group:
-        unsafe extern "C" fn(*mut Discord_Client, Discord_RelationshipGroupType, *mut Discord_RelationshipHandleSpan),
+    client_get_current_user_v2:
+        unsafe extern "C" fn(*mut Discord_Client, *mut Discord_UserHandle) -> bool,
+    client_get_relationships_by_group: unsafe extern "C" fn(
+        *mut Discord_Client,
+        Discord_RelationshipGroupType,
+        *mut Discord_RelationshipHandleSpan,
+    ),
     activity_init: unsafe extern "C" fn(*mut Discord_Activity),
     activity_drop: unsafe extern "C" fn(*mut Discord_Activity),
     activity_set_name: unsafe extern "C" fn(*mut Discord_Activity, Discord_String),
@@ -246,7 +249,8 @@ struct DiscordApi {
     user_handle_drop: unsafe extern "C" fn(*mut Discord_UserHandle),
     user_handle_username: unsafe extern "C" fn(*mut Discord_UserHandle, *mut Discord_String),
     user_handle_display_name: unsafe extern "C" fn(*mut Discord_UserHandle, *mut Discord_String),
-    user_handle_global_name: unsafe extern "C" fn(*mut Discord_UserHandle, *mut Discord_String) -> bool,
+    user_handle_global_name:
+        unsafe extern "C" fn(*mut Discord_UserHandle, *mut Discord_String) -> bool,
     user_handle_avatar_url: unsafe extern "C" fn(
         *mut Discord_UserHandle,
         Discord_UserHandle_AvatarType,
@@ -506,9 +510,13 @@ unsafe extern "C" fn discord_activity_join_callback(join_secret: Discord_String,
 
 fn load_symbol<T: Copy>(lib: &Library, name: &[u8]) -> Result<T, String> {
     unsafe {
-        lib.get::<T>(name)
-            .map(|sym| *sym)
-            .map_err(|e| format!("Missing Discord SDK symbol {}: {}", String::from_utf8_lossy(name), e))
+        lib.get::<T>(name).map(|sym| *sym).map_err(|e| {
+            format!(
+                "Missing Discord SDK symbol {}: {}",
+                String::from_utf8_lossy(name),
+                e
+            )
+        })
     }
 }
 
@@ -521,16 +529,31 @@ fn load_api(lib: &Library) -> Result<DiscordApi, String> {
         client_connect: load_symbol(lib, b"Discord_Client_Connect\0")?,
         client_disconnect: load_symbol(lib, b"Discord_Client_Disconnect\0")?,
         client_get_status: load_symbol(lib, b"Discord_Client_GetStatus\0")?,
-        client_set_status_changed_callback: load_symbol(lib, b"Discord_Client_SetStatusChangedCallback\0")?,
-        client_set_activity_join_callback: load_symbol(lib, b"Discord_Client_SetActivityJoinCallback\0")?,
+        client_set_status_changed_callback: load_symbol(
+            lib,
+            b"Discord_Client_SetStatusChangedCallback\0",
+        )?,
+        client_set_activity_join_callback: load_symbol(
+            lib,
+            b"Discord_Client_SetActivityJoinCallback\0",
+        )?,
         client_set_relationship_groups_updated_callback: load_symbol(
             lib,
             b"Discord_Client_SetRelationshipGroupsUpdatedCallback\0",
         )?,
-        client_set_user_updated_callback: load_symbol(lib, b"Discord_Client_SetUserUpdatedCallback\0")?,
-        client_is_discord_app_installed: load_symbol(lib, b"Discord_Client_IsDiscordAppInstalled\0")?,
+        client_set_user_updated_callback: load_symbol(
+            lib,
+            b"Discord_Client_SetUserUpdatedCallback\0",
+        )?,
+        client_is_discord_app_installed: load_symbol(
+            lib,
+            b"Discord_Client_IsDiscordAppInstalled\0",
+        )?,
         client_set_game_window_pid: load_symbol(lib, b"Discord_Client_SetGameWindowPid\0")?,
-        client_register_launch_command: load_symbol(lib, b"Discord_Client_RegisterLaunchCommand\0")?,
+        client_register_launch_command: load_symbol(
+            lib,
+            b"Discord_Client_RegisterLaunchCommand\0",
+        )?,
         client_update_rich_presence: load_symbol(lib, b"Discord_Client_UpdateRichPresence\0")?,
         client_clear_rich_presence: load_symbol(lib, b"Discord_Client_ClearRichPresence\0")?,
         client_set_online_status: load_symbol(lib, b"Discord_Client_SetOnlineStatus\0")?,
@@ -539,7 +562,10 @@ fn load_api(lib: &Library) -> Result<DiscordApi, String> {
             b"Discord_Client_OpenConnectedGamesSettingsInDiscord\0",
         )?,
         client_get_current_user_v2: load_symbol(lib, b"Discord_Client_GetCurrentUserV2\0")?,
-        client_get_relationships_by_group: load_symbol(lib, b"Discord_Client_GetRelationshipsByGroup\0")?,
+        client_get_relationships_by_group: load_symbol(
+            lib,
+            b"Discord_Client_GetRelationshipsByGroup\0",
+        )?,
         activity_init: load_symbol(lib, b"Discord_Activity_Init\0")?,
         activity_drop: load_symbol(lib, b"Discord_Activity_Drop\0")?,
         activity_set_name: load_symbol(lib, b"Discord_Activity_SetName\0")?,
@@ -549,13 +575,22 @@ fn load_api(lib: &Library) -> Result<DiscordApi, String> {
         activity_set_assets: load_symbol(lib, b"Discord_Activity_SetAssets\0")?,
         activity_set_timestamps: load_symbol(lib, b"Discord_Activity_SetTimestamps\0")?,
         activity_set_secrets: load_symbol(lib, b"Discord_Activity_SetSecrets\0")?,
-        activity_set_supported_platforms: load_symbol(lib, b"Discord_Activity_SetSupportedPlatforms\0")?,
+        activity_set_supported_platforms: load_symbol(
+            lib,
+            b"Discord_Activity_SetSupportedPlatforms\0",
+        )?,
         activity_assets_init: load_symbol(lib, b"Discord_ActivityAssets_Init\0")?,
         activity_assets_drop: load_symbol(lib, b"Discord_ActivityAssets_Drop\0")?,
-        activity_assets_set_large_image: load_symbol(lib, b"Discord_ActivityAssets_SetLargeImage\0")?,
+        activity_assets_set_large_image: load_symbol(
+            lib,
+            b"Discord_ActivityAssets_SetLargeImage\0",
+        )?,
         activity_assets_set_large_text: load_symbol(lib, b"Discord_ActivityAssets_SetLargeText\0")?,
         activity_assets_set_large_url: load_symbol(lib, b"Discord_ActivityAssets_SetLargeUrl\0")?,
-        activity_assets_set_small_image: load_symbol(lib, b"Discord_ActivityAssets_SetSmallImage\0")?,
+        activity_assets_set_small_image: load_symbol(
+            lib,
+            b"Discord_ActivityAssets_SetSmallImage\0",
+        )?,
         activity_assets_set_small_text: load_symbol(lib, b"Discord_ActivityAssets_SetSmallText\0")?,
         activity_timestamps_init: load_symbol(lib, b"Discord_ActivityTimestamps_Init\0")?,
         activity_timestamps_drop: load_symbol(lib, b"Discord_ActivityTimestamps_Drop\0")?,
@@ -666,10 +701,22 @@ fn refresh_snapshot_from_runtime(runtime: &DiscordRuntime) {
     if snapshot.ready {
         let mut user = Discord_UserHandle { opaque: null_mut() };
         if unsafe { (api.client_get_current_user_v2)(client, &mut user) } {
-            let mut username = Discord_String { ptr: null_mut(), size: 0 };
-            let mut display_name = Discord_String { ptr: null_mut(), size: 0 };
-            let mut global_name = Discord_String { ptr: null_mut(), size: 0 };
-            let mut avatar_url = Discord_String { ptr: null_mut(), size: 0 };
+            let mut username = Discord_String {
+                ptr: null_mut(),
+                size: 0,
+            };
+            let mut display_name = Discord_String {
+                ptr: null_mut(),
+                size: 0,
+            };
+            let mut global_name = Discord_String {
+                ptr: null_mut(),
+                size: 0,
+            };
+            let mut avatar_url = Discord_String {
+                ptr: null_mut(),
+                size: 0,
+            };
             unsafe {
                 (api.user_handle_username)(&mut user, &mut username);
                 (api.user_handle_display_name)(&mut user, &mut display_name);
@@ -689,24 +736,42 @@ fn refresh_snapshot_from_runtime(runtime: &DiscordRuntime) {
                 display_name: discord_string_to_rust(display_name),
                 global_name: if has_global {
                     let value = discord_string_to_rust(global_name);
-                    if value.is_empty() { None } else { Some(value) }
+                    if value.is_empty() {
+                        None
+                    } else {
+                        Some(value)
+                    }
                 } else {
                     None
                 },
                 avatar_url: {
                     let value = discord_string_to_rust(avatar_url);
-                    if value.is_empty() { None } else { Some(value) }
+                    if value.is_empty() {
+                        None
+                    } else {
+                        Some(value)
+                    }
                 },
-                status: user_status_label(unsafe { (api.user_handle_status)(&mut user) }).to_string(),
+                status: user_status_label(unsafe { (api.user_handle_status)(&mut user) })
+                    .to_string(),
             });
             unsafe { (api.user_handle_drop)(&mut user) };
         } else {
             snapshot.current_user = None;
         }
 
-        let mut playing = Discord_RelationshipHandleSpan { ptr: null_mut(), size: 0 };
-        let mut elsewhere = Discord_RelationshipHandleSpan { ptr: null_mut(), size: 0 };
-        let mut offline = Discord_RelationshipHandleSpan { ptr: null_mut(), size: 0 };
+        let mut playing = Discord_RelationshipHandleSpan {
+            ptr: null_mut(),
+            size: 0,
+        };
+        let mut elsewhere = Discord_RelationshipHandleSpan {
+            ptr: null_mut(),
+            size: 0,
+        };
+        let mut offline = Discord_RelationshipHandleSpan {
+            ptr: null_mut(),
+            size: 0,
+        };
         unsafe {
             (api.client_get_relationships_by_group)(
                 client,
@@ -773,7 +838,10 @@ pub fn discord_initialize(app: AppHandle) -> Result<DiscordSdkSnapshot, String> 
     })?;
     push_discord_log(
         "info",
-        format!("initializing Discord Social SDK from {}", sdk_path.to_string_lossy()),
+        format!(
+            "initializing Discord Social SDK from {}",
+            sdk_path.to_string_lossy()
+        ),
     );
 
     let library = unsafe { Library::new(&sdk_path) }.map_err(|e| {
@@ -878,7 +946,10 @@ pub fn discord_initialize(app: AppHandle) -> Result<DiscordSdkSnapshot, String> 
     }
     push_discord_log(
         "info",
-        format!("Discord Social SDK initialised (launch_registered={})", launch_registered),
+        format!(
+            "Discord Social SDK initialised (launch_registered={})",
+            launch_registered
+        ),
     );
     start_callback_thread();
     Ok(snapshot_clone())

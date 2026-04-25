@@ -1,11 +1,21 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+#[cfg(windows)]
+use rusqlite::types::ValueRef;
+#[cfg(windows)]
+use rusqlite::Connection;
 #[cfg(windows)]
 use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+#[cfg(windows)]
+use std::fs::OpenOptions;
 #[cfg(windows)]
 use std::io::Read;
 use std::io::Write;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -18,30 +28,19 @@ use tauri::Emitter;
 use tauri::Manager;
 use walkdir::WalkDir;
 #[cfg(windows)]
-use rusqlite::Connection;
-#[cfg(windows)]
-use rusqlite::types::ValueRef;
-#[cfg(windows)]
-use std::fs::OpenOptions;
-#[cfg(windows)]
-use std::os::windows::fs::OpenOptionsExt;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-#[cfg(windows)]
 use winapi::um::winnt::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
 #[cfg(windows)]
-use winreg::RegKey;
-#[cfg(windows)]
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
+#[cfg(windows)]
+use winreg::RegKey;
 
 mod metadata;
 use metadata::{
     dlsite_is_logged_in, dlsite_login, dlsite_logout, f95_is_logged_in, f95_login, f95_logout,
-    fetch_dlsite_metadata, fetch_f95_metadata, fetch_fakku_metadata, fetch_johren_metadata,
-    fetch_mangagamer_metadata, fetch_vndb_metadata, fakku_is_logged_in, fakku_login,
-    fakku_logout, get_scraper_health_snapshot, search_suggest_links,
-    fetch_igdb_metadata, fetch_rawg_metadata, fetch_mobygames_metadata,
-    set_api_key, get_api_key,
+    fakku_is_logged_in, fakku_login, fakku_logout, fetch_dlsite_metadata, fetch_f95_metadata,
+    fetch_fakku_metadata, fetch_igdb_metadata, fetch_johren_metadata, fetch_mangagamer_metadata,
+    fetch_mobygames_metadata, fetch_rawg_metadata, fetch_vndb_metadata, get_api_key,
+    get_scraper_health_snapshot, search_suggest_links, set_api_key,
 };
 
 mod custom_metadata;
@@ -54,7 +53,10 @@ use custom_metadata::{
 };
 
 mod vault;
-use vault::{delete_secret as vault_delete_secret, get_secret as vault_get_secret, legacy_global_file_path, profile_file_path};
+use vault::{
+    delete_secret as vault_delete_secret, get_secret as vault_get_secret, legacy_global_file_path,
+    profile_file_path,
+};
 
 mod updater;
 use updater::{install_zip_game_to_library, preview_update, update_game};
@@ -67,19 +69,21 @@ use itch::{
 
 mod screenshot;
 use screenshot::{
-    delete_screenshot_file, export_screenshots_zip, get_screenshots, open_screenshots_folder,
-    overwrite_screenshot_png, save_screenshot_tags, take_screenshot_manual,
-    get_screenshot_data_url,
+    delete_screenshot_file, export_screenshots_zip, get_screenshot_data_url, get_screenshots,
+    open_screenshots_folder, overwrite_screenshot_png, save_screenshot_tags,
+    take_screenshot_manual,
 };
-mod discord;
 mod data_paths;
-mod sync;
+mod discord;
 mod save_transfer;
+mod sync;
 use data_paths::{app_data_root, crash_report_path, is_portable_mode};
-use save_transfer::{is_valid_save_directory as check_valid_save_directory, SavePathInfo, TransferResult};
 use discord::{
-    discord_clear_presence, discord_get_snapshot, discord_initialize, discord_open_connected_games_settings,
-    discord_set_presence, discord_shutdown,
+    discord_clear_presence, discord_get_snapshot, discord_initialize,
+    discord_open_connected_games_settings, discord_set_presence, discord_shutdown,
+};
+use save_transfer::{
+    is_valid_save_directory as check_valid_save_directory, SavePathInfo, TransferResult,
 };
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -141,36 +145,75 @@ struct ResolvedMetadataSource {
 fn detect_builtin_metadata_source(url: &str) -> Option<ResolvedMetadataSource> {
     let lower = url.trim().to_ascii_lowercase();
     if lower.contains("f95zone.to") {
-        return Some(ResolvedMetadataSource { source: "f95".into(), source_label: "F95zone".into(), is_custom: false });
+        return Some(ResolvedMetadataSource {
+            source: "f95".into(),
+            source_label: "F95zone".into(),
+            is_custom: false,
+        });
     }
     if lower.contains("dlsite.com") {
-        return Some(ResolvedMetadataSource { source: "dlsite".into(), source_label: "DLsite".into(), is_custom: false });
+        return Some(ResolvedMetadataSource {
+            source: "dlsite".into(),
+            source_label: "DLsite".into(),
+            is_custom: false,
+        });
     }
     if lower.contains("vndb.org/v") {
-        return Some(ResolvedMetadataSource { source: "vndb".into(), source_label: "VNDB".into(), is_custom: false });
+        return Some(ResolvedMetadataSource {
+            source: "vndb".into(),
+            source_label: "VNDB".into(),
+            is_custom: false,
+        });
     }
     if lower.contains("mangagamer.com") {
-        return Some(ResolvedMetadataSource { source: "mangagamer".into(), source_label: "MangaGamer".into(), is_custom: false });
+        return Some(ResolvedMetadataSource {
+            source: "mangagamer".into(),
+            source_label: "MangaGamer".into(),
+            is_custom: false,
+        });
     }
     if lower.contains("johren.net") {
-        return Some(ResolvedMetadataSource { source: "johren".into(), source_label: "Johren".into(), is_custom: false });
+        return Some(ResolvedMetadataSource {
+            source: "johren".into(),
+            source_label: "Johren".into(),
+            is_custom: false,
+        });
     }
     if lower.contains("fakku.net") {
-        return Some(ResolvedMetadataSource { source: "fakku".into(), source_label: "FAKKU".into(), is_custom: false });
+        return Some(ResolvedMetadataSource {
+            source: "fakku".into(),
+            source_label: "FAKKU".into(),
+            is_custom: false,
+        });
     }
     if lower.contains("igdb.com") {
-        return Some(ResolvedMetadataSource { source: "igdb".into(), source_label: "IGDB".into(), is_custom: false });
+        return Some(ResolvedMetadataSource {
+            source: "igdb".into(),
+            source_label: "IGDB".into(),
+            is_custom: false,
+        });
     }
     if lower.contains("rawg.io") {
-        return Some(ResolvedMetadataSource { source: "rawg".into(), source_label: "RAWG".into(), is_custom: false });
+        return Some(ResolvedMetadataSource {
+            source: "rawg".into(),
+            source_label: "RAWG".into(),
+            is_custom: false,
+        });
     }
     if lower.contains("mobygames.com") {
-        return Some(ResolvedMetadataSource { source: "mobygames".into(), source_label: "MobyGames".into(), is_custom: false });
+        return Some(ResolvedMetadataSource {
+            source: "mobygames".into(),
+            source_label: "MobyGames".into(),
+            is_custom: false,
+        });
     }
     None
 }
 
-async fn fetch_builtin_metadata_by_source(source: &str, url: &str) -> Result<metadata::GameMetadata, String> {
+async fn fetch_builtin_metadata_by_source(
+    source: &str,
+    url: &str,
+) -> Result<metadata::GameMetadata, String> {
     match source {
         "f95" => fetch_f95_metadata(url.to_string()).await,
         "dlsite" => fetch_dlsite_metadata(url.to_string()).await,
@@ -222,7 +265,10 @@ async fn fetch_metadata_for_url(url: String) -> Result<metadata::GameMetadata, S
 }
 
 #[tauri::command]
-async fn fetch_metadata_by_source(source: String, url: String) -> Result<metadata::GameMetadata, String> {
+async fn fetch_metadata_by_source(
+    source: String,
+    url: String,
+) -> Result<metadata::GameMetadata, String> {
     if source.starts_with("custom:") {
         let template = find_template_by_source(&source)?
             .ok_or_else(|| format!("Custom metadata source '{}' is unavailable", source))?;
@@ -620,7 +666,7 @@ fn recent_file_ops_path() -> PathBuf {
 #[cfg(windows)]
 fn atomic_replace_path(src: &Path, dst: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
-    use winapi::um::winbase::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW};
+    use winapi::um::winbase::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
 
     let mut src_w: Vec<u16> = src.as_os_str().encode_wide().collect();
     src_w.push(0);
@@ -711,7 +757,8 @@ fn atomic_write_string(path: &Path, contents: &str, operation: &str) -> Result<(
 
     let result = (|| -> Result<(), String> {
         let mut file = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
-        file.write_all(contents.as_bytes()).map_err(|e| e.to_string())?;
+        file.write_all(contents.as_bytes())
+            .map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
         drop(file);
         atomic_replace_path(&tmp_path, path)?;
@@ -778,7 +825,11 @@ fn write_release_test_executable(path: &Path, minimum_size_bytes: usize) -> Resu
     std::fs::write(path, payload).map_err(|e| e.to_string())
 }
 
-fn create_release_test_game(root: &Path, game_name: &str, executable_stem: &str) -> Result<String, String> {
+fn create_release_test_game(
+    root: &Path,
+    game_name: &str,
+    executable_stem: &str,
+) -> Result<String, String> {
     let game_dir = root.join(game_name);
     std::fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
     let executable_path = game_dir.join(release_test_executable_name(executable_stem));
@@ -786,7 +837,11 @@ fn create_release_test_game(root: &Path, game_name: &str, executable_stem: &str)
     Ok(executable_path.to_string_lossy().to_string())
 }
 
-fn create_release_test_scan_candidate(root: &Path, game_name: &str, executable_stem: &str) -> Result<String, String> {
+fn create_release_test_scan_candidate(
+    root: &Path,
+    game_name: &str,
+    executable_stem: &str,
+) -> Result<String, String> {
     let game_dir = root.join(game_name);
     std::fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
     let executable_path = game_dir.join(format!("{}.exe", executable_stem));
@@ -865,13 +920,24 @@ fn run_release_crash_during_write_test() -> ReliabilityScenarioResult {
         let recovered_raw = read_text_file_resilient(&state_path)?;
         let recovered_store = parse_state_store(&recovered_raw)?;
         if recovered_store.entries != baseline_entries {
-            return Err("Committed state changed after leaving behind an interrupted temp file".to_string());
+            return Err(
+                "Committed state changed after leaving behind an interrupted temp file".to_string(),
+            );
         }
 
         Ok(vec![
-            format!("Recovered {} committed entries after simulating an interrupted temp write.", recovered_store.entries.len()),
-            format!("Primary file remained readable at {}.", state_path.to_string_lossy()),
-            format!("Interrupted payload stayed isolated in {}.", interrupted_tmp.to_string_lossy()),
+            format!(
+                "Recovered {} committed entries after simulating an interrupted temp write.",
+                recovered_store.entries.len()
+            ),
+            format!(
+                "Primary file remained readable at {}.",
+                state_path.to_string_lossy()
+            ),
+            format!(
+                "Interrupted payload stayed isolated in {}.",
+                interrupted_tmp.to_string_lossy()
+            ),
         ])
     })();
 
@@ -909,8 +975,10 @@ fn run_release_root_folder_rename_test() -> ReliabilityScenarioResult {
     let outcome = (|| -> Result<Vec<String>, String> {
         let old_root = dir.join("LibraryRootOld");
         std::fs::create_dir_all(&old_root).map_err(|e| e.to_string())?;
-        let first_old_path = create_release_test_scan_candidate(&old_root, "Moonlight Story", "MoonlightStory")?;
-        let second_old_path = create_release_test_scan_candidate(&old_root, "Velvet Lesson", "VelvetLesson")?;
+        let first_old_path =
+            create_release_test_scan_candidate(&old_root, "Moonlight Story", "MoonlightStory")?;
+        let second_old_path =
+            create_release_test_scan_candidate(&old_root, "Velvet Lesson", "VelvetLesson")?;
         let new_root = dir.join("LibraryRootRenamed");
         std::fs::rename(&old_root, &new_root).map_err(|e| e.to_string())?;
 
@@ -932,7 +1000,10 @@ fn run_release_root_folder_rename_test() -> ReliabilityScenarioResult {
             ],
         )?;
 
-        if report.total_broken_games != 2 || report.suggestion_count != 2 || !report.unresolved_paths.is_empty() {
+        if report.total_broken_games != 2
+            || report.suggestion_count != 2
+            || !report.unresolved_paths.is_empty()
+        {
             return Err(format!(
                 "Expected 2 healed paths but got {} suggestions and {} unresolved paths",
                 report.suggestion_count,
@@ -942,16 +1013,12 @@ fn run_release_root_folder_rename_test() -> ReliabilityScenarioResult {
 
         let mut details = vec![format!(
             "Recovered {}/{} broken game paths after renaming the library root.",
-            report.suggestion_count,
-            report.total_broken_games
+            report.suggestion_count, report.total_broken_games
         )];
         for suggestion in report.suggestions.iter() {
             details.push(format!(
                 "{} -> {} ({}% confidence, {})",
-                suggestion.old_path,
-                suggestion.new_path,
-                suggestion.confidence,
-                suggestion.reason
+                suggestion.old_path, suggestion.new_path, suggestion.confidence, suggestion.reason
             ));
         }
         Ok(details)
@@ -1014,7 +1081,10 @@ fn run_release_local_vs_cloud_conflict_test() -> ReliabilityScenarioResult {
             base_entries: Some(base_entries),
         });
         if report.conflict_count != 0 {
-            return Err(format!("Expected a conflict-free deterministic merge but found {} manual conflicts", report.conflict_count));
+            return Err(format!(
+                "Expected a conflict-free deterministic merge but found {} manual conflicts",
+                report.conflict_count
+            ));
         }
 
         let merged_stats: Value = serde_json::from_str(
@@ -1039,9 +1109,7 @@ fn run_release_local_vs_cloud_conflict_test() -> ReliabilityScenarioResult {
         {
             return Err("Merged playtime did not keep the local progress".to_string());
         }
-        if merged_notes
-            .get("body")
-            .and_then(|value| value.as_str())
+        if merged_notes.get("body").and_then(|value| value.as_str())
             != Some("Remote note wins deterministically")
         {
             return Err("Merged notes did not keep the remote note update".to_string());
@@ -1049,8 +1117,10 @@ fn run_release_local_vs_cloud_conflict_test() -> ReliabilityScenarioResult {
 
         Ok(vec![
             format!("Merged keys: {}.", report.changed_keys.join(", ")),
-            "Playtime preserved the local delta while notes preserved the remote delta.".to_string(),
-            "No manual conflict resolution was required for this mixed local/cloud update.".to_string(),
+            "Playtime preserved the local delta while notes preserved the remote delta."
+                .to_string(),
+            "No manual conflict resolution was required for this mixed local/cloud update."
+                .to_string(),
         ])
     })();
 
@@ -1088,18 +1158,35 @@ fn run_release_broken_metadata_source_test() -> ReliabilityScenarioResult {
             .to_string(),
         )
         .err()
-        .ok_or_else(|| "Invalid metadata template unexpectedly imported without validation errors".to_string())?;
+        .ok_or_else(|| {
+            "Invalid metadata template unexpectedly imported without validation errors".to_string()
+        })?;
 
         let templates = custom_metadata_list_templates()?;
         let health = get_scraper_health_snapshot();
-        if !import_error.to_ascii_lowercase().contains("invalid url pattern") {
-            return Err(format!("Unexpected metadata validation error: {}", import_error));
+        if !import_error
+            .to_ascii_lowercase()
+            .contains("invalid url pattern")
+        {
+            return Err(format!(
+                "Unexpected metadata validation error: {}",
+                import_error
+            ));
         }
 
         Ok(vec![
-            format!("Broken source failed fast with validation error: {}", import_error),
-            format!("Template registry remained readable with {} configured templates.", templates.len()),
-            format!("Scraper diagnostics still returned {} source snapshots after the failure.", health.len()),
+            format!(
+                "Broken source failed fast with validation error: {}",
+                import_error
+            ),
+            format!(
+                "Template registry remained readable with {} configured templates.",
+                templates.len()
+            ),
+            format!(
+                "Scraper diagnostics still returned {} source snapshots after the failure.",
+                health.len()
+            ),
         ])
     })();
 
@@ -1150,10 +1237,8 @@ fn run_release_backup_restore_test() -> ReliabilityScenarioResult {
         )
         .map_err(|e| e.to_string())?;
 
-        let preview = preview_restore_snapshot(
-            snapshot_path.to_string_lossy().to_string(),
-            HashMap::new(),
-        )?;
+        let preview =
+            preview_restore_snapshot(snapshot_path.to_string_lossy().to_string(), HashMap::new())?;
         let restored = restore_snapshot(snapshot_path.to_string_lossy().to_string())?;
         let restored_folders: Vec<IntegrityLibraryFolderInput> = serde_json::from_str(
             restored
@@ -1179,13 +1264,26 @@ fn run_release_backup_restore_test() -> ReliabilityScenarioResult {
             return Err("Snapshot preview did not detect any restorable entries".to_string());
         }
         if integrity.error_count > 0 {
-            return Err(format!("Integrity check found {} errors after restore", integrity.error_count));
+            return Err(format!(
+                "Integrity check found {} errors after restore",
+                integrity.error_count
+            ));
         }
 
         Ok(vec![
-            format!("Restored {} snapshot entries on {}.", restored.entry_count, std::env::consts::OS),
-            format!("Preview detected {} changes before restore.", preview.changed_count),
-            format!("Integrity check finished with {} warnings and {} errors.", integrity.warning_count, integrity.error_count),
+            format!(
+                "Restored {} snapshot entries on {}.",
+                restored.entry_count,
+                std::env::consts::OS
+            ),
+            format!(
+                "Preview detected {} changes before restore.",
+                preview.changed_count
+            ),
+            format!(
+                "Integrity check finished with {} warnings and {} errors.",
+                integrity.warning_count, integrity.error_count
+            ),
         ])
     })();
 
@@ -1233,8 +1331,10 @@ mod reliability_tests {
         let outcome = (|| -> Result<(), String> {
             let old_root = dir.join("LibraryRootOld");
             std::fs::create_dir_all(&old_root).map_err(|e| e.to_string())?;
-            let first_old_path = create_release_test_scan_candidate(&old_root, "Moonlight Story", "MoonlightStory")?;
-            let second_old_path = create_release_test_scan_candidate(&old_root, "Velvet Lesson", "VelvetLesson")?;
+            let first_old_path =
+                create_release_test_scan_candidate(&old_root, "Moonlight Story", "MoonlightStory")?;
+            let second_old_path =
+                create_release_test_scan_candidate(&old_root, "Velvet Lesson", "VelvetLesson")?;
             let new_root = dir.join("LibraryRootRenamed");
             std::fs::rename(&old_root, &new_root).map_err(|e| e.to_string())?;
 
@@ -1257,13 +1357,22 @@ mod reliability_tests {
             )?;
 
             if report.total_broken_games != 2 {
-                return Err(format!("expected 2 broken games, got {}", report.total_broken_games));
+                return Err(format!(
+                    "expected 2 broken games, got {}",
+                    report.total_broken_games
+                ));
             }
             if report.suggestion_count != 2 {
-                return Err(format!("expected 2 suggestions, got {}", report.suggestion_count));
+                return Err(format!(
+                    "expected 2 suggestions, got {}",
+                    report.suggestion_count
+                ));
             }
             if !report.unresolved_paths.is_empty() {
-                return Err(format!("expected no unresolved paths, got {}", report.unresolved_paths.len()));
+                return Err(format!(
+                    "expected no unresolved paths, got {}",
+                    report.unresolved_paths.len()
+                ));
             }
             Ok(())
         })();
@@ -1454,7 +1563,11 @@ fn list_process_entries() -> Vec<ProcessEntry> {
                     .filter(|s| !s.is_empty());
                 let name = exe
                     .as_deref()
-                    .and_then(|p| Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()))
+                    .and_then(|p| {
+                        Path::new(p)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                    })
                     .unwrap_or_default();
                 Some(ProcessEntry {
                     pid,
@@ -1522,10 +1635,14 @@ fn choose_tracked_process_pid(entries: &[ProcessEntry], root_pid: u32, game_path
             if !exe_key.is_empty() && exe_key == game_key {
                 score += 100;
             }
-            if !game_name.is_empty() && (cmd_key.contains(&game_name) || name_key.contains(&game_name)) {
+            if !game_name.is_empty()
+                && (cmd_key.contains(&game_name) || name_key.contains(&game_name))
+            {
                 score += 40;
             }
-            if !game_stem.is_empty() && (cmd_key.contains(&game_stem) || name_key.contains(&game_stem)) {
+            if !game_stem.is_empty()
+                && (cmd_key.contains(&game_stem) || name_key.contains(&game_stem))
+            {
                 score += 25;
             }
             if entry.parent_pid == Some(root_pid) {
@@ -1538,7 +1655,11 @@ fn choose_tracked_process_pid(entries: &[ProcessEntry], root_pid: u32, game_path
 }
 
 fn terminate_process_tree(root_pid: u32, related_pids: &[u32]) -> Result<(), String> {
-    let mut pids: Vec<u32> = related_pids.iter().copied().filter(|pid| *pid > 0).collect();
+    let mut pids: Vec<u32> = related_pids
+        .iter()
+        .copied()
+        .filter(|pid| *pid > 0)
+        .collect();
     if !pids.contains(&root_pid) && root_pid > 0 {
         pids.push(root_pid);
     }
@@ -1556,9 +1677,7 @@ fn terminate_process_tree(root_pid: u32, related_pids: &[u32]) -> Result<(), Str
             #[cfg(windows)]
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
-            let status = cmd
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .status();
+            let status = cmd.args(["/PID", &pid.to_string(), "/T", "/F"]).status();
             match status {
                 Ok(s) if s.success() => return Ok(()),
                 Ok(_) => {
@@ -1574,7 +1693,9 @@ fn terminate_process_tree(root_pid: u32, related_pids: &[u32]) -> Result<(), Str
     #[cfg(not(windows))]
     {
         for pid in &pids {
-            let _ = Command::new("kill").args(["-15", &pid.to_string()]).status();
+            let _ = Command::new("kill")
+                .args(["-15", &pid.to_string()])
+                .status();
         }
         thread::sleep(std::time::Duration::from_secs(3));
         for pid in &pids {
@@ -1649,8 +1770,10 @@ fn token_overlap_count(a: &str, b: &str) -> usize {
 
 fn shared_library_root<'a>(path: &str, roots: &'a [String]) -> Option<&'a String> {
     let norm = normalize_path_key(path);
-    roots.iter()
-        .find(|root| norm.starts_with(&format!("{}\\", normalize_path_key(root))) || norm == normalize_path_key(root))
+    roots.iter().find(|root| {
+        norm.starts_with(&format!("{}\\", normalize_path_key(root)))
+            || norm == normalize_path_key(root)
+    })
 }
 
 fn score_auto_heal_candidate(
@@ -1736,11 +1859,15 @@ fn score_auto_heal_candidate(
         return None;
     }
 
-    Some((score, reasons.into_iter().take(3).collect::<Vec<_>>().join(", ")))
+    Some((
+        score,
+        reasons.into_iter().take(3).collect::<Vec<_>>().join(", "),
+    ))
 }
 
 fn path_starts_with_ci(path: &Path, prefix: &Path) -> bool {
-    normalize_path_key(&path.to_string_lossy()) .starts_with(&normalize_path_key(&prefix.to_string_lossy()))
+    normalize_path_key(&path.to_string_lossy())
+        .starts_with(&normalize_path_key(&prefix.to_string_lossy()))
 }
 
 fn diagnose_permission_issue(
@@ -1769,7 +1896,9 @@ fn diagnose_permission_issue(
         probable_cause = "permission_denied".to_string();
         actionable_fixes.push("Try saving to a folder inside your user profile such as Documents, Desktop, or Downloads.".to_string());
         actionable_fixes.push("If the target is inside Program Files, the app install folder, or another protected location, pick a writable folder instead.".to_string());
-        actionable_fixes.push("Close any app that may be locking the file or folder, then try again.".to_string());
+        actionable_fixes.push(
+            "Close any app that may be locking the file or folder, then try again.".to_string(),
+        );
     } else if raw_lower.contains("being used by another process")
         || raw_lower.contains("used by another process")
         || raw_lower.contains("sharing violation")
@@ -1786,7 +1915,8 @@ fn diagnose_permission_issue(
         || raw_lower.contains("not found")
     {
         probable_cause = "missing_path".to_string();
-        actionable_fixes.push("Make sure the destination folder still exists before retrying.".to_string());
+        actionable_fixes
+            .push("Make sure the destination folder still exists before retrying.".to_string());
     }
 
     if let Some(path) = target_buf.as_ref() {
@@ -1809,7 +1939,10 @@ fn diagnose_permission_issue(
             || path_str.contains("\\windows\\")
             || path_str.contains("/windows/")
         {
-            actionable_fixes.push("Protected system folders often block writes. Save to your user folders instead.".to_string());
+            actionable_fixes.push(
+                "Protected system folders often block writes. Save to your user folders instead."
+                    .to_string(),
+            );
         }
 
         if let Ok(meta) = std::fs::metadata(path) {
@@ -1828,15 +1961,28 @@ fn diagnose_permission_issue(
     }
 
     if actionable_fixes.is_empty() {
-        actionable_fixes.push("Retry with a different folder inside your user profile.".to_string());
+        actionable_fixes
+            .push("Retry with a different folder inside your user profile.".to_string());
         actionable_fixes.push("If the problem persists, check file permissions and whether another process is locking the path.".to_string());
     }
 
     let summary = match probable_cause.as_str() {
-        "permission_denied" => format!("LIBMALY could not {} because the target location is not writable.", operation),
-        "file_locked" => format!("LIBMALY could not {} because the target file appears to be locked by another process.", operation),
-        "read_only_target" | "read_only_parent" => format!("LIBMALY could not {} because the target path is read-only.", operation),
-        "missing_parent_folder" | "missing_path" => format!("LIBMALY could not {} because the destination path is missing.", operation),
+        "permission_denied" => format!(
+            "LIBMALY could not {} because the target location is not writable.",
+            operation
+        ),
+        "file_locked" => format!(
+            "LIBMALY could not {} because the target file appears to be locked by another process.",
+            operation
+        ),
+        "read_only_target" | "read_only_parent" => format!(
+            "LIBMALY could not {} because the target path is read-only.",
+            operation
+        ),
+        "missing_parent_folder" | "missing_path" => format!(
+            "LIBMALY could not {} because the destination path is missing.",
+            operation
+        ),
         _ => format!("LIBMALY could not {} due to a filesystem error.", operation),
     };
 
@@ -2103,10 +2249,19 @@ fn read_snapshot_file(path: &Path) -> Result<SnapshotContents, String> {
     Ok(SnapshotContents {
         id,
         path: path.to_string_lossy().to_string(),
-        created_at: parsed.get("createdAt").and_then(|v| v.as_u64()).unwrap_or(0),
+        created_at: parsed
+            .get("createdAt")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         entry_count: entries.len(),
-        label: parsed.get("label").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        reason: parsed.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        label: parsed
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        reason: parsed
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         entries,
     })
 }
@@ -2245,7 +2400,10 @@ fn detect_save_dirs(game_path: &str) -> Vec<PathBuf> {
         if let Ok(userprofile) = std::env::var("USERPROFILE") {
             let user = PathBuf::from(userprofile);
             for v in &variants {
-                push_dir_if_exists_unique(&mut candidates, user.join("Documents").join("My Games").join(v));
+                push_dir_if_exists_unique(
+                    &mut candidates,
+                    user.join("Documents").join("My Games").join(v),
+                );
                 push_dir_if_exists_unique(&mut candidates, user.join("Documents").join(v));
                 push_dir_if_exists_unique(&mut candidates, user.join("Saved Games").join(v));
             }
@@ -2267,7 +2425,10 @@ fn detect_save_dirs(game_path: &str) -> Vec<PathBuf> {
                                     .file_name()
                                     .map(|n| n.to_string_lossy().to_string().to_lowercase())
                                     .unwrap_or_default();
-                                if variants_lc.iter().any(|v| leaf.contains(v) || v.contains(&leaf)) {
+                                if variants_lc
+                                    .iter()
+                                    .any(|v| leaf.contains(v) || v.contains(&leaf))
+                                {
                                     push_dir_if_exists_unique(&mut candidates, gp);
                                 }
                             }
@@ -2283,7 +2444,10 @@ fn detect_save_dirs(game_path: &str) -> Vec<PathBuf> {
         if let Ok(home) = std::env::var("HOME") {
             let home = PathBuf::from(home);
             for v in &variants {
-                push_dir_if_exists_unique(&mut candidates, home.join(".local").join("share").join(v));
+                push_dir_if_exists_unique(
+                    &mut candidates,
+                    home.join(".local").join("share").join(v),
+                );
                 push_dir_if_exists_unique(&mut candidates, home.join(".config").join(v));
                 push_dir_if_exists_unique(&mut candidates, home.join(".renpy").join(v));
             }
@@ -2303,12 +2467,18 @@ fn detect_save_dirs(game_path: &str) -> Vec<PathBuf> {
                     &mut candidates,
                     home.join("Library").join("Preferences").join(v),
                 );
-                push_dir_if_exists_unique(&mut candidates, home.join("Library").join("RenPy").join(v));
+                push_dir_if_exists_unique(
+                    &mut candidates,
+                    home.join("Library").join("RenPy").join(v),
+                );
             }
         }
     }
 
-    candidates.into_iter().filter(|d| dir_has_files(d)).collect()
+    candidates
+        .into_iter()
+        .filter(|d| dir_has_files(d))
+        .collect()
 }
 
 #[tauri::command]
@@ -2374,7 +2544,8 @@ fn build_save_backup_zip(
                 root_label,
                 rel.to_string_lossy().replace('\\', "/")
             );
-            zip.start_file(zip_name, options).map_err(|e| e.to_string())?;
+            zip.start_file(zip_name, options)
+                .map_err(|e| e.to_string())?;
             let mut src = std::fs::File::open(entry.path()).map_err(|e| e.to_string())?;
             std::io::copy(&mut src, &mut zip).map_err(|e| e.to_string())?;
             files_added += 1;
@@ -2403,7 +2574,12 @@ fn detect_save_paths(
     company_name: Option<String>,
     game_name: Option<String>,
 ) -> Vec<SavePathInfo> {
-    save_transfer::detect_save_paths(&game_path, engine.as_deref(), company_name.as_deref(), game_name.as_deref())
+    save_transfer::detect_save_paths(
+        &game_path,
+        engine.as_deref(),
+        company_name.as_deref(),
+        game_name.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -2707,12 +2883,18 @@ fn current_exe_string() -> Result<String, String> {
 
 #[cfg(windows)]
 fn explorer_quick_launch_command(exe_path: &str) -> String {
-    format!("\"{}\" quick-launch-exe \"%1\"", exe_path.replace('"', "\"\""))
+    format!(
+        "\"{}\" quick-launch-exe \"%1\"",
+        exe_path.replace('"', "\"\"")
+    )
 }
 
 #[cfg(windows)]
 fn explorer_zip_install_command(exe_path: &str) -> String {
-    format!("\"{}\" quick-install-zip \"%1\"", exe_path.replace('"', "\"\""))
+    format!(
+        "\"{}\" quick-install-zip \"%1\"",
+        exe_path.replace('"', "\"\"")
+    )
 }
 
 #[cfg(windows)]
@@ -2735,7 +2917,7 @@ fn get_explorer_quick_launch_status_impl() -> Result<ExplorerQuickLaunchStatus, 
 fn get_explorer_quick_launch_status() -> Result<ExplorerQuickLaunchStatus, String> {
     #[cfg(windows)]
     {
-        return get_explorer_quick_launch_status_impl();
+        get_explorer_quick_launch_status_impl()
     }
     #[cfg(not(windows))]
     {
@@ -2768,11 +2950,13 @@ fn register_explorer_quick_launch() -> Result<ExplorerQuickLaunchStatus, String>
         shell_key
             .set_value("MultiSelectModel", &"Single")
             .map_err(|e| e.to_string())?;
-        let (command_key, _) = shell_key.create_subkey("command").map_err(|e| e.to_string())?;
+        let (command_key, _) = shell_key
+            .create_subkey("command")
+            .map_err(|e| e.to_string())?;
         command_key
             .set_value("", &command)
             .map_err(|e| e.to_string())?;
-        return get_explorer_quick_launch_status_impl();
+        get_explorer_quick_launch_status_impl()
     }
     #[cfg(not(windows))]
     {
@@ -2786,7 +2970,7 @@ fn unregister_explorer_quick_launch() -> Result<ExplorerQuickLaunchStatus, Strin
     {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let _ = hkcu.delete_subkey_all(EXPLORER_QUICK_LAUNCH_REG_PATH);
-        return get_explorer_quick_launch_status_impl();
+        get_explorer_quick_launch_status_impl()
     }
     #[cfg(not(windows))]
     {
@@ -2814,7 +2998,7 @@ fn get_explorer_zip_install_status_impl() -> Result<ExplorerZipInstallStatus, St
 fn get_explorer_zip_install_status() -> Result<ExplorerZipInstallStatus, String> {
     #[cfg(windows)]
     {
-        return get_explorer_zip_install_status_impl();
+        get_explorer_zip_install_status_impl()
     }
     #[cfg(not(windows))]
     {
@@ -2847,11 +3031,13 @@ fn register_explorer_zip_install() -> Result<ExplorerZipInstallStatus, String> {
         shell_key
             .set_value("MultiSelectModel", &"Single")
             .map_err(|e| e.to_string())?;
-        let (command_key, _) = shell_key.create_subkey("command").map_err(|e| e.to_string())?;
+        let (command_key, _) = shell_key
+            .create_subkey("command")
+            .map_err(|e| e.to_string())?;
         command_key
             .set_value("", &command)
             .map_err(|e| e.to_string())?;
-        return get_explorer_zip_install_status_impl();
+        get_explorer_zip_install_status_impl()
     }
     #[cfg(not(windows))]
     {
@@ -2865,7 +3051,7 @@ fn unregister_explorer_zip_install() -> Result<ExplorerZipInstallStatus, String>
     {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let _ = hkcu.delete_subkey_all(EXPLORER_ZIP_INSTALL_REG_PATH);
-        return get_explorer_zip_install_status_impl();
+        get_explorer_zip_install_status_impl()
     }
     #[cfg(not(windows))]
     {
@@ -2897,7 +3083,7 @@ fn get_platform() -> &'static str {
 struct WineRunner {
     name: String,
     path: String,
-    kind: String, // "wine" | "proton"
+    kind: String,           // "wine" | "proton"
     flavor: Option<String>, // "official" | "ge"
 }
 
@@ -3308,7 +3494,10 @@ fn build_protocol_store_uri(source: &str, game_id: &str) -> Option<String> {
     match source {
         "ea-app" => Some(format!("origin2://game/launch?offerIds={}", game_id)),
         "ubisoft-connect" => Some(format!("uplay://launch/{}/0", game_id)),
-        "rockstar" => Some(format!("rockstar-games-launcher://launch?gameId={}", game_id)),
+        "rockstar" => Some(format!(
+            "rockstar-games-launcher://launch?gameId={}",
+            game_id
+        )),
         _ => None,
     }
 }
@@ -3450,7 +3639,9 @@ fn insert_protocol_store_candidate(
 }
 
 #[cfg(windows)]
-fn finalize_protocol_store_candidate(candidate: ProtocolStoreCandidate) -> Option<InteropGameEntry> {
+fn finalize_protocol_store_candidate(
+    candidate: ProtocolStoreCandidate,
+) -> Option<InteropGameEntry> {
     let exe = candidate_from_paths(candidate.exe, candidate.install_dir)?;
     let name = if candidate.name.trim().is_empty() {
         Path::new(&exe)
@@ -3524,7 +3715,10 @@ async fn fetch_cloud_page_metadata(url: &str) -> Result<CloudPageMetadata, Strin
         .await
         .map_err(|e| format!("Failed to fetch {url}: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!("Metadata request failed for {url}: {}", response.status()));
+        return Err(format!(
+            "Metadata request failed for {url}: {}",
+            response.status()
+        ));
     }
     let body = response
         .text()
@@ -3548,7 +3742,8 @@ fn insert_exotic_store_candidate(
     out: &mut HashMap<String, ExoticStoreCandidate>,
     candidate: ExoticStoreCandidate,
 ) {
-    let Some(exe) = candidate_from_paths(candidate.exe.clone(), candidate.install_dir.clone()) else {
+    let Some(exe) = candidate_from_paths(candidate.exe.clone(), candidate.install_dir.clone())
+    else {
         return;
     };
     let key = format!(
@@ -3620,26 +3815,68 @@ fn finalize_exotic_store_candidate(candidate: ExoticStoreCandidate) -> Option<In
 }
 
 #[cfg(windows)]
-fn battle_net_page_url_from_hint(game_id: &str, name: &str, install_dir: Option<&str>) -> Option<String> {
-    let lookup = normalize_lookup_token(&format!("{} {} {}", game_id, name, install_dir.unwrap_or_default()));
+fn battle_net_page_url_from_hint(
+    game_id: &str,
+    name: &str,
+    install_dir: Option<&str>,
+) -> Option<String> {
+    let lookup = normalize_lookup_token(&format!(
+        "{} {} {}",
+        game_id,
+        name,
+        install_dir.unwrap_or_default()
+    ));
     let known: &[(&[&str], &str)] = &[
         (&["overwatch", "pro"], "https://overwatch.blizzard.com/"),
-        (&["diablo4", "diabloiv", "fen"], "https://diablo4.blizzard.com/"),
+        (
+            &["diablo4", "diabloiv", "fen"],
+            "https://diablo4.blizzard.com/",
+        ),
         (&["diablo3", "d3"], "https://diablo3.blizzard.com/"),
-        (&["diablo2", "diabloii", "resurrected", "d2r", "rtro"], "https://diablo2.blizzard.com/"),
-        (&["worldofwarcraft", "wow"], "https://worldofwarcraft.blizzard.com/"),
-        (&["warcraft3", "warcraftiii", "w3"], "https://warcraft3.blizzard.com/"),
-        (&["starcraft2", "starcraftii", "s2"], "https://starcraft2.blizzard.com/"),
-        (&["starcraftremastered", "starcraft", "s1"], "https://starcraft.blizzard.com/"),
-        (&["hearthstone", "wtcg"], "https://hearthstone.blizzard.com/"),
-        (&["heroesofthestorm", "hero"], "https://heroesofthestorm.blizzard.com/"),
+        (
+            &["diablo2", "diabloii", "resurrected", "d2r", "rtro"],
+            "https://diablo2.blizzard.com/",
+        ),
+        (
+            &["worldofwarcraft", "wow"],
+            "https://worldofwarcraft.blizzard.com/",
+        ),
+        (
+            &["warcraft3", "warcraftiii", "w3"],
+            "https://warcraft3.blizzard.com/",
+        ),
+        (
+            &["starcraft2", "starcraftii", "s2"],
+            "https://starcraft2.blizzard.com/",
+        ),
+        (
+            &["starcraftremastered", "starcraft", "s1"],
+            "https://starcraft.blizzard.com/",
+        ),
+        (
+            &["hearthstone", "wtcg"],
+            "https://hearthstone.blizzard.com/",
+        ),
+        (
+            &["heroesofthestorm", "hero"],
+            "https://heroesofthestorm.blizzard.com/",
+        ),
         (&["callofduty", "cod"], "https://www.callofduty.com/"),
     ];
-    known.iter().find_map(|(aliases, url)| aliases.iter().any(|alias| lookup.contains(alias)).then(|| (*url).to_string()))
+    known.iter().find_map(|(aliases, url)| {
+        aliases
+            .iter()
+            .any(|alias| lookup.contains(alias))
+            .then(|| (*url).to_string())
+    })
 }
 
 #[cfg(windows)]
-fn guess_battle_net_game_id(name: &str, install_dir: Option<&str>, exe: Option<&str>) -> Option<String> {
+fn guess_battle_net_game_id(
+    name: &str,
+    install_dir: Option<&str>,
+    exe: Option<&str>,
+) -> Option<String> {
     let lookup = normalize_lookup_token(&format!(
         "{} {} {}",
         name,
@@ -3659,7 +3896,12 @@ fn guess_battle_net_game_id(name: &str, install_dir: Option<&str>, exe: Option<&
         (&["heroesofthestorm"], "hero"),
         (&["callofduty"], "cod"),
     ];
-    known.iter().find_map(|(aliases, code)| aliases.iter().any(|alias| lookup.contains(alias)).then(|| (*code).to_string()))
+    known.iter().find_map(|(aliases, code)| {
+        aliases
+            .iter()
+            .any(|alias| lookup.contains(alias))
+            .then(|| (*code).to_string())
+    })
 }
 
 #[cfg(windows)]
@@ -3713,9 +3955,18 @@ fn manifest_value_ci(map: &HashMap<String, String>, key: &str) -> Option<String>
 #[cfg(windows)]
 fn collect_battle_net_registry_candidates(out: &mut HashMap<String, ExoticStoreCandidate>) {
     let roots = [
-        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
     ];
     for (root, path) in roots {
         let Ok(key) = RegKey::predef(root).open_subkey_with_flags(path, KEY_READ) else {
@@ -3737,13 +3988,16 @@ fn collect_battle_net_registry_candidates(out: &mut HashMap<String, ExoticStoreC
                 || name_lc.contains("hearthstone")
                 || name_lc.contains("heroes of the storm")
                 || name_lc.contains("call of duty");
-            if !matches_bnet || (name_lc.contains("battle.net") && !name_lc.contains("call of duty")) {
+            if !matches_bnet
+                || (name_lc.contains("battle.net") && !name_lc.contains("call of duty"))
+            {
                 continue;
             }
             let install_dir = reg_value_string(&subkey, "InstallLocation")
                 .map(|value| normalize_windows_path(&value))
                 .filter(|value| !value.is_empty());
-            let exe = reg_value_string(&subkey, "DisplayIcon").and_then(|value| clean_candidate_path(&value));
+            let exe = reg_value_string(&subkey, "DisplayIcon")
+                .and_then(|value| clean_candidate_path(&value));
             let manifest = install_dir
                 .as_deref()
                 .and_then(find_build_info_near_install)
@@ -3751,14 +4005,25 @@ fn collect_battle_net_registry_candidates(out: &mut HashMap<String, ExoticStoreC
             let game_id = manifest
                 .as_ref()
                 .and_then(|map| manifest_value_ci(map, "Product"))
-                .or_else(|| manifest.as_ref().and_then(|map| manifest_value_ci(map, "ProductCode")))
-                .or_else(|| guess_battle_net_game_id(&display_name, install_dir.as_deref(), exe.as_deref()))
+                .or_else(|| {
+                    manifest
+                        .as_ref()
+                        .and_then(|map| manifest_value_ci(map, "ProductCode"))
+                })
+                .or_else(|| {
+                    guess_battle_net_game_id(&display_name, install_dir.as_deref(), exe.as_deref())
+                })
                 .unwrap_or_else(|| fallback_protocol_game_id("battle-net", &display_name));
             let version = manifest
                 .as_ref()
                 .and_then(|map| manifest_value_ci(map, "Version"))
-                .or_else(|| manifest.as_ref().and_then(|map| manifest_value_ci(map, "Build Key")));
-            let source_url = battle_net_page_url_from_hint(&game_id, &display_name, install_dir.as_deref());
+                .or_else(|| {
+                    manifest
+                        .as_ref()
+                        .and_then(|map| manifest_value_ci(map, "Build Key"))
+                });
+            let source_url =
+                battle_net_page_url_from_hint(&game_id, &display_name, install_dir.as_deref());
             insert_exotic_store_candidate(
                 out,
                 ExoticStoreCandidate {
@@ -3769,7 +4034,11 @@ fn collect_battle_net_registry_candidates(out: &mut HashMap<String, ExoticStoreC
                     source: "battle-net".to_string(),
                     source_url,
                     cover_url: None,
-                    developer: if publisher.trim().is_empty() { None } else { Some(publisher) },
+                    developer: if publisher.trim().is_empty() {
+                        None
+                    } else {
+                        Some(publisher)
+                    },
                     version,
                     overview: None,
                 },
@@ -3810,8 +4079,11 @@ fn looks_like_gamejolt_manifest_file(path: &Path) -> bool {
 
 #[cfg(windows)]
 fn derive_gamejolt_source_url(value: &Value) -> Option<String> {
-    let explicit = json_string_field(value, &["url", "web_url", "webUrl", "source_url", "sourceUrl"])
-        .or_else(|| json_nested_string_field(value, &["game", "url"]));
+    let explicit = json_string_field(
+        value,
+        &["url", "web_url", "webUrl", "source_url", "sourceUrl"],
+    )
+    .or_else(|| json_nested_string_field(value, &["game", "url"]));
     if let Some(url) = explicit {
         if url.starts_with("http://") || url.starts_with("https://") {
             return Some(url);
@@ -3822,7 +4094,11 @@ fn derive_gamejolt_source_url(value: &Value) -> Option<String> {
     let game_id = json_string_field(value, &["game_id", "gameId", "id"])
         .or_else(|| json_nested_string_field(value, &["game", "id"]));
     match (slug, game_id) {
-        (Some(slug), Some(game_id)) => Some(format!("https://gamejolt.com/games/{}/{}", slug.trim(), game_id.trim())),
+        (Some(slug), Some(game_id)) => Some(format!(
+            "https://gamejolt.com/games/{}/{}",
+            slug.trim(),
+            game_id.trim()
+        )),
         (Some(slug), None) => Some(format!("https://gamejolt.com/games/{}", slug.trim())),
         _ => None,
     }
@@ -3833,19 +4109,42 @@ fn parse_gamejolt_candidate(value: &Value) -> Option<ExoticStoreCandidate> {
     let title = json_string_field(value, &["title", "name", "gameTitle", "game_name"])
         .or_else(|| json_nested_string_field(value, &["game", "title"]))
         .or_else(|| json_nested_string_field(value, &["game", "name"]));
-    let install_dir = json_string_field(value, &["install_dir", "installDir", "install_path", "installPath", "path", "installLocation"])
-        .or_else(|| json_nested_string_field(value, &["install", "path"]))
-        .or_else(|| json_nested_string_field(value, &["path", "absolute"]))
-        .map(|value| normalize_windows_path(&value))
-        .filter(|value| !value.is_empty());
-    let exe_hint = json_string_field(value, &["exe", "executable", "launchExe", "launchExecutable", "executablePath"])
-        .or_else(|| json_nested_string_field(value, &["install", "executable"]));
+    let install_dir = json_string_field(
+        value,
+        &[
+            "install_dir",
+            "installDir",
+            "install_path",
+            "installPath",
+            "path",
+            "installLocation",
+        ],
+    )
+    .or_else(|| json_nested_string_field(value, &["install", "path"]))
+    .or_else(|| json_nested_string_field(value, &["path", "absolute"]))
+    .map(|value| normalize_windows_path(&value))
+    .filter(|value| !value.is_empty());
+    let exe_hint = json_string_field(
+        value,
+        &[
+            "exe",
+            "executable",
+            "launchExe",
+            "launchExecutable",
+            "executablePath",
+        ],
+    )
+    .or_else(|| json_nested_string_field(value, &["install", "executable"]));
     let resolved_exe = candidate_from_paths(exe_hint, install_dir.clone());
     resolved_exe.as_ref()?;
     let game_id = json_string_field(value, &["game_id", "gameId", "id"])
         .or_else(|| json_nested_string_field(value, &["game", "id"]))
         .or_else(|| json_string_field(value, &["slug", "game_slug", "gameSlug"]))
-        .or_else(|| title.clone().map(|value| fallback_protocol_game_id("gamejolt", &value)))?;
+        .or_else(|| {
+            title
+                .clone()
+                .map(|value| fallback_protocol_game_id("gamejolt", &value))
+        })?;
     Some(ExoticStoreCandidate {
         name: title.unwrap_or_else(|| format!("GameJolt {}", game_id)),
         game_id,
@@ -3863,7 +4162,10 @@ fn parse_gamejolt_candidate(value: &Value) -> Option<ExoticStoreCandidate> {
 }
 
 #[cfg(windows)]
-fn collect_gamejolt_candidates_from_value(value: &Value, out: &mut HashMap<String, ExoticStoreCandidate>) {
+fn collect_gamejolt_candidates_from_value(
+    value: &Value,
+    out: &mut HashMap<String, ExoticStoreCandidate>,
+) {
     if let Some(candidate) = parse_gamejolt_candidate(value) {
         insert_exotic_store_candidate(out, candidate);
     }
@@ -3918,9 +4220,18 @@ fn collect_gamejolt_manifest_candidates(out: &mut HashMap<String, ExoticStoreCan
 fn collect_protocol_store_uninstall_candidates() -> HashMap<String, ProtocolStoreCandidate> {
     let mut out = HashMap::new();
     let roots = [
-        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
     ];
     for (root, path) in roots {
         let Ok(key) = RegKey::predef(root).open_subkey_with_flags(path, KEY_READ) else {
@@ -3982,7 +4293,10 @@ fn collect_protocol_store_uninstall_candidates() -> HashMap<String, ProtocolStor
 #[cfg(windows)]
 fn collect_ubisoft_registry_candidates(out: &mut HashMap<String, ProtocolStoreCandidate>) {
     let roots = [
-        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs"),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs",
+        ),
         (HKEY_LOCAL_MACHINE, r"SOFTWARE\Ubisoft\Launcher\Installs"),
         (HKEY_CURRENT_USER, r"SOFTWARE\Ubisoft\Launcher\Installs"),
     ];
@@ -4057,7 +4371,9 @@ fn collect_origin_local_content_candidates(out: &mut HashMap<String, ProtocolSto
     let Some(program_data) = std::env::var_os("ProgramData") else {
         return;
     };
-    let root = PathBuf::from(program_data).join("Origin").join("LocalContent");
+    let root = PathBuf::from(program_data)
+        .join("Origin")
+        .join("LocalContent");
     if !root.is_dir() {
         return;
     }
@@ -4066,7 +4382,9 @@ fn collect_origin_local_content_candidates(out: &mut HashMap<String, ProtocolSto
         .into_iter()
         .filter_map(|entry| entry.ok())
     {
-        if !entry.file_type().is_file() || entry.file_name().to_string_lossy().to_lowercase() != "local.xml" {
+        if !entry.file_type().is_file()
+            || entry.file_name().to_string_lossy().to_lowercase() != "local.xml"
+        {
             continue;
         }
         let Ok(xml) = std::fs::read_to_string(entry.path()) else {
@@ -4262,7 +4580,8 @@ fn detect_prefix_media(prefix: &std::path::Path) -> PrefixMediaDiagnostics {
     let sys32 = prefix.join("drive_c").join("windows").join("system32");
     let wow64 = prefix.join("drive_c").join("windows").join("syswow64");
     let has_any = |name: &str| sys32.join(name).is_file() || wow64.join(name).is_file();
-    let has_media_foundation = has_any("mfplat.dll") || has_any("mf.dll") || has_any("mfreadwrite.dll");
+    let has_media_foundation =
+        has_any("mfplat.dll") || has_any("mf.dll") || has_any("mfreadwrite.dll");
     let has_quartz = has_any("quartz.dll");
     let has_wmp = has_any("wmp.dll")
         || has_any("wmvcore.dll")
@@ -4278,7 +4597,8 @@ fn detect_prefix_media(prefix: &std::path::Path) -> PrefixMediaDiagnostics {
             .join("Windows Media Player")
             .join("wmplayer.exe")
             .is_file();
-    let has_lavfilters = has_any("lavsplitter.ax") || has_any("lavvideo.ax") || has_any("lavaudio.ax");
+    let has_lavfilters =
+        has_any("lavsplitter.ax") || has_any("lavvideo.ax") || has_any("lavaudio.ax");
     let has_wmv_decoder = has_any("wmvcore.dll");
 
     let mut notes = Vec::<String>::new();
@@ -4304,7 +4624,8 @@ fn detect_prefix_media(prefix: &std::path::Path) -> PrefixMediaDiagnostics {
         notes.push("WMV decoder components are missing; this often shows up as a black screen or 'rainbow' intro video.".to_string());
     }
 
-    let likely_video_playback_issue = !has_media_foundation || !has_quartz || !has_wmp || !has_wmv_decoder;
+    let likely_video_playback_issue =
+        !has_media_foundation || !has_quartz || !has_wmp || !has_wmv_decoder;
     let summary = if likely_video_playback_issue {
         "Potential intro/video playback compatibility gaps detected".to_string()
     } else if has_lavfilters {
@@ -4478,7 +4799,9 @@ fn create_wine_prefix(path: String, runner: Option<String>) -> Result<(), String
             cmd.env("WINEPREFIX", &path);
         }
 
-        let out = cmd.output().map_err(|e| format!("Failed to run wineboot: {e}"))?;
+        let out = cmd
+            .output()
+            .map_err(|e| format!("Failed to run wineboot: {e}"))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return Err(if err.is_empty() {
@@ -4596,7 +4919,10 @@ fn install_dxvk_vkd3d(
 }
 
 #[tauri::command]
-fn install_prefix_media_fixes(prefix: String, verbs: Option<Vec<String>>) -> Result<String, String> {
+fn install_prefix_media_fixes(
+    prefix: String,
+    verbs: Option<Vec<String>>,
+) -> Result<String, String> {
     #[cfg(windows)]
     {
         let _ = (prefix, verbs);
@@ -4608,7 +4934,8 @@ fn install_prefix_media_fixes(prefix: String, verbs: Option<Vec<String>>) -> Res
         if !is_wine_prefix_dir(prefix_path) {
             return Err("The selected path does not look like a Wine prefix".to_string());
         }
-        let mut selected = verbs.unwrap_or_else(|| detect_prefix_media(prefix_path).recommended_verbs);
+        let mut selected =
+            verbs.unwrap_or_else(|| detect_prefix_media(prefix_path).recommended_verbs);
         selected.retain(|verb| !verb.trim().is_empty());
         selected.sort();
         selected.dedup();
@@ -4738,7 +5065,8 @@ fn discover_shader_cache_artifacts_impl(
     let mut hints = Vec::<String>::new();
     if dxvk_caches.is_empty() {
         hints.push(
-            "No .dxvk-cache next to this exe yet — it appears after the first DXVK run.".to_string(),
+            "No .dxvk-cache next to this exe yet — it appears after the first DXVK run."
+                .to_string(),
         );
     }
     let sid = steam_app_id
@@ -4794,7 +5122,9 @@ fn discover_shader_cache_artifacts(
             steam_shader_cache_path: None,
             steam_shader_cache_bytes: 0,
             steam_shader_cache_files: 0,
-            hints: vec!["DXVK / Steam shader cache tools target Linux/macOS Wine and Proton.".to_string()],
+            hints: vec![
+                "DXVK / Steam shader cache tools target Linux/macOS Wine and Proton.".to_string(),
+            ],
         })
     }
     #[cfg(not(windows))]
@@ -4825,9 +5155,14 @@ fn export_shader_cache_bundle(
             .as_ref()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        let steam_dir = sid.as_ref().and_then(|id| resolve_steam_shadercache_dir(id));
+        let steam_dir = sid
+            .as_ref()
+            .and_then(|id| resolve_steam_shadercache_dir(id));
         if dxvk.is_empty() && steam_dir.is_none() {
-            return Err("Nothing to export: no .dxvk-cache beside the exe and no Steam shadercache folder.".to_string());
+            return Err(
+                "Nothing to export: no .dxvk-cache beside the exe and no Steam shadercache folder."
+                    .to_string(),
+            );
         }
         let zip_path = PathBuf::from(&output_zip_path);
         if let Some(parent) = zip_path.parent() {
@@ -4855,15 +5190,8 @@ fn export_shader_cache_bundle(
                 if !entry.file_type().is_file() {
                     continue;
                 }
-                let rel = entry
-                    .path()
-                    .strip_prefix(sdir)
-                    .map_err(|e| e.to_string())?;
-                let zip_name = format!(
-                    "steam/{}/{}",
-                    id,
-                    rel.to_string_lossy().replace('\\', "/")
-                );
+                let rel = entry.path().strip_prefix(sdir).map_err(|e| e.to_string())?;
+                let zip_name = format!("steam/{}/{}", id, rel.to_string_lossy().replace('\\', "/"));
                 zip.start_file(&zip_name, options)
                     .map_err(|e| e.to_string())?;
                 let mut src = std::fs::File::open(entry.path()).map_err(|e| e.to_string())?;
@@ -4981,11 +5309,7 @@ fn extract_yaml_value(source: &str, keys: &[&str]) -> Option<String> {
                 if raw.is_empty() || raw == "null" {
                     continue;
                 }
-                let unquoted = raw
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .trim()
-                    .to_string();
+                let unquoted = raw.trim_matches('"').trim_matches('\'').trim().to_string();
                 if !unquoted.is_empty() {
                     return Some(unquoted);
                 }
@@ -5133,7 +5457,8 @@ fn import_playnite_games() -> Vec<InteropGameEntry> {
             &["GameActionPath", "LaunchPath", "ExecutablePath", "Path"],
         );
         let install_col = first_existing_column(&cols, &["InstallDirectory", "InstallationPath"]);
-        let args_col = first_existing_column(&cols, &["CommandLine", "Arguments", "LaunchArguments"]);
+        let args_col =
+            first_existing_column(&cols, &["CommandLine", "Arguments", "LaunchArguments"]);
         let installed_col = first_existing_column(&cols, &["IsInstalled", "Installed"]);
         let Some(name_col) = name_col else {
             return Vec::new();
@@ -5288,7 +5613,8 @@ fn import_gog_galaxy_games() -> Vec<InteropGameEntry> {
     }
     #[cfg(windows)]
     {
-        let program_data = std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData".to_string());
+        let program_data =
+            std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData".to_string());
         let db_path = std::path::Path::new(&program_data)
             .join("GOG.com")
             .join("Galaxy")
@@ -5306,12 +5632,19 @@ fn import_gog_galaxy_games() -> Vec<InteropGameEntry> {
             return Vec::new();
         }
         let id_col = first_existing_column(&cols, &["productId", "product_id", "id", "Id"]);
-        let install_col = first_existing_column(&cols, &["installationPath", "install_path", "path"]);
+        let install_col =
+            first_existing_column(&cols, &["installationPath", "install_path", "path"]);
         let exe_col = first_existing_column(
             &cols,
-            &["executablePath", "launchPath", "playTaskPath", "executable_path"],
+            &[
+                "executablePath",
+                "launchPath",
+                "playTaskPath",
+                "executable_path",
+            ],
         );
-        let args_col = first_existing_column(&cols, &["arguments", "launchArguments", "commandLine"]);
+        let args_col =
+            first_existing_column(&cols, &["arguments", "launchArguments", "commandLine"]);
         let (Some(id_col), Some(install_col)) = (id_col, install_col) else {
             return Vec::new();
         };
@@ -5323,7 +5656,10 @@ fn import_gog_galaxy_games() -> Vec<InteropGameEntry> {
         if let Some(c) = &args_col {
             select_cols.push(c.clone());
         }
-        let sql = format!("SELECT {} FROM InstalledBaseProducts", select_cols.join(", "));
+        let sql = format!(
+            "SELECT {} FROM InstalledBaseProducts",
+            select_cols.join(", ")
+        );
         let Ok(mut stmt) = conn.prepare(&sql) else {
             return Vec::new();
         };
@@ -5537,7 +5873,8 @@ fn launch_game(
                     }
 
                     let related_entries = collect_related_processes(root_pid);
-                    let mut related_pids: Vec<u32> = related_entries.iter().map(|entry| entry.pid).collect();
+                    let mut related_pids: Vec<u32> =
+                        related_entries.iter().map(|entry| entry.pid).collect();
                     related_pids.sort_unstable();
                     related_pids.dedup();
 
@@ -5551,7 +5888,8 @@ fn launch_game(
                         break;
                     }
 
-                    let tracked_pid = choose_tracked_process_pid(&related_entries, root_pid, &path_clone);
+                    let tracked_pid =
+                        choose_tracked_process_pid(&related_entries, root_pid, &path_clone);
                     if tracked_pid != last_tracked_pid || related_pids != last_related {
                         let state = app.state::<screenshot::ActiveGameState>();
                         *state.0.lock().unwrap() = Some(screenshot::ActiveGame {
@@ -5579,7 +5917,8 @@ fn launch_game(
                         if !active.related_pids.is_empty() {
                             cleanup_attempted = true;
                             cleanup_succeeded =
-                                terminate_process_tree(active.root_pid, &active.related_pids).is_ok();
+                                terminate_process_tree(active.root_pid, &active.related_pids)
+                                    .is_ok();
                         }
                     }
                     *guard = None;
@@ -5944,7 +6283,11 @@ async fn apply_update(app: AppHandle, download_url: String) -> Result<(), String
 
 #[tauri::command]
 fn get_library_profiles(app: AppHandle) -> LibraryProfileRegistry {
-    app.state::<LibraryProfilesState>().0.lock().unwrap().clone()
+    app.state::<LibraryProfilesState>()
+        .0
+        .lock()
+        .unwrap()
+        .clone()
 }
 
 #[tauri::command]
@@ -6015,7 +6358,11 @@ fn save_library_profile(
     save_library_profile_registry(&registry)?;
     let snapshot = registry.clone();
     drop(registry);
-    refresh_tray(&app, &app.state::<RecentGamesState>().0.lock().unwrap().clone(), &snapshot);
+    refresh_tray(
+        &app,
+        &app.state::<RecentGamesState>().0.lock().unwrap().clone(),
+        &snapshot,
+    );
     Ok(snapshot)
 }
 
@@ -6026,14 +6373,22 @@ fn switch_library_profile(
 ) -> Result<LibraryProfileRegistry, String> {
     let profiles_state = app.state::<LibraryProfilesState>();
     let mut registry = profiles_state.0.lock().unwrap();
-    if registry.profiles.iter().all(|profile| profile.id != profile_id) {
+    if registry
+        .profiles
+        .iter()
+        .all(|profile| profile.id != profile_id)
+    {
         return Err("Profile not found".to_string());
     }
     registry.active_profile_id = profile_id;
     save_library_profile_registry(&registry)?;
     let snapshot = registry.clone();
     drop(registry);
-    refresh_tray(&app, &app.state::<RecentGamesState>().0.lock().unwrap().clone(), &snapshot);
+    refresh_tray(
+        &app,
+        &app.state::<RecentGamesState>().0.lock().unwrap().clone(),
+        &snapshot,
+    );
     let _ = app.emit("library-profile-switched", &snapshot);
     Ok(snapshot)
 }
@@ -6064,7 +6419,11 @@ fn delete_library_profile(
     save_library_profile_registry(&registry)?;
     let snapshot = registry.clone();
     drop(registry);
-    refresh_tray(&app, &app.state::<RecentGamesState>().0.lock().unwrap().clone(), &snapshot);
+    refresh_tray(
+        &app,
+        &app.state::<RecentGamesState>().0.lock().unwrap().clone(),
+        &snapshot,
+    );
     let _ = app.emit("library-profile-switched", &snapshot);
     Ok(snapshot)
 }
@@ -6136,7 +6495,12 @@ fn refresh_tray(app: &AppHandle, recent: &[RecentGame], registry: &LibraryProfil
 #[tauri::command]
 fn set_recent_games(app: AppHandle, games: Vec<RecentGame>) -> Result<(), String> {
     *app.state::<RecentGamesState>().0.lock().unwrap() = games.clone();
-    let registry = app.state::<LibraryProfilesState>().0.lock().unwrap().clone();
+    let registry = app
+        .state::<LibraryProfilesState>()
+        .0
+        .lock()
+        .unwrap()
+        .clone();
     refresh_tray(&app, &games, &registry);
     Ok(())
 }
@@ -6242,7 +6606,10 @@ fn run_integrity_check(
                 severity: if is_uninstalled { "warning" } else { "error" }.to_string(),
                 code: "missing_game_executable".to_string(),
                 message: if is_uninstalled {
-                    format!("Game is marked uninstalled and executable is missing: {}", game.path)
+                    format!(
+                        "Game is marked uninstalled and executable is missing: {}",
+                        game.path
+                    )
                 } else {
                     format!("Game executable does not exist: {}", game.path)
                 },
@@ -6268,13 +6635,20 @@ fn run_integrity_check(
         }
 
         if let Some(custom) = customizations.get(&game.path) {
-            if let Some(override_path) = custom.exe_override.as_ref().filter(|x| !x.trim().is_empty()) {
+            if let Some(override_path) = custom
+                .exe_override
+                .as_ref()
+                .filter(|x| !x.trim().is_empty())
+            {
                 let override_path_ref = Path::new(override_path);
                 if !override_path_ref.exists() {
                     issues.push(IntegrityIssue {
                         severity: "error".to_string(),
                         code: "missing_exe_override".to_string(),
-                        message: format!("Custom executable override does not exist: {}", override_path),
+                        message: format!(
+                            "Custom executable override does not exist: {}",
+                            override_path
+                        ),
                         path: Some(override_path.clone()),
                         game_path: Some(game.path.clone()),
                     });
@@ -6282,13 +6656,18 @@ fn run_integrity_check(
                     issues.push(IntegrityIssue {
                         severity: "error".to_string(),
                         code: "invalid_exe_override".to_string(),
-                        message: format!("Custom executable override is not a file: {}", override_path),
+                        message: format!(
+                            "Custom executable override is not a file: {}",
+                            override_path
+                        ),
                         path: Some(override_path.clone()),
                         game_path: Some(game.path.clone()),
                     });
                 }
 
-                let game_dir = Path::new(&game.path).parent().map(|x| normalize_path_key(&x.to_string_lossy()));
+                let game_dir = Path::new(&game.path)
+                    .parent()
+                    .map(|x| normalize_path_key(&x.to_string_lossy()));
                 let override_dir = override_path_ref
                     .parent()
                     .map(|x| normalize_path_key(&x.to_string_lossy()));
@@ -6296,7 +6675,10 @@ fn run_integrity_check(
                     issues.push(IntegrityIssue {
                         severity: "warning".to_string(),
                         code: "override_outside_game_folder".to_string(),
-                        message: format!("Custom executable override points outside the game folder: {}", override_path),
+                        message: format!(
+                            "Custom executable override points outside the game folder: {}",
+                            override_path
+                        ),
                         path: Some(override_path.clone()),
                         game_path: Some(game.path.clone()),
                     });
@@ -6310,7 +6692,10 @@ fn run_integrity_check(
             issues.push(IntegrityIssue {
                 severity: "warning".to_string(),
                 code: "orphan_metadata".to_string(),
-                message: format!("Metadata exists for a game path that is no longer in the library: {}", meta_path),
+                message: format!(
+                    "Metadata exists for a game path that is no longer in the library: {}",
+                    meta_path
+                ),
                 path: Some(meta_path.clone()),
                 game_path: Some(meta_path.clone()),
             });
@@ -6322,7 +6707,10 @@ fn run_integrity_check(
             issues.push(IntegrityIssue {
                 severity: "warning".to_string(),
                 code: "orphan_customization".to_string(),
-                message: format!("Customization exists for a game path that is no longer in the library: {}", custom_path),
+                message: format!(
+                    "Customization exists for a game path that is no longer in the library: {}",
+                    custom_path
+                ),
                 path: Some(custom_path.clone()),
                 game_path: Some(custom_path.clone()),
             });
@@ -6348,7 +6736,8 @@ fn suggest_auto_heal_paths(
 ) -> Result<AutoHealReport, String> {
     let library_roots: Vec<String> = library_folders.iter().map(|f| f.path.clone()).collect();
     let mut broken_games = Vec::<IntegrityGameInput>::new();
-    let current_paths: HashSet<String> = games.iter().map(|g| normalize_path_key(&g.path)).collect();
+    let current_paths: HashSet<String> =
+        games.iter().map(|g| normalize_path_key(&g.path)).collect();
 
     for game in games.iter() {
         if game.uninstalled.unwrap_or(false) {
@@ -6395,7 +6784,10 @@ fn suggest_auto_heal_paths(
         };
         let second_score = ranked.get(1).map(|x| x.0).unwrap_or(0);
         let candidate_key = normalize_path_key(&best_candidate.path);
-        if *best_score < 60 || (*best_score - second_score) < 8 || used_candidates.contains(&candidate_key) {
+        if *best_score < 60
+            || (*best_score - second_score) < 8
+            || used_candidates.contains(&candidate_key)
+        {
             unresolved_paths.push(game.path.clone());
             continue;
         }
@@ -6513,11 +6905,7 @@ fn steam_root_paths() -> Vec<PathBuf> {
             PathBuf::from(r"C:\Program Files (x86)\Steam"),
             PathBuf::from(r"C:\Program Files\Steam"),
         ];
-        candidates
-            .iter()
-            .filter(|p| p.exists())
-            .cloned()
-            .collect()
+        candidates.iter().filter(|p| p.exists()).cloned().collect()
     }
     #[cfg(target_os = "linux")]
     {
@@ -6526,11 +6914,7 @@ fn steam_root_paths() -> Vec<PathBuf> {
             PathBuf::from(&home).join(".steam/steam"),
             PathBuf::from(&home).join(".local/share/Steam"),
         ];
-        candidates
-            .iter()
-            .filter(|p| p.exists())
-            .cloned()
-            .collect()
+        candidates.iter().filter(|p| p.exists()).cloned().collect()
     }
     #[cfg(target_os = "macos")]
     {
@@ -6649,15 +7033,31 @@ fn json_bool_field(value: &Value, keys: &[&str]) -> Option<bool> {
 }
 
 fn parse_legendary_status(value: &Value) -> (bool, Option<String>) {
-    let authenticated = json_bool_field(value, &["logged_in", "loggedIn", "authenticated", "is_authenticated"])
-        .or_else(|| value.get("account").filter(|entry| !entry.is_null()).map(|_| true))
-        .or_else(|| value.get("user").filter(|entry| !entry.is_null()).map(|_| true))
-        .unwrap_or(false);
-    let display_name = json_string_field(value, &["display_name", "displayName", "account_name", "accountName"])
-        .or_else(|| json_nested_string_field(value, &["account", "displayName"]))
-        .or_else(|| json_nested_string_field(value, &["account", "name"]))
-        .or_else(|| json_nested_string_field(value, &["user", "displayName"]))
-        .or_else(|| json_nested_string_field(value, &["user", "name"]));
+    let authenticated = json_bool_field(
+        value,
+        &["logged_in", "loggedIn", "authenticated", "is_authenticated"],
+    )
+    .or_else(|| {
+        value
+            .get("account")
+            .filter(|entry| !entry.is_null())
+            .map(|_| true)
+    })
+    .or_else(|| {
+        value
+            .get("user")
+            .filter(|entry| !entry.is_null())
+            .map(|_| true)
+    })
+    .unwrap_or(false);
+    let display_name = json_string_field(
+        value,
+        &["display_name", "displayName", "account_name", "accountName"],
+    )
+    .or_else(|| json_nested_string_field(value, &["account", "displayName"]))
+    .or_else(|| json_nested_string_field(value, &["account", "name"]))
+    .or_else(|| json_nested_string_field(value, &["user", "displayName"]))
+    .or_else(|| json_nested_string_field(value, &["user", "name"]));
     (authenticated, display_name)
 }
 
@@ -6668,7 +7068,8 @@ fn resolve_epic_installed_exe(exe: Option<String>, install_path: Option<String>)
 
 #[cfg(not(windows))]
 fn resolve_epic_installed_exe(exe: Option<String>, install_path: Option<String>) -> Option<String> {
-    exe.filter(|value| Path::new(value).is_file()).or(install_path)
+    exe.filter(|value| Path::new(value).is_file())
+        .or(install_path)
 }
 
 fn parse_legendary_owned_entry(value: &Value) -> Option<EpicOwnedGame> {
@@ -6689,8 +7090,19 @@ fn parse_legendary_owned_entry(value: &Value) -> Option<EpicOwnedGame> {
 
 fn parse_legendary_installed_entry(value: &Value) -> Option<EpicOwnedGame> {
     let app_name = json_string_field(value, &["app_name", "appName"])?;
-    let install_path = json_string_field(value, &["install_path", "installPath", "install_dir", "installDir"]);
-    let exe_hint = json_string_field(value, &["executable", "launch_executable", "launchExecutable", "main_executable"]);
+    let install_path = json_string_field(
+        value,
+        &["install_path", "installPath", "install_dir", "installDir"],
+    );
+    let exe_hint = json_string_field(
+        value,
+        &[
+            "executable",
+            "launch_executable",
+            "launchExecutable",
+            "main_executable",
+        ],
+    );
     let exe = resolve_epic_installed_exe(exe_hint, install_path.clone());
     let title = json_string_field(value, &["title", "app_title", "name"])
         .or_else(|| json_nested_string_field(value, &["metadata", "title"]))
@@ -6743,7 +7155,10 @@ fn detect_game_executable(root: &Path) -> Option<String> {
             .and_then(|s| s.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if !matches!(ext.as_str(), "exe" | "bat" | "cmd" | "com" | "sh" | "appimage") {
+        if !matches!(
+            ext.as_str(),
+            "exe" | "bat" | "cmd" | "com" | "sh" | "appimage"
+        ) {
             continue;
         }
         let path = entry.path();
@@ -6761,7 +7176,12 @@ fn detect_game_executable(root: &Path) -> Option<String> {
             .map(|p| p.components().count())
             .unwrap_or(99);
         let generic_penalty = if is_generic_name(&file_name) { 1 } else { 0 };
-        let key = format!("{:02}-{:02}-{}", generic_penalty, depth, path_str.to_lowercase());
+        let key = format!(
+            "{:02}-{:02}-{}",
+            generic_penalty,
+            depth,
+            path_str.to_lowercase()
+        );
         candidates.push((key, path.to_path_buf()));
     }
     candidates.sort_by(|a, b| a.0.cmp(&b.0));
@@ -6814,10 +7234,17 @@ fn parse_steam_profile_reference(profile_ref: &str) -> Result<String, String> {
     if let Ok(url) = reqwest::Url::parse(trimmed) {
         let segments: Vec<String> = url
             .path_segments()
-            .map(|items| items.filter(|item| !item.is_empty()).map(|item| item.to_string()).collect())
+            .map(|items| {
+                items
+                    .filter(|item| !item.is_empty())
+                    .map(|item| item.to_string())
+                    .collect()
+            })
             .unwrap_or_default();
         if segments.len() >= 2 {
-            if segments[0].eq_ignore_ascii_case("profiles") && segments[1].chars().all(|c| c.is_ascii_digit()) {
+            if segments[0].eq_ignore_ascii_case("profiles")
+                && segments[1].chars().all(|c| c.is_ascii_digit())
+            {
                 return Ok(segments[1].clone());
             }
             if segments[0].eq_ignore_ascii_case("id") {
@@ -6845,7 +7272,10 @@ async fn resolve_steam_profile_id(api_key: &str, profile_ref: &str) -> Result<St
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Steam vanity lookup failed with status {}: {}", status, body));
+        return Err(format!(
+            "Steam vanity lookup failed with status {}: {}",
+            status, body
+        ));
     }
 
     let payload: SteamResolveVanityResponse = response
@@ -6853,7 +7283,10 @@ async fn resolve_steam_profile_id(api_key: &str, profile_ref: &str) -> Result<St
         .await
         .map_err(|e| format!("Failed to parse Steam vanity lookup response: {}", e))?;
     if payload.response.success != 1 {
-        return Err(payload.response.message.unwrap_or_else(|| "Steam vanity lookup failed".to_string()));
+        return Err(payload
+            .response
+            .message
+            .unwrap_or_else(|| "Steam vanity lookup failed".to_string()));
     }
 
     payload
@@ -6949,7 +7382,10 @@ fn import_steam_library() -> Vec<SteamLibraryEntry> {
 }
 
 #[tauri::command]
-async fn fetch_steam_owned_games(api_key: String, profile_ref: String) -> Result<Vec<SteamOwnedGame>, String> {
+async fn fetch_steam_owned_games(
+    api_key: String,
+    profile_ref: String,
+) -> Result<Vec<SteamOwnedGame>, String> {
     let api_key_trimmed = api_key.trim();
     if api_key_trimmed.is_empty() {
         return Err("Steam Web API key cannot be empty".to_string());
@@ -6973,7 +7409,10 @@ async fn fetch_steam_owned_games(api_key: String, profile_ref: String) -> Result
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Steam owned-games request failed with status {}: {}", status, body));
+        return Err(format!(
+            "Steam owned-games request failed with status {}: {}",
+            status, body
+        ));
     }
 
     let payload: SteamOwnedGamesResponse = response
@@ -7037,7 +7476,11 @@ fn epic_legendary_status() -> EpicLegendaryStatus {
             version: None,
             display_name: None,
             install_url,
-            last_error: Some(String::from_utf8_lossy(&version_output.stderr).trim().to_string()),
+            last_error: Some(
+                String::from_utf8_lossy(&version_output.stderr)
+                    .trim()
+                    .to_string(),
+            ),
         };
     }
 
@@ -7092,9 +7535,10 @@ fn fetch_epic_owned_games() -> Result<Vec<EpicOwnedGame>, String> {
             .unwrap_or_else(|| "Legendary is not installed.".to_string()));
     }
     if !status.authenticated {
-        return Err(status
-            .last_error
-            .unwrap_or_else(|| "Legendary is installed but not authenticated yet. Run Legendary auth first.".to_string()));
+        return Err(status.last_error.unwrap_or_else(|| {
+            "Legendary is installed but not authenticated yet. Run Legendary auth first."
+                .to_string()
+        }));
     }
 
     let owned_json = run_legendary_json(&["list", "--json"])?;
@@ -7116,7 +7560,8 @@ fn fetch_epic_owned_games() -> Result<Vec<EpicOwnedGame>, String> {
                 match by_app_name.get_mut(&key) {
                     Some(existing) => {
                         existing.installed = true;
-                        existing.install_path = game.install_path.clone().or(existing.install_path.clone());
+                        existing.install_path =
+                            game.install_path.clone().or(existing.install_path.clone());
                         existing.exe = game.exe.clone().or(existing.exe.clone());
                         existing.version = game.version.clone().or(existing.version.clone());
                         if existing.title.trim().is_empty() {
@@ -7276,7 +7721,11 @@ fn parse_localconfig_vdf(src: &str, out: &mut Vec<SteamEntry>) {
         }
     }
 
-    out.extend(collected.into_values().filter(|entry| entry.played_minutes > 0));
+    out.extend(
+        collected
+            .into_values()
+            .filter(|entry| entry.played_minutes > 0),
+    );
 }
 
 fn quoted_value(s: &str) -> Option<&str> {
@@ -7443,13 +7892,33 @@ fn resolve_sync_conflicts(request: SyncConflictRequest) -> SyncConflictResolutio
         let remote = remote_entries.get(&key);
         let base = base_entries.get(&key);
         let (resolved, resolution, reason, requires_manual) = if local == remote {
-            (local.cloned().or_else(|| remote.cloned()), "same", "Local and remote already match", false)
+            (
+                local.cloned().or_else(|| remote.cloned()),
+                "same",
+                "Local and remote already match",
+                false,
+            )
         } else if base.is_some() && local == base {
-            (remote.cloned(), "remote", "Remote changed while local stayed at base", false)
+            (
+                remote.cloned(),
+                "remote",
+                "Remote changed while local stayed at base",
+                false,
+            )
         } else if base.is_some() && remote == base {
-            (local.cloned(), "local", "Local changed while remote stayed at base", false)
+            (
+                local.cloned(),
+                "local",
+                "Local changed while remote stayed at base",
+                false,
+            )
         } else if local.is_none() && remote.is_some() {
-            (remote.cloned(), "remote", "Only remote has this entry", false)
+            (
+                remote.cloned(),
+                "remote",
+                "Only remote has this entry",
+                false,
+            )
         } else if remote.is_none() && local.is_some() {
             (local.cloned(), "local", "Only local has this entry", false)
         } else {
@@ -7523,7 +7992,8 @@ fn apply_backup_retention_policy(
     policy: BackupRetentionPolicy,
 ) -> Result<BackupRetentionApplyResult, String> {
     let (snapshots_deleted, snapshots_kept) = prune_dir_with_retention(&snapshots_dir(), &policy);
-    let (save_backups_deleted, save_backups_kept) = prune_dir_with_retention(&save_backups_dir(), &policy);
+    let (save_backups_deleted, save_backups_kept) =
+        prune_dir_with_retention(&save_backups_dir(), &policy);
     Ok(BackupRetentionApplyResult {
         snapshots_deleted,
         save_backups_deleted,
@@ -7601,9 +8071,12 @@ fn migrate_state_store(mut store: StateStore) -> Result<StateStore, String> {
         push_rust_log(None, "info", "Migrating state store from v0 to v1");
         store.schema_version = 1;
     }
-    
+
     if store.schema_version != CURRENT_SCHEMA_VERSION {
-        return Err(format!("Schema migration stopped at unsupported version {}", store.schema_version));
+        return Err(format!(
+            "Schema migration stopped at unsupported version {}",
+            store.schema_version
+        ));
     }
     Ok(store)
 }
@@ -7618,14 +8091,23 @@ fn get_storage_bootstrap() -> Result<StorageBootstrap, String> {
         let raw = std::fs::read_to_string(&state_path).map_err(|e| e.to_string())?;
         serde_json::from_str::<StateStore>(&raw).unwrap_or_else(|_| {
             let entries: HashMap<String, String> = serde_json::from_str(&raw).unwrap_or_default();
-            StateStore { schema_version: 0, entries }
+            StateStore {
+                schema_version: 0,
+                entries,
+            }
         })
     } else if legacy_portable_path.exists() {
         let raw = std::fs::read_to_string(&legacy_portable_path).map_err(|e| e.to_string())?;
         let entries: HashMap<String, String> = serde_json::from_str(&raw).unwrap_or_default();
-        StateStore { schema_version: 0, entries }
+        StateStore {
+            schema_version: 0,
+            entries,
+        }
     } else {
-        StateStore { schema_version: CURRENT_SCHEMA_VERSION, entries: HashMap::new() }
+        StateStore {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            entries: HashMap::new(),
+        }
     };
 
     if initial_store.schema_version < CURRENT_SCHEMA_VERSION {
@@ -7639,13 +8121,20 @@ fn get_storage_bootstrap() -> Result<StorageBootstrap, String> {
             Ok(migrated) => {
                 let raw = serde_json::to_string(&migrated).map_err(|e| e.to_string())?;
                 if let Err(e) = atomic_write_string(&state_path, &raw, "schema_migration") {
-                    push_rust_log(None, "error", format!("Failed to save migrated state: {}", e));
+                    push_rust_log(
+                        None,
+                        "error",
+                        format!("Failed to save migrated state: {}", e),
+                    );
                     return Err(e);
                 }
                 initial_store = migrated;
             }
             Err(e) => {
-                return Err(format!("Storage migration failed (rolled back / aborting): {}", e));
+                return Err(format!(
+                    "Storage migration failed (rolled back / aborting): {}",
+                    e
+                ));
             }
         }
     }
@@ -7661,12 +8150,12 @@ fn persist_storage_snapshot(entries: HashMap<String, String>) -> Result<(), Stri
     let dir = app_data_root();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(STATE_STORAGE_FILE);
-    
+
     let store = StateStore {
         schema_version: CURRENT_SCHEMA_VERSION,
         entries,
     };
-    
+
     let raw = serde_json::to_string(&store).map_err(|e| e.to_string())?;
     atomic_write_string(&path, &raw, "persist_storage_snapshot")
 }
@@ -7714,7 +8203,9 @@ fn parse_state_store(raw: &str) -> Result<StateStore, String> {
     })
 }
 
-fn load_sync_base_entries(provider_type: sync::SyncProviderType) -> Result<HashMap<String, String>, String> {
+fn load_sync_base_entries(
+    provider_type: sync::SyncProviderType,
+) -> Result<HashMap<String, String>, String> {
     let path = sync_base_state_path();
     if !path.exists() {
         let legacy_path = legacy_sync_base_state_path();
@@ -7800,19 +8291,32 @@ fn parse_sync_config(raw: &str) -> Result<sync::SyncProviderConfig, String> {
 
 fn sync_secret_pairs(config: &sync::SyncProviderConfig) -> Vec<(&'static str, Option<String>)> {
     match config {
-        sync::SyncProviderConfig::Webdav(cfg) => vec![("sync::webdav::password", Some(cfg.password.clone()))],
-        sync::SyncProviderConfig::Nextcloud(cfg) => vec![("sync::nextcloud::password", Some(cfg.password.clone()))],
+        sync::SyncProviderConfig::Webdav(cfg) => {
+            vec![("sync::webdav::password", Some(cfg.password.clone()))]
+        }
+        sync::SyncProviderConfig::Nextcloud(cfg) => {
+            vec![("sync::nextcloud::password", Some(cfg.password.clone()))]
+        }
         sync::SyncProviderConfig::S3(cfg) => vec![
             ("sync::s3::access_key", Some(cfg.access_key.clone())),
             ("sync::s3::secret_key", Some(cfg.secret_key.clone())),
         ],
         sync::SyncProviderConfig::Git(cfg) => vec![("sync::git::password", cfg.password.clone())],
         sync::SyncProviderConfig::GoogleDrive(cfg) => vec![
-            ("sync::google_drive::access_token", Some(cfg.access_token.clone())),
-            ("sync::google_drive::refresh_token", cfg.refresh_token.clone()),
+            (
+                "sync::google_drive::access_token",
+                Some(cfg.access_token.clone()),
+            ),
+            (
+                "sync::google_drive::refresh_token",
+                cfg.refresh_token.clone(),
+            ),
         ],
         sync::SyncProviderConfig::Dropbox(cfg) => vec![
-            ("sync::dropbox::access_token", Some(cfg.access_token.clone())),
+            (
+                "sync::dropbox::access_token",
+                Some(cfg.access_token.clone()),
+            ),
             ("sync::dropbox::refresh_token", cfg.refresh_token.clone()),
         ],
     }
@@ -7820,18 +8324,22 @@ fn sync_secret_pairs(config: &sync::SyncProviderConfig) -> Vec<(&'static str, Op
 
 fn sync_config_without_secrets(config: &sync::SyncProviderConfig) -> sync::SyncProviderConfig {
     match config {
-        sync::SyncProviderConfig::Webdav(cfg) => sync::SyncProviderConfig::Webdav(sync::WebdavConfig {
-            url: cfg.url.clone(),
-            username: cfg.username.clone(),
-            password: String::new(),
-            path: cfg.path.clone(),
-        }),
-        sync::SyncProviderConfig::Nextcloud(cfg) => sync::SyncProviderConfig::Nextcloud(sync::NextcloudConfig {
-            url: cfg.url.clone(),
-            username: cfg.username.clone(),
-            password: String::new(),
-            path: cfg.path.clone(),
-        }),
+        sync::SyncProviderConfig::Webdav(cfg) => {
+            sync::SyncProviderConfig::Webdav(sync::WebdavConfig {
+                url: cfg.url.clone(),
+                username: cfg.username.clone(),
+                password: String::new(),
+                path: cfg.path.clone(),
+            })
+        }
+        sync::SyncProviderConfig::Nextcloud(cfg) => {
+            sync::SyncProviderConfig::Nextcloud(sync::NextcloudConfig {
+                url: cfg.url.clone(),
+                username: cfg.username.clone(),
+                password: String::new(),
+                path: cfg.path.clone(),
+            })
+        }
         sync::SyncProviderConfig::S3(cfg) => sync::SyncProviderConfig::S3(sync::S3Config {
             bucket: cfg.bucket.clone(),
             region: cfg.region.clone(),
@@ -7847,22 +8355,28 @@ fn sync_config_without_secrets(config: &sync::SyncProviderConfig) -> sync::SyncP
             password: None,
             ssh_key_path: cfg.ssh_key_path.clone(),
         }),
-        sync::SyncProviderConfig::GoogleDrive(cfg) => sync::SyncProviderConfig::GoogleDrive(sync::GoogleDriveConfig {
-            access_token: String::new(),
-            file_name: cfg.file_name.clone(),
-            client_id: cfg.client_id.clone(),
-            refresh_token: None,
-        }),
-        sync::SyncProviderConfig::Dropbox(cfg) => sync::SyncProviderConfig::Dropbox(sync::DropboxConfig {
-            access_token: String::new(),
-            path: cfg.path.clone(),
-            client_id: cfg.client_id.clone(),
-            refresh_token: None,
-        }),
+        sync::SyncProviderConfig::GoogleDrive(cfg) => {
+            sync::SyncProviderConfig::GoogleDrive(sync::GoogleDriveConfig {
+                access_token: String::new(),
+                file_name: cfg.file_name.clone(),
+                client_id: cfg.client_id.clone(),
+                refresh_token: None,
+            })
+        }
+        sync::SyncProviderConfig::Dropbox(cfg) => {
+            sync::SyncProviderConfig::Dropbox(sync::DropboxConfig {
+                access_token: String::new(),
+                path: cfg.path.clone(),
+                client_id: cfg.client_id.clone(),
+                refresh_token: None,
+            })
+        }
     }
 }
 
-fn hydrate_sync_config_secrets(config: sync::SyncProviderConfig) -> Result<sync::SyncProviderConfig, String> {
+fn hydrate_sync_config_secrets(
+    config: sync::SyncProviderConfig,
+) -> Result<sync::SyncProviderConfig, String> {
     Ok(match config {
         sync::SyncProviderConfig::Webdav(mut cfg) => {
             cfg.password = vault_get_secret("sync::webdav::password")?.unwrap_or_default();
@@ -7882,7 +8396,8 @@ fn hydrate_sync_config_secrets(config: sync::SyncProviderConfig) -> Result<sync:
             sync::SyncProviderConfig::Git(cfg)
         }
         sync::SyncProviderConfig::GoogleDrive(mut cfg) => {
-            cfg.access_token = vault_get_secret("sync::google_drive::access_token")?.unwrap_or_default();
+            cfg.access_token =
+                vault_get_secret("sync::google_drive::access_token")?.unwrap_or_default();
             cfg.refresh_token = vault_get_secret("sync::google_drive::refresh_token")?;
             sync::SyncProviderConfig::GoogleDrive(cfg)
         }
@@ -7915,15 +8430,16 @@ async fn sync_configure(config: sync::SyncProviderConfig) -> Result<(), String> 
     let dir = profile_file_path("");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = sync_config_path();
-    
-    let raw = serde_json::to_string(&sync_config_without_secrets(&config)).map_err(|e| e.to_string())?;
+
+    let raw =
+        serde_json::to_string(&sync_config_without_secrets(&config)).map_err(|e| e.to_string())?;
     atomic_write_string(&path, &raw, "sync_configure")
 }
 
 #[tauri::command]
 async fn sync_get_config() -> Result<Option<sync::SyncProviderConfig>, String> {
     let path = sync_config_path();
-    
+
     if !path.exists() {
         let legacy_path = legacy_sync_config_path();
         if !legacy_path.exists() {
@@ -7935,21 +8451,26 @@ async fn sync_get_config() -> Result<Option<sync::SyncProviderConfig>, String> {
         let _ = std::fs::remove_file(legacy_path);
         return Ok(Some(config));
     }
-    
+
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let config = parse_sync_config(&raw)?;
     Ok(Some(hydrate_sync_config_secrets(config)?))
 }
 
 async fn load_effective_sync_config() -> Result<sync::SyncProviderConfig, String> {
-    let config = sync_get_config().await?.ok_or("No sync configuration found")?;
+    let config = sync_get_config()
+        .await?
+        .ok_or("No sync configuration found")?;
     let refreshed = sync::refresh_oauth_config(config).await?;
     sync_configure(refreshed.clone()).await?;
     Ok(refreshed)
 }
 
 #[tauri::command]
-fn sync_start_oauth(provider: String, client_id: String) -> Result<sync::SyncOAuthStartResult, String> {
+fn sync_start_oauth(
+    provider: String,
+    client_id: String,
+) -> Result<sync::SyncOAuthStartResult, String> {
     let provider = match provider.as_str() {
         "google-drive" => sync::SyncProviderType::GoogleDrive,
         "dropbox" => sync::SyncProviderType::Dropbox,
@@ -7959,25 +8480,37 @@ fn sync_start_oauth(provider: String, client_id: String) -> Result<sync::SyncOAu
 }
 
 #[tauri::command]
-async fn sync_complete_oauth_callback(callback_url: String) -> Result<sync::SyncProviderConfig, String> {
+async fn sync_complete_oauth_callback(
+    callback_url: String,
+) -> Result<sync::SyncProviderConfig, String> {
     let oauth_config = sync::complete_oauth_callback(&callback_url).await?;
     let merged_config = match (sync_get_config().await?, oauth_config) {
-        (Some(sync::SyncProviderConfig::GoogleDrive(existing)), sync::SyncProviderConfig::GoogleDrive(oauth)) => {
-            sync::SyncProviderConfig::GoogleDrive(sync::GoogleDriveConfig {
-                access_token: oauth.access_token,
-                file_name: if existing.file_name.trim().is_empty() { oauth.file_name } else { existing.file_name },
-                client_id: oauth.client_id.or(existing.client_id),
-                refresh_token: oauth.refresh_token.or(existing.refresh_token),
-            })
-        }
-        (Some(sync::SyncProviderConfig::Dropbox(existing)), sync::SyncProviderConfig::Dropbox(oauth)) => {
-            sync::SyncProviderConfig::Dropbox(sync::DropboxConfig {
-                access_token: oauth.access_token,
-                path: if existing.path.trim().is_empty() { oauth.path } else { existing.path },
-                client_id: oauth.client_id.or(existing.client_id),
-                refresh_token: oauth.refresh_token.or(existing.refresh_token),
-            })
-        }
+        (
+            Some(sync::SyncProviderConfig::GoogleDrive(existing)),
+            sync::SyncProviderConfig::GoogleDrive(oauth),
+        ) => sync::SyncProviderConfig::GoogleDrive(sync::GoogleDriveConfig {
+            access_token: oauth.access_token,
+            file_name: if existing.file_name.trim().is_empty() {
+                oauth.file_name
+            } else {
+                existing.file_name
+            },
+            client_id: oauth.client_id.or(existing.client_id),
+            refresh_token: oauth.refresh_token.or(existing.refresh_token),
+        }),
+        (
+            Some(sync::SyncProviderConfig::Dropbox(existing)),
+            sync::SyncProviderConfig::Dropbox(oauth),
+        ) => sync::SyncProviderConfig::Dropbox(sync::DropboxConfig {
+            access_token: oauth.access_token,
+            path: if existing.path.trim().is_empty() {
+                oauth.path
+            } else {
+                existing.path
+            },
+            client_id: oauth.client_id.or(existing.client_id),
+            refresh_token: oauth.refresh_token.or(existing.refresh_token),
+        }),
         (_, config) => config,
     };
     sync_configure(merged_config.clone()).await?;
@@ -8053,7 +8586,10 @@ async fn sync_upload() -> Result<sync::SyncResult, String> {
         if report.conflict_count > 0 {
             return Ok(sync::SyncResult {
                 success: false,
-                message: format!("Conflicts detected: {} entries need manual resolution", report.conflict_count),
+                message: format!(
+                    "Conflicts detected: {} entries need manual resolution",
+                    report.conflict_count
+                ),
                 conflicts_detected: true,
                 entries_synced: 0,
             });
@@ -8069,7 +8605,10 @@ async fn sync_upload() -> Result<sync::SyncResult, String> {
     };
     let merged_raw = serde_json::to_string(&merged_store).map_err(|e| e.to_string())?;
     let metadata = sync::SyncMetadata {
-        last_sync_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+        last_sync_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
         last_sync_hash: sync::compute_hash(&merged_raw),
         provider_type: provider_type.clone(),
     };
@@ -8080,7 +8619,7 @@ async fn sync_upload() -> Result<sync::SyncResult, String> {
 
     provider.upload(&merged_raw, &metadata).await?;
     persist_sync_base_entries(provider_type, &merged_store.entries)?;
-    
+
     Ok(sync::SyncResult {
         success: true,
         message: "State synced to remote successfully".to_string(),
@@ -8112,7 +8651,10 @@ async fn sync_download() -> Result<sync::SyncResult, String> {
     if report.conflict_count > 0 {
         return Ok(sync::SyncResult {
             success: false,
-            message: format!("Conflicts detected: {} entries need manual resolution", report.conflict_count),
+            message: format!(
+                "Conflicts detected: {} entries need manual resolution",
+                report.conflict_count
+            ),
             conflicts_detected: true,
             entries_synced: 0,
         });
@@ -8130,7 +8672,10 @@ async fn sync_download() -> Result<sync::SyncResult, String> {
 
     if merged_raw != remote_raw {
         let metadata = sync::SyncMetadata {
-            last_sync_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            last_sync_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             last_sync_hash: sync::compute_hash(&merged_raw),
             provider_type: provider_type.clone(),
         };
@@ -8138,7 +8683,7 @@ async fn sync_download() -> Result<sync::SyncResult, String> {
     }
 
     persist_sync_base_entries(provider_type, &merged_store.entries)?;
-    
+
     Ok(sync::SyncResult {
         success: true,
         message: "State downloaded and merged successfully".to_string(),
@@ -8148,7 +8693,9 @@ async fn sync_download() -> Result<sync::SyncResult, String> {
 }
 
 #[tauri::command]
-async fn sync_resolve_conflicts(resolution: HashMap<String, String>) -> Result<sync::SyncResult, String> {
+async fn sync_resolve_conflicts(
+    resolution: HashMap<String, String>,
+) -> Result<sync::SyncResult, String> {
     let config = load_effective_sync_config().await?;
     let provider = sync::create_provider(config)?;
     let provider_type = provider.provider_type();
@@ -8190,13 +8737,16 @@ async fn sync_resolve_conflicts(resolution: HashMap<String, String>) -> Result<s
     atomic_write_string(&state_path, &merged_raw, "sync_resolve_conflicts")?;
 
     let metadata = sync::SyncMetadata {
-        last_sync_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+        last_sync_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
         last_sync_hash: sync::compute_hash(&merged_raw),
         provider_type: provider_type.clone(),
     };
     provider.upload(&merged_raw, &metadata).await?;
     persist_sync_base_entries(provider_type, &merged_store.entries)?;
-    
+
     Ok(sync::SyncResult {
         success: true,
         message: "Conflicts resolved and state synced".to_string(),
@@ -8402,7 +8952,12 @@ pub fn run() {
             }));
 
             // ── System tray ───────────────────────────────────────────────
-            let initial_profiles = app.state::<LibraryProfilesState>().0.lock().unwrap().clone();
+            let initial_profiles = app
+                .state::<LibraryProfilesState>()
+                .0
+                .lock()
+                .unwrap()
+                .clone();
             let initial_menu = build_tray_menu(app.handle(), &[], &initial_profiles)?;
             #[allow(unused_mut)]
             let mut tray_builder = TrayIconBuilder::with_id("main-tray")
@@ -8424,7 +8979,11 @@ pub fn run() {
                             let profile_id = id["profile_switch_".len()..].to_string();
                             let profiles_state = app.state::<LibraryProfilesState>();
                             let mut registry = profiles_state.0.lock().unwrap();
-                            if registry.profiles.iter().any(|profile| profile.id == profile_id) {
+                            if registry
+                                .profiles
+                                .iter()
+                                .any(|profile| profile.id == profile_id)
+                            {
                                 registry.active_profile_id = profile_id;
                                 let _ = save_library_profile_registry(&registry);
                                 let snapshot = registry.clone();

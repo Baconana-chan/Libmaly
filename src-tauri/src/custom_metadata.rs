@@ -138,8 +138,8 @@ fn read_store() -> Result<CustomMetadataTemplateStore, String> {
         return Ok(CustomMetadataTemplateStore::default());
     }
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut store: CustomMetadataTemplateStore =
-        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse custom metadata template store: {e}"))?;
+    let mut store: CustomMetadataTemplateStore = serde_json::from_str(&raw)
+        .map_err(|e| format!("Failed to parse custom metadata template store: {e}"))?;
     if store.version == 0 {
         store.version = CUSTOM_METADATA_STORE_VERSION;
     }
@@ -197,7 +197,10 @@ fn normalize_template(template: &mut CustomMetadataTemplate) -> Result<(), Strin
         return Err("Custom metadata template is missing a usable id".to_string());
     }
     if template.name.is_empty() {
-        return Err(format!("Custom metadata template '{}' is missing a name", template.id));
+        return Err(format!(
+            "Custom metadata template '{}' is missing a name",
+            template.id
+        ));
     }
     if template.url_patterns.is_empty() {
         return Err(format!(
@@ -212,13 +215,19 @@ fn normalize_template(template: &mut CustomMetadataTemplate) -> Result<(), Strin
         ));
     }
     for pattern in &template.url_patterns {
-        RegexBuilder::new(pattern)
-            .build()
-            .map_err(|e| format!("Invalid url pattern '{pattern}' in template '{}': {e}", template.id))?;
+        RegexBuilder::new(pattern).build().map_err(|e| {
+            format!(
+                "Invalid url pattern '{pattern}' in template '{}': {e}",
+                template.id
+            )
+        })?;
     }
     for (field, extractors) in &template.fields {
         if extractors.is_empty() {
-            return Err(format!("Field '{field}' in template '{}' has no extractors", template.id));
+            return Err(format!(
+                "Field '{field}' in template '{}' has no extractors",
+                template.id
+            ));
         }
         for extractor in extractors {
             validate_extractor(&template.id, field, extractor)?;
@@ -227,7 +236,11 @@ fn normalize_template(template: &mut CustomMetadataTemplate) -> Result<(), Strin
     Ok(())
 }
 
-fn validate_extractor(template_id: &str, field: &str, extractor: &CustomMetadataExtractor) -> Result<(), String> {
+fn validate_extractor(
+    template_id: &str,
+    field: &str,
+    extractor: &CustomMetadataExtractor,
+) -> Result<(), String> {
     let kind = extractor.kind.trim().to_ascii_lowercase();
     if kind.is_empty() {
         return Err(format!(
@@ -236,28 +249,52 @@ fn validate_extractor(template_id: &str, field: &str, extractor: &CustomMetadata
     }
     match kind.as_str() {
         "css" => {
-            if extractor.selector.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+            if extractor
+                .selector
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+            {
                 return Err(format!(
                     "Template '{template_id}' field '{field}' css extractor is missing selector"
                 ));
             }
         }
         "regex" => {
-            if extractor.pattern.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+            if extractor
+                .pattern
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+            {
                 return Err(format!(
                     "Template '{template_id}' field '{field}' regex extractor is missing pattern"
                 ));
             }
         }
         "literal" => {
-            if extractor.value.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+            if extractor
+                .value
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+            {
                 return Err(format!(
                     "Template '{template_id}' field '{field}' literal extractor is missing value"
                 ));
             }
         }
         "js" => {
-            if extractor.script.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+            if extractor
+                .script
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+            {
                 return Err(format!(
                     "Template '{template_id}' field '{field}' js extractor is missing script"
                 ));
@@ -354,7 +391,12 @@ fn extract_seed_values(
     let multiple = extractor.multiple;
     let mut out = match kind.as_str() {
         "css" | "js"
-            if extractor.selector.as_deref().map(str::trim).unwrap_or_default().is_empty()
+            if extractor
+                .selector
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
                 && extractor.pattern.is_none()
                 && extractor.value.is_none() =>
         {
@@ -384,7 +426,9 @@ fn extract_seed_values(
             html,
             multiple,
         )?,
-        "literal" | "js" if extractor.value.is_some() => extractor.value.clone().into_iter().collect(),
+        "literal" | "js" if extractor.value.is_some() => {
+            extractor.value.clone().into_iter().collect()
+        }
         "regex" => extract_regex_values(
             extractor.pattern.as_deref().unwrap_or_default(),
             extractor.flags.as_deref(),
@@ -441,7 +485,12 @@ fn finalize_values(mut values: Vec<String>, extractor: &CustomMetadataExtractor)
     values
 }
 
-fn run_js_hook(script: &str, html: &str, url: &str, values: &[String]) -> Result<Vec<String>, String> {
+fn run_js_hook(
+    script: &str,
+    html: &str,
+    url: &str,
+    values: &[String],
+) -> Result<Vec<String>, String> {
     let input = JsHookInput {
         value: values.first().map(String::as_str),
         values,
@@ -499,7 +548,11 @@ fn extract_field_values(
     let mut collected = Vec::new();
     for extractor in extractors {
         let mut values = extract_seed_values(extractor, html, document, url)?;
-        if let Some(script) = extractor.script.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(script) = extractor
+            .script
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             values = run_js_hook(script, html, url, &values)?;
             values = finalize_values(values, extractor);
         }
@@ -507,7 +560,10 @@ fn extract_field_values(
             collected.extend(values);
             continue;
         }
-        if let Some(value) = values.into_iter().find(|candidate| !candidate.trim().is_empty()) {
+        if let Some(value) = values
+            .into_iter()
+            .find(|candidate| !candidate.trim().is_empty())
+        {
             return Ok(vec![value]);
         }
     }
@@ -576,9 +632,12 @@ fn dedupe_strings(values: Vec<String>) -> Vec<String> {
 
 fn template_matches_url(template: &CustomMetadataTemplate, url: &str) -> Result<bool, String> {
     for pattern in &template.url_patterns {
-        let regex = RegexBuilder::new(pattern)
-            .build()
-            .map_err(|e| format!("Invalid url pattern '{pattern}' in template '{}': {e}", template.id))?;
+        let regex = RegexBuilder::new(pattern).build().map_err(|e| {
+            format!(
+                "Invalid url pattern '{pattern}' in template '{}': {e}",
+                template.id
+            )
+        })?;
         if regex.is_match(url) {
             return Ok(true);
         }
@@ -600,7 +659,10 @@ pub fn list_template_summaries() -> Result<Vec<CustomMetadataTemplateSummary>, S
     Ok(templates.iter().map(template_summary).collect())
 }
 
-pub fn find_matching_template(url: &str, include_override_only: Option<bool>) -> Result<Option<CustomMetadataTemplate>, String> {
+pub fn find_matching_template(
+    url: &str,
+    include_override_only: Option<bool>,
+) -> Result<Option<CustomMetadataTemplate>, String> {
     let templates = load_templates()?;
     for template in templates {
         if !template.enabled {
@@ -625,23 +687,32 @@ pub fn find_template_by_source(source: &str) -> Result<Option<CustomMetadataTemp
         .find(|template| template.id == template_id && template.enabled))
 }
 
-pub async fn fetch_custom_metadata(url: &str, template: &CustomMetadataTemplate) -> Result<GameMetadata, String> {
+pub async fn fetch_custom_metadata(
+    url: &str,
+    template: &CustomMetadataTemplate,
+) -> Result<GameMetadata, String> {
     let mut headers = HeaderMap::new();
     for (name, value) in &template.request_headers {
         let header_name = HeaderName::from_bytes(name.trim().as_bytes()).map_err(|e| {
-            format!("Invalid request header name '{}' in template '{}': {e}", name, template.id)
+            format!(
+                "Invalid request header name '{}' in template '{}': {e}",
+                name, template.id
+            )
         })?;
         let header_value = HeaderValue::from_str(value.trim()).map_err(|e| {
-            format!("Invalid request header value for '{}' in template '{}': {e}", name, template.id)
+            format!(
+                "Invalid request header value for '{}' in template '{}': {e}",
+                name, template.id
+            )
         })?;
         headers.insert(header_name, header_value);
     }
-    let response = http()
-        .get(url)
-        .headers(headers)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed for custom template '{}': {e}", template.name))?;
+    let response = http().get(url).headers(headers).send().await.map_err(|e| {
+        format!(
+            "Request failed for custom template '{}': {e}",
+            template.name
+        )
+    })?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("{} returned HTTP {}", template.name, status));
@@ -724,7 +795,9 @@ pub fn custom_metadata_export_templates_to_path(path: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn custom_metadata_import_templates(json_text: String) -> Result<Vec<CustomMetadataTemplateSummary>, String> {
+pub fn custom_metadata_import_templates(
+    json_text: String,
+) -> Result<Vec<CustomMetadataTemplateSummary>, String> {
     let imported = parse_import_payload(&json_text)?;
     let mut store = read_store()?;
     let mut next = store.templates;
@@ -744,13 +817,17 @@ pub fn custom_metadata_import_templates(json_text: String) -> Result<Vec<CustomM
 }
 
 #[tauri::command]
-pub fn custom_metadata_import_templates_from_path(path: String) -> Result<Vec<CustomMetadataTemplateSummary>, String> {
+pub fn custom_metadata_import_templates_from_path(
+    path: String,
+) -> Result<Vec<CustomMetadataTemplateSummary>, String> {
     let raw = std::fs::read_to_string(Path::new(&path)).map_err(|e| e.to_string())?;
     custom_metadata_import_templates(raw)
 }
 
 #[tauri::command]
-pub fn custom_metadata_delete_template(id: String) -> Result<Vec<CustomMetadataTemplateSummary>, String> {
+pub fn custom_metadata_delete_template(
+    id: String,
+) -> Result<Vec<CustomMetadataTemplateSummary>, String> {
     let mut store = read_store()?;
     let before = store.templates.len();
     store.templates.retain(|template| template.id != id);
@@ -762,7 +839,9 @@ pub fn custom_metadata_delete_template(id: String) -> Result<Vec<CustomMetadataT
 }
 
 #[tauri::command]
-pub fn custom_metadata_match_source(url: String) -> Result<Option<CustomMetadataSourceMatch>, String> {
+pub fn custom_metadata_match_source(
+    url: String,
+) -> Result<Option<CustomMetadataSourceMatch>, String> {
     if let Some(template) = find_matching_template(&url, None)? {
         return Ok(Some(CustomMetadataSourceMatch {
             source: format!("custom:{}", template.id),
@@ -775,8 +854,15 @@ pub fn custom_metadata_match_source(url: String) -> Result<Option<CustomMetadata
 }
 
 #[tauri::command]
-pub async fn fetch_custom_metadata_command(url: String, template_id: String) -> Result<GameMetadata, String> {
-    let template = find_template_by_source(&format!("custom:{template_id}"))?
-        .ok_or_else(|| format!("Custom metadata template '{}' is not installed or is disabled", template_id))?;
+pub async fn fetch_custom_metadata_command(
+    url: String,
+    template_id: String,
+) -> Result<GameMetadata, String> {
+    let template = find_template_by_source(&format!("custom:{template_id}"))?.ok_or_else(|| {
+        format!(
+            "Custom metadata template '{}' is not installed or is disabled",
+            template_id
+        )
+    })?;
     fetch_custom_metadata(&url, &template).await
 }

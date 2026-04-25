@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -268,7 +268,8 @@ struct ButlerdClient {
 impl ButlerdClient {
     fn new(executable: &Path) -> Result<Self, String> {
         let db_dir = app_data_root().join("itch").join("butlerdb");
-        fs::create_dir_all(&db_dir).map_err(|e| format!("Failed to prepare butlerd data directory: {e}"))?;
+        fs::create_dir_all(&db_dir)
+            .map_err(|e| format!("Failed to prepare butlerd data directory: {e}"))?;
 
         let mut command = Command::new(executable);
         command
@@ -411,7 +412,8 @@ pub fn itch_butler_list_owned_games(
     let caves = fetch_caves(&mut client)?;
     let install_locations = list_install_locations(&mut client)?;
 
-    let mut caves_by_game: std::collections::HashMap<i64, Vec<&ItchCave>> = std::collections::HashMap::new();
+    let mut caves_by_game: std::collections::HashMap<i64, Vec<&ItchCave>> =
+        std::collections::HashMap::new();
     for cave in &caves {
         if let Some(game) = &cave.game {
             caves_by_game.entry(game.id).or_default().push(cave);
@@ -424,7 +426,11 @@ pub fn itch_butler_list_owned_games(
             let caves_for_game = caves_by_game.get(&record.id).cloned().unwrap_or_default();
             let install_folders = caves_for_game
                 .iter()
-                .filter_map(|cave| cave.install_info.as_ref().map(|info| info.install_folder.clone()))
+                .filter_map(|cave| {
+                    cave.install_info
+                        .as_ref()
+                        .map(|info| info.install_folder.clone())
+                })
                 .collect::<Vec<_>>();
             let cave_ids = caves_for_game
                 .iter()
@@ -432,9 +438,11 @@ pub fn itch_butler_list_owned_games(
                 .collect::<Vec<_>>();
             let primary_cave_id = cave_ids.first().cloned();
             let installed_at = record.installed_at.clone().or_else(|| {
-                caves_for_game
-                    .iter()
-                    .find_map(|cave| cave.stats.as_ref().and_then(|stats| stats.installed_at.clone()))
+                caves_for_game.iter().find_map(|cave| {
+                    cave.stats
+                        .as_ref()
+                        .and_then(|stats| stats.installed_at.clone())
+                })
             });
 
             ItchLibraryEntry {
@@ -480,11 +488,20 @@ pub fn itch_butler_install_game(
     let location = ensure_install_location(&mut client, install_path)?;
 
     let mut queue_params = serde_json::Map::new();
-    queue_params.insert("game".to_string(), serde_json::to_value(&game).map_err(|e| e.to_string())?);
-    queue_params.insert("upload".to_string(), serde_json::to_value(&upload).map_err(|e| e.to_string())?);
+    queue_params.insert(
+        "game".to_string(),
+        serde_json::to_value(&game).map_err(|e| e.to_string())?,
+    );
+    queue_params.insert(
+        "upload".to_string(),
+        serde_json::to_value(&upload).map_err(|e| e.to_string())?,
+    );
     queue_params.insert("installLocationId".to_string(), Value::String(location.id));
     if let Some(build) = &upload.build {
-        queue_params.insert("build".to_string(), serde_json::to_value(build).map_err(|e| e.to_string())?);
+        queue_params.insert(
+            "build".to_string(),
+            serde_json::to_value(build).map_err(|e| e.to_string())?,
+        );
     }
 
     let queued: InstallQueueResult = client.call("Install.Queue", Value::Object(queue_params))?;
@@ -559,10 +576,19 @@ pub fn itch_butler_apply_update(
     let mut queue_params = serde_json::Map::new();
     queue_params.insert("caveId".to_string(), Value::String(cave_id.clone()));
     queue_params.insert("reason".to_string(), Value::String("update".to_string()));
-    queue_params.insert("game".to_string(), serde_json::to_value(&game).map_err(|e| e.to_string())?);
-    queue_params.insert("upload".to_string(), serde_json::to_value(&upload).map_err(|e| e.to_string())?);
+    queue_params.insert(
+        "game".to_string(),
+        serde_json::to_value(&game).map_err(|e| e.to_string())?,
+    );
+    queue_params.insert(
+        "upload".to_string(),
+        serde_json::to_value(&upload).map_err(|e| e.to_string())?,
+    );
     if let Some(build) = build_id.and_then(|id| resolve_build_for_upload(&upload, id)) {
-        queue_params.insert("build".to_string(), serde_json::to_value(build).map_err(|e| e.to_string())?);
+        queue_params.insert(
+            "build".to_string(),
+            serde_json::to_value(build).map_err(|e| e.to_string())?,
+        );
     }
 
     let queued: InstallQueueResult = client.call("Install.Queue", Value::Object(queue_params))?;
@@ -604,10 +630,8 @@ fn login_with_api_key(client: &mut ButlerdClient, api_key: &str) -> Result<ItchP
     if trimmed.is_empty() {
         return Err("Enter an itch.io API key first".to_string());
     }
-    let result: ProfileLoginWithApiKeyResult = client.call(
-        "Profile.LoginWithAPIKey",
-        json!({ "apiKey": trimmed }),
-    )?;
+    let result: ProfileLoginWithApiKeyResult =
+        client.call("Profile.LoginWithAPIKey", json!({ "apiKey": trimmed }))?;
     Ok(result.profile)
 }
 
@@ -659,7 +683,10 @@ fn fetch_caves(client: &mut ButlerdClient) -> Result<Vec<ItchCave>, String> {
     loop {
         let mut payload = serde_json::Map::new();
         payload.insert("limit".to_string(), Value::Number(200.into()));
-        payload.insert("sortBy".to_string(), Value::String("installedAt".to_string()));
+        payload.insert(
+            "sortBy".to_string(),
+            Value::String("installedAt".to_string()),
+        );
         if let Some(value) = cursor.clone() {
             payload.insert("cursor".to_string(), Value::String(value));
         }
@@ -701,18 +728,13 @@ fn ensure_download_key_cached(
 }
 
 fn fetch_game(client: &mut ButlerdClient, game_id: i64) -> Result<ItchGame, String> {
-    let result: FetchGameResult = client.call(
-        "Fetch.Game",
-        json!({ "gameId": game_id, "fresh": true }),
-    )?;
+    let result: FetchGameResult =
+        client.call("Fetch.Game", json!({ "gameId": game_id, "fresh": true }))?;
     Ok(result.game)
 }
 
 fn find_uploads(client: &mut ButlerdClient, game: &ItchGame) -> Result<Vec<ItchUpload>, String> {
-    let result: GameFindUploadsResult = client.call(
-        "Game.FindUploads",
-        json!({ "game": game }),
-    )?;
+    let result: GameFindUploadsResult = client.call("Game.FindUploads", json!({ "game": game }))?;
     Ok(result.uploads)
 }
 
@@ -725,32 +747,41 @@ fn select_upload(mut uploads: Vec<ItchUpload>) -> Option<ItchUpload> {
             !is_default,
             is_demo,
             is_preorder,
-            upload.display_name.clone().unwrap_or_default().to_lowercase(),
+            upload
+                .display_name
+                .clone()
+                .unwrap_or_default()
+                .to_lowercase(),
         )
     });
     uploads.into_iter().next()
 }
 
-fn ensure_install_location(client: &mut ButlerdClient, path: &str) -> Result<ItchInstallLocation, String> {
+fn ensure_install_location(
+    client: &mut ButlerdClient,
+    path: &str,
+) -> Result<ItchInstallLocation, String> {
     let normalized = normalize_path(path);
     let existing = list_install_locations(client)?;
-    if let Some(location) = existing.into_iter().find(|item| normalize_path(&item.path) == normalized) {
+    if let Some(location) = existing
+        .into_iter()
+        .find(|item| normalize_path(&item.path) == normalized)
+    {
         return Ok(location);
     }
 
-    let response: Value = client.call(
-        "Install.Locations.Add",
-        json!({ "path": path }),
-    )?;
-    serde_json::from_value(response.get("installLocation").cloned().unwrap_or(Value::Null))
-        .map_err(|e| format!("Failed to decode added install location: {e}"))
+    let response: Value = client.call("Install.Locations.Add", json!({ "path": path }))?;
+    serde_json::from_value(
+        response
+            .get("installLocation")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| format!("Failed to decode added install location: {e}"))
 }
 
 fn fetch_cave(client: &mut ButlerdClient, cave_id: &str) -> Result<ItchCave, String> {
-    let result: FetchCaveResult = client.call(
-        "Fetch.Cave",
-        json!({ "caveId": cave_id }),
-    )?;
+    let result: FetchCaveResult = client.call("Fetch.Cave", json!({ "caveId": cave_id }))?;
     Ok(result.cave)
 }
 
@@ -786,12 +817,37 @@ fn common_butler_paths() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            candidates.push(PathBuf::from(&local_app_data).join("itch").join("bin").join("butler").join("butler.exe"));
-            candidates.push(PathBuf::from(&local_app_data).join("Programs").join("itch").join("butler.exe"));
-            candidates.push(PathBuf::from(&local_app_data).join("Programs").join("itch").join("resources").join("app.asar.unpacked").join("bin").join("butler.exe"));
+            candidates.push(
+                PathBuf::from(&local_app_data)
+                    .join("itch")
+                    .join("bin")
+                    .join("butler")
+                    .join("butler.exe"),
+            );
+            candidates.push(
+                PathBuf::from(&local_app_data)
+                    .join("Programs")
+                    .join("itch")
+                    .join("butler.exe"),
+            );
+            candidates.push(
+                PathBuf::from(&local_app_data)
+                    .join("Programs")
+                    .join("itch")
+                    .join("resources")
+                    .join("app.asar.unpacked")
+                    .join("bin")
+                    .join("butler.exe"),
+            );
         }
         if let Ok(app_data) = std::env::var("APPDATA") {
-            candidates.push(PathBuf::from(app_data).join("itch").join("bin").join("butler").join("butler.exe"));
+            candidates.push(
+                PathBuf::from(app_data)
+                    .join("itch")
+                    .join("bin")
+                    .join("butler")
+                    .join("butler.exe"),
+            );
         }
     }
     candidates
@@ -849,11 +905,16 @@ fn butler_version(executable: &Path) -> Result<String, String> {
 }
 
 fn normalize_path(path: &str) -> String {
-    path.replace('/', "\\").trim_end_matches('\\').to_lowercase()
+    path.replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase()
 }
 
 fn format_rpc_error(method: &str, error: &Value) -> String {
-    let code = error.get("code").and_then(Value::as_i64).unwrap_or_default();
+    let code = error
+        .get("code")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
     let message = error
         .get("message")
         .and_then(Value::as_str)

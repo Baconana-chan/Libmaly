@@ -29,23 +29,67 @@ pub struct VaultSummary {
 }
 
 const KNOWN_VAULT_ITEMS: &[(&str, &str, &str)] = &[
-    ("cookies::f95", "Storefront Sessions", "F95zone session cookies"),
-    ("cookies::dlsite", "Storefront Sessions", "DLsite session cookies"),
-    ("cookies::fakku", "Storefront Sessions", "FAKKU session cookies"),
-    ("api::itch_io", "Storefront Tokens", "itch.io Butler API key"),
+    (
+        "cookies::f95",
+        "Storefront Sessions",
+        "F95zone session cookies",
+    ),
+    (
+        "cookies::dlsite",
+        "Storefront Sessions",
+        "DLsite session cookies",
+    ),
+    (
+        "cookies::fakku",
+        "Storefront Sessions",
+        "FAKKU session cookies",
+    ),
+    (
+        "api::itch_io",
+        "Storefront Tokens",
+        "itch.io Butler API key",
+    ),
     ("api::igdb_client_id", "Metadata APIs", "IGDB client ID"),
-    ("api::igdb_client_secret", "Metadata APIs", "IGDB client secret"),
+    (
+        "api::igdb_client_secret",
+        "Metadata APIs",
+        "IGDB client secret",
+    ),
     ("api::rawg", "Metadata APIs", "RAWG API key"),
     ("api::mobygames", "Metadata APIs", "MobyGames API key"),
     ("sync::webdav::password", "Sync Secrets", "WebDAV password"),
-    ("sync::nextcloud::password", "Sync Secrets", "Nextcloud password"),
+    (
+        "sync::nextcloud::password",
+        "Sync Secrets",
+        "Nextcloud password",
+    ),
     ("sync::s3::access_key", "Sync Secrets", "S3 access key"),
     ("sync::s3::secret_key", "Sync Secrets", "S3 secret key"),
-    ("sync::git::password", "Sync Secrets", "Git password / personal access token"),
-    ("sync::google_drive::access_token", "Sync Secrets", "Google Drive access token"),
-    ("sync::google_drive::refresh_token", "Sync Secrets", "Google Drive refresh token"),
-    ("sync::dropbox::access_token", "Sync Secrets", "Dropbox access token"),
-    ("sync::dropbox::refresh_token", "Sync Secrets", "Dropbox refresh token"),
+    (
+        "sync::git::password",
+        "Sync Secrets",
+        "Git password / personal access token",
+    ),
+    (
+        "sync::google_drive::access_token",
+        "Sync Secrets",
+        "Google Drive access token",
+    ),
+    (
+        "sync::google_drive::refresh_token",
+        "Sync Secrets",
+        "Google Drive refresh token",
+    ),
+    (
+        "sync::dropbox::access_token",
+        "Sync Secrets",
+        "Dropbox access token",
+    ),
+    (
+        "sync::dropbox::refresh_token",
+        "Sync Secrets",
+        "Dropbox refresh token",
+    ),
 ];
 
 pub fn current_profile_id() -> String {
@@ -115,7 +159,10 @@ pub fn vault_list_entries() -> Result<VaultSummary, String> {
             has_value: get_secret(key)?.is_some(),
         });
     }
-    Ok(VaultSummary { profile_id, entries })
+    Ok(VaultSummary {
+        profile_id,
+        entries,
+    })
 }
 
 #[tauri::command]

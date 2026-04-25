@@ -32,7 +32,7 @@ pub fn is_portable_mode() -> bool {
 pub fn app_data_root() -> PathBuf {
     let is_dev = cfg!(debug_assertions);
     let suffix = if is_dev { "-dev" } else { "" };
-    
+
     if is_portable_mode() {
         executable_dir()
             .unwrap_or_else(|| PathBuf::from("."))

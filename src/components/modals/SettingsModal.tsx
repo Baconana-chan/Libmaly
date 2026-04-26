@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import SyncConflictModal from "./SyncConflictModal";
 import { addCustomLanguage, loadCustomLanguages, removeCustomLanguage } from "../../i18n";
 import { SK_COLLECTIONS, SK_GAMES, SK_META, SK_NOTES } from "../../lib/constants";
-import type { MetadataPostProcessingConfig, MetadataCleanupField, MetadataCleanupRuleType, MetadataCleanupRule, EmulatorProfile } from "../../App";
+import type { MetadataPostProcessingConfig, MetadataCleanupField, MetadataCleanupRuleType, MetadataCleanupRule, EmulatorProfile } from "../../types";
 import {
   syncConfigure,
   syncGetConfig,

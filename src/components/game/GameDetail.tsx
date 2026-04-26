@@ -1,114 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useTranslation } from "react-i18next";
 import type { PerGameMediaPlaybackAssessment } from "../../lib/mediaPlaybackKnowledge";
+import { RATING_CATEGORIES } from "../../lib/constants";
+import type {
+  AppSettings,
+  Game,
+  GameCustomization,
+  GameMetadata,
+  GameStats,
+  HistoryEntry,
+  RatingScale,
+  SessionEntry,
+  Screenshot,
+} from "../../types";
 import { InGameGallery } from "../InGameGallery";
 import { NsfwOverlay } from "../common/NsfwOverlay";
-
-interface Game {
-  name: string;
-  path: string;
-  uninstalled?: boolean;
-}
-
-interface GameStats {
-  totalTime: number;
-  lastPlayed: number;
-  lastSession: number;
-  launchCount: number;
-}
-
-interface SessionEntry {
-  id: string;
-  path: string;
-  startedAt: number;
-  duration: number;
-  note: string;
-  mood?: "hype" | "chill" | "chaos";
-}
-
-interface Screenshot {
-  path: string;
-  filename: string;
-  timestamp: number;
-  tags: string[];
-}
-
-interface HistoryEntry {
-  id: string;
-  date: number;
-  version: string;
-  note: string;
-}
-
-interface GameCustomization {
-  displayName?: string;
-  coverUrl?: string;
-  backgroundUrl?: string;
-  exeOverride?: string;
-  launchArgs?: string;
-  pinnedExes?: { name: string; path: string }[];
-  status?: "Playing" | "Completed" | "On Hold" | "Dropped" | "Plan to Play";
-  timeLimitMins?: number;
-  customTags?: string[];
-  personalRating?: number;
-  personalReview?: string;
-  overallScore100?: number;
-  ratingMode?: "manual" | "categories";
-  categoryRatings?: Partial<Record<RatingCategoryKey, number>>;
-  emulatorProfileId?: string;
-  romPath?: string;
-}
-
-type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
-type RatingCategoryKey = "gameplay" | "story" | "soundtrack" | "visuals" | "characters" | "performance";
-const RATING_CATEGORIES: { key: RatingCategoryKey; labelKey: string }[] = [
-  { key: "gameplay", labelKey: "game.rating_categories.gameplay" },
-  { key: "story", labelKey: "game.rating_categories.story" },
-  { key: "soundtrack", labelKey: "game.rating_categories.soundtrack" },
-  { key: "visuals", labelKey: "game.rating_categories.visuals" },
-  { key: "characters", labelKey: "game.rating_categories.characters" },
-  { key: "performance", labelKey: "game.rating_categories.performance" },
-];
-
-interface GameMetadata {
-  source: string;
-  source_label?: string;
-  source_url: string;
-  source_links?: { source: string; source_label?: string; source_url: string; fetchedAt?: number }[];
-  aggregated_sources?: string[];
-  title?: string;
-  version?: string;
-  developer?: string;
-  overview?: string;
-  overview_html?: string;
-  cover_url?: string;
-  screenshots: string[];
-  tags: string[];
-  relations?: string[];
-  engine?: string;
-  os?: string;
-  language?: string;
-  censored?: string;
-  release_date?: string;
-  last_updated?: string;
-  rating?: string;
-  price?: string;
-  circle?: string;
-  series?: string;
-  author?: string;
-  illustration?: string;
-  voice_actor?: string;
-  music?: string;
-  age_rating?: string;
-  product_format?: string;
-  file_format?: string;
-  file_size?: string;
-}
-
-interface AppSettings {
-  blurNsfwContent: boolean;
-  ratingScale: RatingScale;
-}
 
 function formatTime(s: number, t: any) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
@@ -1301,7 +1207,7 @@ export function GameDetail({
                 <div className="space-y-1.5">
                   {RATING_CATEGORIES.map((cat) => (
                     <div key={cat.key} className="flex items-center gap-2">
-                      <span className="text-[11px] w-20" style={{ color: "var(--color-text-muted)" }}>{t(cat.labelKey)}</span>
+                      <span className="text-[11px] w-20" style={{ color: "var(--color-text-muted)" }}>{cat.label}</span>
                       <input
                         type="number"
                         min={ratingCfg.min}

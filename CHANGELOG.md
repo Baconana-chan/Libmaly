@@ -25,6 +25,10 @@
 ### 🌐 Sources & Extensibility
 - **Metadata post-processing rules** — added user-configurable post-processing for merged metadata: reorder global source priority, set per-field source preferences (e.g. prefer VNDB for titles), and define text cleanup rules (regex replace, trim affixes, strip brackets, case transforms, exclude-by-pattern on tags/genres) applied after multi-source merging.
 
+### 🛠️ Technical
+- **Desktop UI modularisation milestone** — completed extraction of large App-level UI blocks (modals and shared UI hooks) into feature modules, reducing `App.tsx` orchestration pressure and improving maintainability.
+- **Build output cleanup** — the recurring `500+ kB` warning message is no longer shown in the UI workflow/task status.
+
 ## 1.8.1 - 2026-04-25
 
 ### 🪟 Windows Shell Integration

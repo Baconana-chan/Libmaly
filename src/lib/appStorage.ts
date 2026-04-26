@@ -130,3 +130,16 @@ export function appStorageRemoveItem(key: string) {
     }
   } catch {}
 }
+
+export function loadCache<T>(key: string, fallback: T): T {
+  try {
+    const r = appStorageGetItem(key);
+    return r ? JSON.parse(r) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveCache(key: string, val: unknown) {
+  appStorageSetItem(key, JSON.stringify(val));
+}

@@ -88,7 +88,7 @@ Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the
 ## 🛠️ Technical
 
 - [ ] **Plugin system** — allow JS/WASM plugins to add metadata sources or UI panels
-- [ ] **Desktop UI modularisation** — split the current monolithic App/page orchestration into feature modules so desktop UI can grow without App.tsx remaining the main bottleneck
+- [x] **Desktop UI modularisation** — split the current monolithic App/page orchestration into feature modules so desktop UI can grow without App.tsx remaining the main bottleneck
 - [ ] **Shared frontend core extraction** — move reusable non-UI logic into shared modules so future desktop/mobile/web surfaces can reuse data logic without sharing layouts
 - [ ] **REST/WebSocket API Mode** — open API for third-party developers:
   - [ ] **Remote Control** — launch games, control volume, and monitor status from external apps

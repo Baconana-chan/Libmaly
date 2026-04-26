@@ -10,6 +10,7 @@ export const SK_FAVS = "fav-games-v1";
 export const SK_GHOST = "ghost-games-v1";
 export const SK_CUSTOM = "game-custom-v1";
 export const SK_NOTES = "game-notes-v1";
+export const SK_GLOBAL_NOTES = "global-notes-v1";
 export const SK_ACHIEVEMENTS = "game-achievements-v1";
 export const SK_COLLECTIONS = "collections-v1";
 export const SK_LAUNCH = "launch-config-v1";
@@ -24,6 +25,8 @@ export const SK_SIDEBAR_WIDTH = "libmaly_sidebar_w";
 export const SK_LAYOUT_PRESETS = "layout-presets-v1";
 export const SK_STEAM_WEB_API_KEY = "steam-web-api-key-v1";
 export const SK_STEAM_PROFILE_REF = "steam-profile-ref-v1";
+export const SK_METADATA_RULES = "metadata-rules-v1";
+export const SK_EMULATOR_PROFILES = "emulator-profiles-v1";
 
 // ─── Background Job Constants ─────────────────────────────────────────────────
 export const BACKGROUND_JOB_BUSY_STATUSES = ["queued", "running", "retrying"] as const;
@@ -73,6 +76,7 @@ export const DEFAULT_LAUNCH_CONFIG = { enabled: false, runner: "wine" as const, 
 // ─── Default Settings ─────────────────────────────────────────────────────────
 export const DEFAULT_SETTINGS = {
   updateCheckerEnabled: false,
+  appUpdateCheckerEnabled: true,
   sessionToastEnabled: false,
   trayTooltipEnabled: false,
   startupWithWindows: false,
@@ -107,6 +111,7 @@ export const DEFAULT_SETTINGS = {
   sidebarShowDevelopers: true,
   sidebarShowWishlist: true,
   sidebarShowSurpriseButton: true,
+  sidebarShowGlobalNotes: true,
   sidebarShowAddButton: true,
   sidebarShowSettingsButton: true,
   sidebarShowLogsButton: true,

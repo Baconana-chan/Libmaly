@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### ✨ Sidebar & Update Controls
+- **Global notes in sidebar** — added a dedicated global notes panel below the Surprise button, with persistent storage and a Settings toggle to show or hide the block.
+- **Pause app update checks** — added a separate System setting to disable startup checks for new LIBMALY versions, plus a quick dismiss action for the sidebar update badge.
+
+### 🎮 MUGEN Engine Compatibility
+- **Auto-detection** — Libmaly now automatically detects MUGEN/Ikemen GO games by inspecting the executable name and characteristic data files (`system.def`, `select.def`, `mugen.cfg`) in the game directory.
+- **Single-core CPU affinity** — a new per-game toggle forces the game process to run on CPU core 0 only, preventing the multi-core stability crashes common to MUGEN on modern Windows systems (Windows only).
+- **Large Address Aware patching** — added a per-game action to read and toggle the PE `IMAGE_FILE_LARGE_ADDRESS_AWARE` flag on Windows executables, allowing 32-bit MUGEN builds to access a larger virtual address space on 64-bit systems.
+- **Automatic LAA safety backup** — before changing the LAA flag, Libmaly now creates a one-time backup of the original executable as `*.exe.laa.bak` in the same folder.
+- **dgVoodoo2 graphics wrapper** — added per-game actions to copy D3D8/D3D9/D3D11/DDraw compatibility DLLs from a local dgVoodoo2 installation into the game folder, and to remove them again, fixing graphical glitches on modern Windows.
+- **MUGEN Compatibility section in Customise** — the customisation modal now shows a dedicated MUGEN section (auto-shown when a MUGEN game is detected) with controls for the CPU affinity toggle and the dgVoodoo2 folder path/apply/remove actions.
+
+### 📊 Stats & Tracking
+- **Session timeline explorer** — added a zoomable per-day/per-week timeline in Stats to inspect exactly when sessions happened and how long they lasted.
+- **Tag / developer breakdowns** — added over-time charts for top genres, tags, engines, developers, and collections to analyze playtime distribution trends.
+
+### 🛒 Launcher & Store Integrations
+- **RetroArch / emulator launcher integration** — added configurable emulator profiles (path, args template, optional core path, extensions), ROM-target import from the Add menu, per-game emulator/ROM overrides in Customise, and launch-time token expansion (`{rom}`, `{core}`, `{dir}`, `{name}`) so ROM entries launch through emulator profiles instead of being treated as raw executables.
+- **SteamGridDB artwork sync** — added SteamGridDB sync for alternate covers, heroes, logos, and icons to improve presentation of imported and non-store games.
+
+### 🌐 Sources & Extensibility
+- **Metadata post-processing rules** — added user-configurable post-processing for merged metadata: reorder global source priority, set per-field source preferences (e.g. prefer VNDB for titles), and define text cleanup rules (regex replace, trim affixes, strip brackets, case transforms, exclude-by-pattern on tags/genres) applied after multi-source merging.
+
 ## 1.8.1 - 2026-04-25
 
 ### 🪟 Windows Shell Integration

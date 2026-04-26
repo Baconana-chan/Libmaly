@@ -55,6 +55,8 @@ interface GameCustomization {
   overallScore100?: number;
   ratingMode?: "manual" | "categories";
   categoryRatings?: Partial<Record<RatingCategoryKey, number>>;
+  emulatorProfileId?: string;
+  romPath?: string;
 }
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
@@ -598,6 +600,7 @@ export function GameDetail({
   onStop,
   isRunning,
   runnerLabel,
+  emulatorProfileName,
   onDelete,
   onLinkPage,
   onOpenF95Login,
@@ -651,6 +654,7 @@ export function GameDetail({
   onStop: () => void;
   isRunning: boolean;
   runnerLabel?: string;
+  emulatorProfileName?: string;
   onDelete: () => void;
   onLinkPage: () => void;
   onOpenF95Login: () => void;
@@ -709,6 +713,7 @@ export function GameDetail({
   const cover = customization.coverUrl ?? meta?.cover_url;
   const heroBg = customization.backgroundUrl ?? cover;
   const displayTitle = customization.displayName ?? meta?.title ?? game.name;
+  const romFileName = customization.romPath?.replace(/\\/g, "/").split("/").pop();
   const shots = meta?.screenshots ?? [];
   const ratingScale = appSettings.ratingScale || "10";
   const ratingCfg = scaleInputConfig(ratingScale);
@@ -808,6 +813,17 @@ export function GameDetail({
                 )}
               </div>
               <h1 className="text-3xl font-bold" style={{ color: "var(--color-white)", textShadow: "0 2px 8px rgba(0,0,0,.9)" }}>{displayTitle}</h1>
+              {emulatorProfileName && (
+                <div className="mt-1 flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded font-semibold"
+                    style={{ background: "rgba(23, 55, 32, 0.8)", color: "#8ef0a7", border: "1px solid rgba(110, 220, 140, 0.65)" }}>
+                    🕹 via {emulatorProfileName}
+                  </span>
+                  {romFileName && (
+                    <span className="text-[11px] font-mono" style={{ color: "var(--color-text-dim)" }}>{romFileName}</span>
+                  )}
+                </div>
+              )}
               {meta?.version && <span className="text-sm mt-0.5 block" style={{ color: "var(--color-accent-soft)" }}>{meta.version}</span>}
             </div>
             {meta?.rating && (

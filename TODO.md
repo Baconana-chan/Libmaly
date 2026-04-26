@@ -17,8 +17,8 @@ Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the
 
 ## 📊 Stats & Tracking
 
-- [ ] **Session timeline explorer** — zoomable per-day/per-week timeline to inspect exactly when and how long each session happened
-- [ ] **Tag / developer breakdowns** — charts for most-played genres, tags, engines, developers, and collections over time
+- [x] **Session timeline explorer** — zoomable per-day/per-week timeline to inspect exactly when and how long each session happened
+- [x] **Tag / developer breakdowns** — charts for most-played genres, tags, engines, developers, and collections over time
 
 ---
 
@@ -33,7 +33,7 @@ Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the
 
 - [ ] **Interactive game maps integration** — attach maps from an external provider (for example Map Genie–style services or community map sources) directly on the game page / overlay when a game is supported
 - [ ] **Guide / wiki provider slots** — configurable external links/providers for walkthroughs, maps, patch notes, and modding resources per game
-- [ ] **Metadata post-processing rules** — user-defined cleanup/merge rules for titles, tags, developers, and source priority after multi-source fetches
+- [x] **Metadata post-processing rules** — user-defined cleanup/merge rules for titles, tags, developers, and source priority after multi-source fetches
 
 ---
 
@@ -80,8 +80,8 @@ Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the
 
 ## 🛒 Launcher & Store Integrations
 
-- [ ] **RetroArch / emulator launcher integration** — import ROM launch targets and launch through configured emulator profiles without treating them as plain `.exe` entries
-- [ ] **SteamGridDB / artwork sync** — fetch alternate covers, heroes, logos, and icons to improve library presentation for imported/non-store games
+- [x] **RetroArch / emulator launcher integration** — import ROM launch targets and launch through configured emulator profiles without treating them as plain `.exe` entries
+- [x] **SteamGridDB / artwork sync** — fetch alternate covers, heroes, logos, and icons to improve library presentation for imported/non-store games
 
 ---
 

@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import SyncConflictModal from "./SyncConflictModal";
 import { addCustomLanguage, loadCustomLanguages, removeCustomLanguage } from "../../i18n";
 import { SK_COLLECTIONS, SK_GAMES, SK_META, SK_NOTES } from "../../lib/constants";
+import type { MetadataPostProcessingConfig, MetadataCleanupField, MetadataCleanupRuleType, MetadataCleanupRule, EmulatorProfile } from "../../App";
 import {
   syncConfigure,
   syncGetConfig,
@@ -54,6 +55,7 @@ type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | 
   | "custom";
 interface AppSettingsLike {
   updateCheckerEnabled: boolean;
+  appUpdateCheckerEnabled: boolean;
   sessionToastEnabled: boolean;
   trayTooltipEnabled: boolean;
   startupWithWindows: boolean;
@@ -83,6 +85,7 @@ interface AppSettingsLike {
   sidebarShowDevelopers?: boolean;
   sidebarShowWishlist?: boolean;
   sidebarShowSurpriseButton?: boolean;
+  sidebarShowGlobalNotes?: boolean;
   sidebarShowAddButton?: boolean;
   sidebarShowSettingsButton?: boolean;
   sidebarShowLogsButton?: boolean;
@@ -182,6 +185,7 @@ interface LayoutPresetConfig {
   sidebarShowDevelopers: boolean;
   sidebarShowWishlist: boolean;
   sidebarShowSurpriseButton: boolean;
+  sidebarShowGlobalNotes: boolean;
   sidebarShowAddButton: boolean;
   sidebarShowSettingsButton: boolean;
   sidebarShowLogsButton: boolean;
@@ -481,6 +485,8 @@ function SettingsModal({
   onRunCloudBackupNow, cloudBackupNowStatus, isCloudBackupNowBusy,
   discordSnapshot, onOpenDiscordSettings
   , libraryProfiles, activeLibraryProfileId, onSwitchLibraryProfile, onSaveLibraryProfile, onDeleteLibraryProfile
+  , metadataRules, onSaveMetadataRules
+  , emulatorProfiles, onSaveEmulatorProfiles
 }: {
   games: Game[];
   ghostGames: Record<string, boolean>;
@@ -535,9 +541,13 @@ function SettingsModal({
   onSwitchLibraryProfile: (profileId: string) => void;
   onSaveLibraryProfile: (profile: LibraryProfileDraftLike) => Promise<void> | void;
   onDeleteLibraryProfile: (profileId: string) => Promise<void> | void;
+  metadataRules: MetadataPostProcessingConfig;
+  onSaveMetadataRules: (cfg: MetadataPostProcessingConfig) => void;
+  emulatorProfiles: EmulatorProfile[];
+  onSaveEmulatorProfiles: (profiles: EmulatorProfile[]) => void;
 }) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "sync" | "sources" | "customcss" | "consistency" | "vault" | "wine">("general");
+  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "sync" | "sources" | "customcss" | "consistency" | "vault" | "wine" | "metarules" | "emulators">("general");
   const [customLangs, setCustomLangs] = useState<Record<string, { name: string; translation: Record<string, unknown> }>>({});
   const [langImporting, setLangImporting] = useState(false);
 
@@ -679,6 +689,7 @@ function SettingsModal({
   const [rawgApiKey, setRawgApiKey] = useState("");
   const [mobygamesApiKey, setMobygamesApiKey] = useState("");
   const [itchApiKey, setItchApiKey] = useState("");
+  const [steamGridDbApiKey, setSteamGridDbApiKey] = useState("");
   const [apiKeySaving, setApiKeySaving] = useState(false);
   const [vaultSummary, setVaultSummary] = useState<VaultSummary | null>(null);
   const [layoutPresetName, setLayoutPresetName] = useState("");
@@ -915,18 +926,21 @@ function SettingsModal({
         setRawgApiKey("");
         setMobygamesApiKey("");
         setItchApiKey("");
-        const [igdbId, igdbSecret, rawgKey, mobyKey, itchKey] = await Promise.all([
+        setSteamGridDbApiKey("");
+        const [igdbId, igdbSecret, rawgKey, mobyKey, itchKey, steamGridDbKey] = await Promise.all([
           invoke<string>("get_api_key", { provider: "igdb_client_id" }),
           invoke<string>("get_api_key", { provider: "igdb_client_secret" }),
           invoke<string>("get_api_key", { provider: "rawg" }),
           invoke<string>("get_api_key", { provider: "mobygames" }),
           invoke<string>("get_api_key", { provider: "itch_io" }),
+          invoke<string>("get_api_key", { provider: "steamgriddb" }),
         ]);
         if (igdbId) setIgdbClientId(igdbId);
         if (igdbSecret) setIgdbClientSecret(igdbSecret);
         if (rawgKey) setRawgApiKey(rawgKey);
         if (mobyKey) setMobygamesApiKey(mobyKey);
         if (itchKey) setItchApiKey(itchKey);
+        if (steamGridDbKey) setSteamGridDbApiKey(steamGridDbKey);
       } catch (e) {
         console.error("Failed to load API keys:", e);
       }
@@ -1421,6 +1435,8 @@ function SettingsModal({
     { id: "customcss", label: "🎨 Custom CSS" },
     { id: "consistency", label: "🧪 Consistency Tests" },
     { id: "vault" as const, label: "🔐 Vault" },
+    { id: "emulators" as const, label: t('settings.tabs.emulators') },
+    { id: "metarules" as const, label: t('settings.tabs.metarules') },
     ...(platform !== "windows" ? [{ id: "wine" as const, label: t('settings.tabs.wine') }] : []),
   ];
   const jobTone = (status: BackgroundJobStatus) => {
@@ -1605,6 +1621,7 @@ function SettingsModal({
     "sidebarShowDevelopers",
     "sidebarShowWishlist",
     "sidebarShowSurpriseButton",
+    "sidebarShowGlobalNotes",
     "sidebarShowAddButton",
     "sidebarShowSettingsButton",
     "sidebarShowLogsButton",
@@ -1620,6 +1637,8 @@ function SettingsModal({
     customcss: "Inject custom CSS overrides into the app.",
     consistency: "Run data-integrity checks against local state.",
     vault: "Secure secrets, sessions, and API credentials.",
+    emulators: "Manage emulator profiles used to launch ROM targets.",
+    metarules: "Customize source priority, per-field source overrides, and post-merge text cleanup rules.",
     wine: "Wine and Proton runtime configuration.",
   };
 
@@ -2088,6 +2107,11 @@ function SettingsModal({
                       {t('settings.system.updates')}
                     </label>
                     <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      <input type="checkbox" checked={appSettings.appUpdateCheckerEnabled !== false}
+                        onChange={(e) => onSaveSettings({ ...appSettings, appUpdateCheckerEnabled: e.currentTarget.checked })} />
+                      {t('settings.system.app_update_checker')}
+                    </label>
+                    <label className="flex items-center gap-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
                       <input type="checkbox" checked={appSettings.sessionToastEnabled}
                         onChange={(e) => onSaveSettings({ ...appSettings, sessionToastEnabled: e.currentTarget.checked })} />
                       {t('settings.system.notifications')}
@@ -2482,6 +2506,7 @@ function SettingsModal({
                         ["sidebarShowDevelopers", "settings.system.sidebar_show_developers"],
                         ["sidebarShowWishlist", "settings.system.sidebar_show_wishlist"],
                         ["sidebarShowSurpriseButton", "settings.system.sidebar_show_surprise"],
+                        ["sidebarShowGlobalNotes", "settings.system.sidebar_show_global_notes"],
                         ["sidebarShowAddButton", "settings.system.sidebar_show_add"],
                         ["sidebarShowSettingsButton", "settings.system.sidebar_show_settings"],
                         ["sidebarShowLogsButton", "settings.system.sidebar_show_logs"],
@@ -4102,6 +4127,43 @@ function SettingsModal({
                 </div>
               </div>
 
+              <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+                <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>SteamGridDB</h4>
+                <p className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                  API key for artwork sync (covers, heroes, logos, icons). Get your key from <a href="https://www.steamgriddb.com/profile/preferences/api" target="_blank" rel="noopener noreferrer" style={{ color: "var(--color-accent)" }}>SteamGridDB API Preferences</a>.
+                </p>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[11px] block mb-1" style={{ color: "var(--color-text-dim)" }}>API Key</label>
+                    <input
+                      type="password"
+                      value={steamGridDbApiKey}
+                      onChange={(e) => setSteamGridDbApiKey((e.target as HTMLInputElement).value)}
+                      placeholder="Enter SteamGridDB API Key"
+                      className="w-full px-3 py-2 rounded text-xs bg-transparent border outline-none"
+                      style={{ background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" }}
+                    />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      setApiKeySaving(true);
+                      try {
+                        await invoke("set_api_key", { provider: "steamgriddb", key: steamGridDbApiKey });
+                        await loadVaultSummary();
+                      } catch (e) {
+                        console.error("Failed to save SteamGridDB key:", e);
+                      }
+                      setApiKeySaving(false);
+                    }}
+                    disabled={apiKeySaving}
+                    className="w-full py-1.5 rounded text-xs font-medium disabled:opacity-50"
+                    style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                  >
+                    {apiKeySaving ? "Saving..." : "Save SteamGridDB Key"}
+                  </button>
+                </div>
+              </div>
+
               <div className="rounded-lg p-4 space-y-2" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
                 <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>Sync Vault Status</h4>
                 <p className="text-[11px] leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
@@ -4131,6 +4193,20 @@ function SettingsModal({
               </button>
             </section>
           )}
+
+          {tab === "emulators" && (
+            <EmulatorProfilesTab
+              emulatorProfiles={emulatorProfiles}
+              onSaveEmulatorProfiles={onSaveEmulatorProfiles}
+            />
+          )}
+
+          {tab === "metarules" && (
+            <MetadataRulesTab
+              metadataRules={metadataRules}
+              onSaveMetadataRules={onSaveMetadataRules}
+            />
+          )}
         </div>
       </div>
       </div>
@@ -4145,6 +4221,432 @@ function SettingsModal({
         />
       )}
     </>
+  );
+}
+
+// ─── Emulator Profiles Tab ───────────────────────────────────────────────────
+
+function createEmulatorProfileDraft(): EmulatorProfile {
+  return {
+    id: `emu-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: "",
+    emulatorPath: "",
+    args: "\"{rom}\"",
+    corePath: "",
+    extensions: [],
+  };
+}
+
+function EmulatorProfilesTab({
+  emulatorProfiles,
+  onSaveEmulatorProfiles,
+}: {
+  emulatorProfiles: EmulatorProfile[];
+  onSaveEmulatorProfiles: (profiles: EmulatorProfile[]) => void;
+}) {
+  const [draft, setDraft] = useState<EmulatorProfile[]>(
+    () => emulatorProfiles.map((p) => ({ ...p, extensions: [...(p.extensions ?? [])] }))
+  );
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    setDraft(emulatorProfiles.map((p) => ({ ...p, extensions: [...(p.extensions ?? [])] })));
+  }, [emulatorProfiles]);
+
+  const update = (id: string, patch: Partial<EmulatorProfile>) => {
+    setDraft((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  };
+
+  const remove = (id: string) => {
+    setDraft((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  const saveProfiles = () => {
+    const cleaned = draft
+      .map((p) => ({
+        ...p,
+        name: p.name.trim(),
+        emulatorPath: p.emulatorPath.trim(),
+        args: p.args.trim() || "\"{rom}\"",
+        corePath: p.corePath?.trim() || undefined,
+        extensions: p.extensions.map((e) => e.trim().toLowerCase()).filter(Boolean),
+      }))
+      .filter((p) => p.name && p.emulatorPath);
+    onSaveEmulatorProfiles(cleaned);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  };
+
+  return (
+    <section className="space-y-5">
+      <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>
+        Emulator Profiles
+      </h3>
+      <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+        Configure executable + argument templates for ROM launches. Supported tokens: {"{rom}"}, {"{core}"}, {"{dir}"}, {"{name}"}.
+      </p>
+
+      <div className="space-y-3">
+        {draft.length === 0 && (
+          <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>No emulator profiles configured.</p>
+        )}
+        {draft.map((profile) => (
+          <div key={profile.id} className="rounded-lg p-4 space-y-2" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+            <div className="flex items-center justify-between gap-2">
+              <input
+                type="text"
+                placeholder="Profile name (e.g. RetroArch GBA)"
+                value={profile.name}
+                onInput={(e) => update(profile.id, { name: (e.target as HTMLInputElement).value })}
+                className="flex-1 px-3 py-2 rounded text-xs outline-none"
+                style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+              />
+              <button
+                onClick={() => remove(profile.id)}
+                className="px-2.5 py-2 rounded text-xs"
+                style={{ background: "var(--color-panel-3)", color: "var(--color-danger-strong)", border: "1px solid var(--color-border-strong)" }}
+              >
+                Delete
+              </button>
+            </div>
+
+            <input
+              type="text"
+              placeholder="Path to emulator executable..."
+              value={profile.emulatorPath}
+              onInput={(e) => update(profile.id, { emulatorPath: (e.target as HTMLInputElement).value })}
+              className="w-full px-3 py-2 rounded text-xs outline-none font-mono"
+              style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-border-soft)" }}
+            />
+
+            <input
+              type="text"
+              placeholder='Args template (default: "{rom}")'
+              value={profile.args}
+              onInput={(e) => update(profile.id, { args: (e.target as HTMLInputElement).value })}
+              className="w-full px-3 py-2 rounded text-xs outline-none font-mono"
+              style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-border-soft)" }}
+            />
+
+            <input
+              type="text"
+              placeholder="RetroArch core path (optional; used by {core})"
+              value={profile.corePath ?? ""}
+              onInput={(e) => update(profile.id, { corePath: (e.target as HTMLInputElement).value })}
+              className="w-full px-3 py-2 rounded text-xs outline-none font-mono"
+              style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-border-soft)" }}
+            />
+
+            <input
+              type="text"
+              placeholder="Extensions (comma-separated): gba,gb,gbc"
+              value={(profile.extensions ?? []).join(", ")}
+              onInput={(e) => update(profile.id, { extensions: (e.target as HTMLInputElement).value.split(",") })}
+              className="w-full px-3 py-2 rounded text-xs outline-none"
+              style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+            />
+          </div>
+        ))}
+      </div>
+
+      <div className="flex gap-2">
+        <button
+          onClick={() => setDraft((prev) => [...prev, createEmulatorProfileDraft()])}
+          className="px-3 py-2 rounded text-xs"
+          style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}
+        >
+          + Add profile
+        </button>
+        <button
+          onClick={saveProfiles}
+          className="px-4 py-2 rounded text-xs font-semibold"
+          style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+        >
+          {saved ? "✓ Saved" : "Save Emulator Profiles"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// ─── Metadata Rules Tab ───────────────────────────────────────────────────────
+
+const ALL_SOURCES = ["f95", "dlsite", "vndb", "mangagamer", "johren", "fakku", "igdb", "rawg", "mobygames"];
+const METADATA_CLEANUP_FIELDS: MetadataCleanupField[] = [
+  "*", "title", "developer", "publisher", "overview", "engine", "version", "release_date", "circle", "tags", "genres",
+];
+const CLEANUP_RULE_TYPES: MetadataCleanupRuleType[] = [
+  "regex_replace", "trim_prefix", "trim_suffix", "strip_brackets", "exclude_item", "lowercase_all", "uppercase_first",
+];
+
+function makeRuleId() {
+  return `rule-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function MetadataRulesTab({
+  metadataRules,
+  onSaveMetadataRules,
+}: {
+  metadataRules: MetadataPostProcessingConfig;
+  onSaveMetadataRules: (cfg: MetadataPostProcessingConfig) => void;
+}) {
+  const [draft, setDraft] = useState<MetadataPostProcessingConfig>(() => ({
+    globalSourceOrder: metadataRules.globalSourceOrder.length
+      ? [...metadataRules.globalSourceOrder]
+      : [...ALL_SOURCES],
+    fieldSourceOverrides: metadataRules.fieldSourceOverrides.map((o) => ({ ...o, sources: [...o.sources] })),
+    cleanupRules: metadataRules.cleanupRules.map((r) => ({ ...r })),
+  }));
+  const [saved, setSaved] = useState(false);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [newOverrideField, setNewOverrideField] = useState<MetadataCleanupField>("title");
+
+  const save = () => {
+    const cfg: MetadataPostProcessingConfig = {
+      ...draft,
+      // If global order is unchanged from default, store empty (use default)
+      globalSourceOrder: JSON.stringify(draft.globalSourceOrder) === JSON.stringify(ALL_SOURCES) ? [] : draft.globalSourceOrder,
+    };
+    onSaveMetadataRules(cfg);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  };
+
+  const moveSource = (idx: number, dir: -1 | 1) => {
+    const next = [...draft.globalSourceOrder];
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= next.length) return;
+    [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+    setDraft({ ...draft, globalSourceOrder: next });
+  };
+
+  const resetSourceOrder = () => {
+    setDraft({ ...draft, globalSourceOrder: [...ALL_SOURCES] });
+  };
+
+  const addFieldOverride = () => {
+    if (draft.fieldSourceOverrides.find((o) => o.field === newOverrideField)) return;
+    setDraft({
+      ...draft,
+      fieldSourceOverrides: [
+        ...draft.fieldSourceOverrides,
+        { field: newOverrideField, sources: [...ALL_SOURCES] },
+      ],
+    });
+  };
+
+  const removeFieldOverride = (field: MetadataCleanupField) => {
+    setDraft({ ...draft, fieldSourceOverrides: draft.fieldSourceOverrides.filter((o) => o.field !== field) });
+  };
+
+  const moveOverrideSource = (field: MetadataCleanupField, srcIdx: number, dir: -1 | 1) => {
+    setDraft({
+      ...draft,
+      fieldSourceOverrides: draft.fieldSourceOverrides.map((o) => {
+        if (o.field !== field) return o;
+        const next = [...o.sources];
+        const swapIdx = srcIdx + dir;
+        if (swapIdx < 0 || swapIdx >= next.length) return o;
+        [next[srcIdx], next[swapIdx]] = [next[swapIdx], next[srcIdx]];
+        return { ...o, sources: next };
+      }),
+    });
+  };
+
+  const addRule = () => {
+    const newRule: MetadataCleanupRule = {
+      id: makeRuleId(),
+      enabled: true,
+      field: "*",
+      type: "regex_replace",
+      pattern: "",
+      replacement: "",
+      description: "",
+    };
+    setDraft({ ...draft, cleanupRules: [...draft.cleanupRules, newRule] });
+    setEditingRuleId(newRule.id);
+  };
+
+  const deleteRule = (id: string) => {
+    setDraft({ ...draft, cleanupRules: draft.cleanupRules.filter((r) => r.id !== id) });
+    if (editingRuleId === id) setEditingRuleId(null);
+  };
+
+  const toggleRule = (id: string) => {
+    setDraft({ ...draft, cleanupRules: draft.cleanupRules.map((r) => r.id === id ? { ...r, enabled: !r.enabled } : r) });
+  };
+
+  const updateRule = (id: string, patch: Partial<MetadataCleanupRule>) => {
+    setDraft({ ...draft, cleanupRules: draft.cleanupRules.map((r) => r.id === id ? { ...r, ...patch } : r) });
+  };
+
+  const inputCls = "w-full px-2 py-1.5 rounded text-xs bg-transparent border outline-none";
+  const inputStyle = { background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" };
+  const selectStyle = { background: "var(--color-panel-2)", color: "var(--color-text)", borderColor: "var(--color-border)" };
+
+  const needsPattern = (type: MetadataCleanupRuleType) =>
+    ["regex_replace", "trim_prefix", "trim_suffix", "exclude_item"].includes(type);
+  const needsReplacement = (type: MetadataCleanupRuleType) => type === "regex_replace";
+
+  return (
+    <section className="space-y-6">
+      <h3 className="text-[10px] uppercase tracking-widest" style={{ color: "var(--color-text-dim)" }}>
+        Metadata Post-processing Rules
+      </h3>
+
+      {/* ── Global Source Priority ───────────────────────────────────── */}
+      <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>Source Priority</h4>
+          <button
+            onClick={resetSourceOrder}
+            className="text-[11px] px-2 py-0.5 rounded"
+            style={{ color: "var(--color-text-dim)", background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}
+          >
+            Reset to default
+          </button>
+        </div>
+        <p className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+          Drag-free reorder: use arrows. Topmost sources are preferred when no per-field override applies.
+        </p>
+        <div className="space-y-1">
+          {draft.globalSourceOrder.map((src, idx) => (
+            <div key={src} className="flex items-center gap-2 px-2 py-1 rounded" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+              <span className="text-xs font-mono flex-1" style={{ color: "var(--color-text)" }}>{src}</span>
+              <button onClick={() => moveSource(idx, -1)} disabled={idx === 0} className="text-xs px-1 disabled:opacity-30" style={{ color: "var(--color-text-dim)" }}>▲</button>
+              <button onClick={() => moveSource(idx, 1)} disabled={idx === draft.globalSourceOrder.length - 1} className="text-xs px-1 disabled:opacity-30" style={{ color: "var(--color-text-dim)" }}>▼</button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Per-field Source Overrides ────────────────────────────────── */}
+      <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>Per-field Source Overrides</h4>
+        <p className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+          Override which source is preferred for a specific field, independent of the global order.
+        </p>
+        <div className="flex items-center gap-2">
+          <select
+            value={newOverrideField}
+            onChange={(e) => setNewOverrideField((e.target as HTMLSelectElement).value as MetadataCleanupField)}
+            className="flex-1 px-2 py-1.5 rounded text-xs border outline-none"
+            style={selectStyle}
+          >
+            {METADATA_CLEANUP_FIELDS.filter((f) => f !== "*").map((f) => (
+              <option key={f} value={f}>{f}</option>
+            ))}
+          </select>
+          <button
+            onClick={addFieldOverride}
+            disabled={!!draft.fieldSourceOverrides.find((o) => o.field === newOverrideField)}
+            className="px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40"
+            style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+          >
+            Add override
+          </button>
+        </div>
+        {draft.fieldSourceOverrides.length === 0 && (
+          <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>No overrides configured.</p>
+        )}
+        {draft.fieldSourceOverrides.map((override) => (
+          <div key={override.field} className="rounded p-3 space-y-2" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold" style={{ color: "var(--color-accent)" }}>{override.field}</span>
+              <button onClick={() => removeFieldOverride(override.field)} className="text-[11px]" style={{ color: "var(--color-danger-strong)" }}>Remove</button>
+            </div>
+            <div className="space-y-1">
+              {override.sources.map((src, idx) => (
+                <div key={src} className="flex items-center gap-2 px-2 py-0.5 rounded" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
+                  <span className="text-xs font-mono flex-1" style={{ color: "var(--color-text)" }}>{src}</span>
+                  <button onClick={() => moveOverrideSource(override.field, idx, -1)} disabled={idx === 0} className="text-xs px-1 disabled:opacity-30" style={{ color: "var(--color-text-dim)" }}>▲</button>
+                  <button onClick={() => moveOverrideSource(override.field, idx, 1)} disabled={idx === override.sources.length - 1} className="text-xs px-1 disabled:opacity-30" style={{ color: "var(--color-text-dim)" }}>▼</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Cleanup Rules ─────────────────────────────────────────────── */}
+      <div className="rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>Cleanup Rules</h4>
+          <button
+            onClick={addRule}
+            className="px-3 py-1 rounded text-xs font-medium"
+            style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+          >
+            + Add Rule
+          </button>
+        </div>
+        <p className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+          Applied in order after metadata is merged. String fields support regex replace, trim, case transforms. Array fields support all of the above plus exclude-by-pattern.
+        </p>
+        {draft.cleanupRules.length === 0 && (
+          <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>No cleanup rules defined.</p>
+        )}
+        {draft.cleanupRules.map((rule) => (
+          <div key={rule.id} className="rounded p-3 space-y-2" style={{ background: "var(--color-panel-2)", border: `1px solid ${rule.enabled ? "var(--color-border)" : "var(--color-border-soft)"}`, opacity: rule.enabled ? 1 : 0.6 }}>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" checked={rule.enabled} onChange={() => toggleRule(rule.id)} className="accent-[var(--color-accent)]" />
+              <span className="text-[11px] flex-1 truncate" style={{ color: "var(--color-text-muted)" }}>
+                {rule.description || `${rule.type} on ${rule.field}`}
+              </span>
+              <button onClick={() => setEditingRuleId(editingRuleId === rule.id ? null : rule.id)} className="text-[11px] px-2 py-0.5 rounded" style={{ color: "var(--color-text-dim)", background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
+                {editingRuleId === rule.id ? "Collapse" : "Edit"}
+              </button>
+              <button onClick={() => deleteRule(rule.id)} className="text-[11px] px-2 py-0.5 rounded" style={{ color: "var(--color-danger-strong)", background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
+                Delete
+              </button>
+            </div>
+            {editingRuleId === rule.id && (
+              <div className="space-y-2 pt-1">
+                <div className="flex gap-2">
+                  <div className="flex-1 space-y-1">
+                    <label className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>Field</label>
+                    <select value={rule.field} onChange={(e) => updateRule(rule.id, { field: (e.target as HTMLSelectElement).value as MetadataCleanupField })} className="w-full px-2 py-1.5 rounded text-xs border outline-none" style={selectStyle}>
+                      {METADATA_CLEANUP_FIELDS.map((f) => <option key={f} value={f}>{f}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex-1 space-y-1">
+                    <label className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>Type</label>
+                    <select value={rule.type} onChange={(e) => updateRule(rule.id, { type: (e.target as HTMLSelectElement).value as MetadataCleanupRuleType })} className="w-full px-2 py-1.5 rounded text-xs border outline-none" style={selectStyle}>
+                      {CLEANUP_RULE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {needsPattern(rule.type) && (
+                  <div className="space-y-1">
+                    <label className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>Pattern {rule.type === "regex_replace" || rule.type === "exclude_item" ? "(regex)" : "(literal)"}</label>
+                    <input value={rule.pattern ?? ""} onChange={(e) => updateRule(rule.id, { pattern: (e.target as HTMLInputElement).value })} placeholder="pattern…" className={inputCls} style={inputStyle} />
+                  </div>
+                )}
+                {needsReplacement(rule.type) && (
+                  <div className="space-y-1">
+                    <label className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>Replacement (leave empty to delete matches)</label>
+                    <input value={rule.replacement ?? ""} onChange={(e) => updateRule(rule.id, { replacement: (e.target as HTMLInputElement).value })} placeholder="replacement…" className={inputCls} style={inputStyle} />
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <label className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>Description (optional)</label>
+                  <input value={rule.description ?? ""} onChange={(e) => updateRule(rule.id, { description: (e.target as HTMLInputElement).value })} placeholder="Description…" className={inputCls} style={inputStyle} />
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* ── Save ──────────────────────────────────────────────────────── */}
+      <button
+        onClick={save}
+        className="w-full py-2 rounded-lg text-sm font-medium"
+        style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+      >
+        {saved ? "✓ Saved" : "Save Metadata Rules"}
+      </button>
+    </section>
   );
 }
 

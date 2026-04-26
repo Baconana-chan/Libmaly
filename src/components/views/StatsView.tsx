@@ -32,6 +32,10 @@ interface GameCustomizationLike {
   ratingMode?: string;
   categoryRatings?: Record<string, number>;
   customTags?: string[];
+  manualDeveloper?: string;
+  manualGenres?: string;
+  mugenForceSingleCore?: boolean;
+  mugenDgVoodooFolder?: string;
 }
 
 interface GameMetadataLike {
@@ -39,6 +43,9 @@ interface GameMetadataLike {
   title?: string;
   developer?: string;
   circle?: string;
+  tags?: string[];
+  genres?: string[];
+  engine?: string;
 }
 
 interface StatsViewProps {
@@ -51,6 +58,44 @@ interface StatsViewProps {
   collections: { id: string; name: string; color: string; gamePaths: string[] }[];
   wishlist: { id: string; title: string; source: string; releaseStatus: string }[];
   totalPlaytimeSecs: number;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function startOfDayMs(ts: number): number {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function startOfWeekMs(ts: number): number {
+  const d = new Date(ts);
+  const mondayOffset = (d.getDay() + 6) % 7;
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - mondayOffset);
+  return d.getTime();
+}
+
+function parseCsvList(value?: string): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function uniqueNormalizedLabels(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of values) {
+    const cleaned = raw.replace(/\s+/g, " ").trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+  }
+  return out;
 }
 
 // ─── Stat Card ────────────────────────────────────────────────────────────────
@@ -331,6 +376,17 @@ export function StatsView({
 }: StatsViewProps) {
   const { t } = useTranslation();
   const [showYearInReview, setShowYearInReview] = useState(false);
+  const [timelineMode, setTimelineMode] = useState<"day" | "week">("day");
+  const [timelineZoomDays, setTimelineZoomDays] = useState(56);
+  const [selectedTimelineBucketStart, setSelectedTimelineBucketStart] = useState<number | null>(null);
+  const [breakdownWindowWeeks, setBreakdownWindowWeeks] = useState(12);
+
+  const resolveGameName = (path: string): string => {
+    return customizations[path]?.displayName
+      || metadata[path]?.title
+      || games.find((g) => g.path === path)?.name
+      || path;
+  };
 
   // ── Core metrics ──────────────────────────────────────────────────────────
   const hours = Math.floor(totalPlaytimeSecs / 3600);
@@ -680,6 +736,168 @@ export function StatsView({
         color: colors[src] || "var(--color-text-dim)",
       }));
   }, [stats, metadata]);
+
+  // ── Session Timeline Explorer ───────────────────────────────────────────
+  const timelineBuckets = useMemo(() => {
+    const periodStart = timelineMode === "day" ? startOfDayMs : startOfWeekMs;
+    const periodStep = timelineMode === "day" ? DAY_MS : DAY_MS * 7;
+    const now = Date.now();
+    const from = now - timelineZoomDays * DAY_MS;
+    const firstStart = periodStart(from);
+
+    const grouped = new Map<number, { start: number; end: number; duration: number; count: number; sessions: SessionEntryLike[] }>();
+    for (const s of sessions) {
+      if (s.startedAt < firstStart) continue;
+      const start = periodStart(s.startedAt);
+      const existing = grouped.get(start);
+      if (existing) {
+        existing.duration += s.duration;
+        existing.count += 1;
+        existing.sessions.push(s);
+      } else {
+        grouped.set(start, {
+          start,
+          end: start + periodStep,
+          duration: s.duration,
+          count: 1,
+          sessions: [s],
+        });
+      }
+    }
+
+    for (let cur = firstStart; cur <= now; cur += periodStep) {
+      if (!grouped.has(cur)) {
+        grouped.set(cur, {
+          start: cur,
+          end: cur + periodStep,
+          duration: 0,
+          count: 0,
+          sessions: [],
+        });
+      }
+    }
+
+    return Array.from(grouped.values())
+      .sort((a, b) => a.start - b.start)
+      .map((bucket) => ({
+        ...bucket,
+        sessions: [...bucket.sessions].sort((a, b) => b.startedAt - a.startedAt),
+      }));
+  }, [sessions, timelineMode, timelineZoomDays]);
+
+  const maxTimelineDuration = Math.max(1, ...timelineBuckets.map((b) => b.duration));
+  const activeTimelineBucket = useMemo(() => {
+    if (timelineBuckets.length === 0) return null;
+    if (selectedTimelineBucketStart !== null) {
+      const selected = timelineBuckets.find((b) => b.start === selectedTimelineBucketStart);
+      if (selected) return selected;
+    }
+    return timelineBuckets[timelineBuckets.length - 1];
+  }, [timelineBuckets, selectedTimelineBucketStart]);
+
+  // ── Breakdown charts over time ──────────────────────────────────────────
+  const collectionLabelsByPath = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const col of collections) {
+      for (const path of col.gamePaths) {
+        if (!map[path]) map[path] = [];
+        map[path].push(col.name);
+      }
+    }
+    return map;
+  }, [collections]);
+
+  const breakdowns = useMemo(() => {
+    const nowWeek = startOfWeekMs(Date.now());
+    const weekStarts = Array.from({ length: breakdownWindowWeeks }, (_, idx) =>
+      nowWeek - (breakdownWindowWeeks - 1 - idx) * DAY_MS * 7
+    );
+    const weekIndexMap = new Map<number, number>(weekStarts.map((w, i) => [w, i]));
+    const minWeek = weekStarts[0] ?? nowWeek;
+
+    type Entry = { label: string; total: number; series: number[] };
+    const build = (resolver: (path: string) => string[]) => {
+      const totals: Record<string, number> = {};
+      const seriesMap: Record<string, number[]> = {};
+
+      for (const s of sessions) {
+        const ws = startOfWeekMs(s.startedAt);
+        if (ws < minWeek) continue;
+        const weekIdx = weekIndexMap.get(ws);
+        if (weekIdx === undefined) continue;
+
+        const labels = uniqueNormalizedLabels(resolver(s.path));
+        const resolvedLabels = labels.length > 0 ? labels : ["Unknown"];
+        const share = s.duration / resolvedLabels.length;
+
+        for (const label of resolvedLabels) {
+          totals[label] = (totals[label] || 0) + share;
+          if (!seriesMap[label]) {
+            seriesMap[label] = new Array(breakdownWindowWeeks).fill(0);
+          }
+          seriesMap[label][weekIdx] += share;
+        }
+      }
+
+      const entries: Entry[] = Object.entries(totals)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 5)
+        .map(([label, total]) => ({ label, total, series: seriesMap[label] || new Array(breakdownWindowWeeks).fill(0) }));
+
+      return {
+        entries,
+        maxTotal: Math.max(1, ...entries.map((x) => x.total), 1),
+      };
+    };
+
+    const developers = build((path) => {
+      const m = metadata[path];
+      const c = customizations[path];
+      return [
+        c?.manualDeveloper || "",
+        m?.circle || "",
+        m?.developer || "",
+      ];
+    });
+
+    const genres = build((path) => {
+      const m = metadata[path];
+      const c = customizations[path];
+      return [
+        ...(Array.isArray(m?.genres) ? m!.genres! : []),
+        ...parseCsvList(c?.manualGenres),
+      ];
+    });
+
+    const tags = build((path) => {
+      const m = metadata[path];
+      const c = customizations[path];
+      return [
+        ...(Array.isArray(c?.customTags) ? c!.customTags! : []),
+        ...(Array.isArray(m?.tags) ? m!.tags! : []),
+      ];
+    });
+
+    const engines = build((path) => {
+      const m = metadata[path];
+      const c = customizations[path];
+      const list: string[] = [];
+      if (m?.engine) list.push(m.engine);
+      if (c?.mugenForceSingleCore || c?.mugenDgVoodooFolder) list.push("MUGEN");
+      return list;
+    });
+
+    const collectionBreakdown = build((path) => collectionLabelsByPath[path] || []);
+
+    return {
+      weekStarts,
+      developers,
+      genres,
+      tags,
+      engines,
+      collections: collectionBreakdown,
+    };
+  }, [sessions, breakdownWindowWeeks, metadata, customizations, collectionLabelsByPath]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -1109,6 +1327,175 @@ export function StatsView({
             </div>
           </div>
         )}
+
+        {/* ── Session Timeline Explorer ───────────────────────────────────── */}
+        <div className="rounded-xl p-5" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <SectionHeader icon="🧭" title="Session Timeline Explorer" />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <div className="flex items-center gap-1 rounded px-1 py-1" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+              <button
+                onClick={() => setTimelineMode("day")}
+                className="px-2.5 py-1 rounded text-xs"
+                style={{
+                  background: timelineMode === "day" ? "var(--color-accent-deep)" : "transparent",
+                  color: timelineMode === "day" ? "var(--color-accent)" : "var(--color-text-muted)",
+                }}
+              >
+                Per day
+              </button>
+              <button
+                onClick={() => setTimelineMode("week")}
+                className="px-2.5 py-1 rounded text-xs"
+                style={{
+                  background: timelineMode === "week" ? "var(--color-accent-deep)" : "transparent",
+                  color: timelineMode === "week" ? "var(--color-accent)" : "var(--color-text-muted)",
+                }}
+              >
+                Per week
+              </button>
+            </div>
+            <label className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
+              Zoom: {timelineZoomDays}d
+              <input
+                type="range"
+                min={14}
+                max={180}
+                step={7}
+                value={timelineZoomDays}
+                onInput={(e) => setTimelineZoomDays(Number((e.target as HTMLInputElement).value))}
+              />
+            </label>
+          </div>
+
+          {timelineBuckets.length === 0 || timelineBuckets.every((b) => b.count === 0) ? (
+            <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>No sessions in selected range.</p>
+          ) : (
+            <>
+              <div className="overflow-x-auto pb-2">
+                <div className="flex items-end gap-1.5 min-h-[120px]">
+                  {timelineBuckets.map((bucket) => {
+                    const pct = Math.max(4, Math.round((bucket.duration / maxTimelineDuration) * 100));
+                    const isActive = activeTimelineBucket?.start === bucket.start;
+                    const startLabel = new Date(bucket.start).toLocaleDateString();
+                    const endLabel = new Date(bucket.end - 1).toLocaleDateString();
+                    return (
+                      <button
+                        key={bucket.start}
+                        onClick={() => setSelectedTimelineBucketStart(bucket.start)}
+                        className="w-4 rounded-t-sm relative"
+                        style={{
+                          height: `${pct}%`,
+                          minHeight: "6px",
+                          background: isActive ? "var(--color-warning)" : "var(--color-accent)",
+                          opacity: bucket.count === 0 ? 0.25 : 0.95,
+                          border: isActive ? "1px solid var(--color-warning)" : "1px solid transparent",
+                        }}
+                        title={`${timelineMode === "day" ? startLabel : `${startLabel} - ${endLabel}`}\n${bucket.count} sessions\n${formatTime(Math.round(bucket.duration))}`}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+
+              {activeTimelineBucket && (
+                <div className="mt-3 rounded p-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>
+                      {timelineMode === "day"
+                        ? new Date(activeTimelineBucket.start).toLocaleDateString()
+                        : `${new Date(activeTimelineBucket.start).toLocaleDateString()} - ${new Date(activeTimelineBucket.end - 1).toLocaleDateString()}`}
+                    </p>
+                    <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>
+                      {activeTimelineBucket.count} sessions · {formatTime(Math.round(activeTimelineBucket.duration))}
+                    </p>
+                  </div>
+
+                  {activeTimelineBucket.sessions.length === 0 ? (
+                    <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>No sessions in this bucket.</p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                      {activeTimelineBucket.sessions.map((s) => (
+                        <div key={`${s.path}-${s.startedAt}`} className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="truncate" style={{ color: "var(--color-text-muted)" }}>
+                            {new Date(s.startedAt).toLocaleString()} · {resolveGameName(s.path)}
+                          </span>
+                          <span className="font-mono" style={{ color: "var(--color-text-dim)" }}>
+                            {formatTime(s.duration)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ── Tag / Developer Breakdowns Over Time ───────────────────────── */}
+        <div className="rounded-xl p-5" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <SectionHeader icon="📊" title="Breakdowns Over Time" />
+            <div className="flex items-center gap-1 rounded px-1 py-1" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+              {[8, 12, 24].map((w) => (
+                <button
+                  key={w}
+                  onClick={() => setBreakdownWindowWeeks(w)}
+                  className="px-2.5 py-1 rounded text-xs"
+                  style={{
+                    background: breakdownWindowWeeks === w ? "var(--color-accent-deep)" : "transparent",
+                    color: breakdownWindowWeeks === w ? "var(--color-accent)" : "var(--color-text-muted)",
+                  }}
+                >
+                  {w}w
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {[
+              { key: "genres", title: "Genres", icon: "🧩", data: breakdowns.genres },
+              { key: "tags", title: "Tags", icon: "🏷️", data: breakdowns.tags },
+              { key: "engines", title: "Engines", icon: "⚙️", data: breakdowns.engines },
+              { key: "developers", title: "Developers", icon: "🛠️", data: breakdowns.developers },
+              { key: "collections", title: "Collections", icon: "📚", data: breakdowns.collections },
+            ].map((block) => (
+              <div key={block.key} className="rounded-lg p-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                <p className="text-xs font-semibold mb-2" style={{ color: "var(--color-text)" }}>
+                  {block.icon} {block.title}
+                </p>
+                {block.data.entries.length === 0 ? (
+                  <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>No data in selected range.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {block.data.entries.map((entry) => (
+                      <div key={entry.label} className="rounded px-2 py-2" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <span className="text-[11px] truncate" style={{ color: "var(--color-text-muted)" }} title={entry.label}>{entry.label}</span>
+                          <span className="text-[10px] font-mono" style={{ color: "var(--color-text-dim)" }}>{formatTime(Math.round(entry.total))}</span>
+                        </div>
+                        <div className="h-1.5 rounded-full overflow-hidden mb-1" style={{ background: "var(--color-bg-deep)" }}>
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${Math.max(4, Math.round((entry.total / block.data.maxTotal) * 100))}%`,
+                              background: "var(--color-accent)",
+                            }}
+                          />
+                        </div>
+                        <Sparkline data={entry.series.map((x) => Math.round(x))} height={26} color="var(--color-accent-soft)" />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
 
         {/* ── Empty State ─────────────────────────────────────────────────── */}
         {games.length === 0 && (

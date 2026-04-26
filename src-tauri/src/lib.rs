@@ -11,6 +11,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 #[cfg(windows)]
 use std::io::Read;
+#[cfg(windows)]
+use std::io::Seek;
+#[cfg(windows)]
+use std::io::SeekFrom;
 use std::io::Write;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
@@ -39,8 +43,9 @@ use metadata::{
     dlsite_is_logged_in, dlsite_login, dlsite_logout, f95_is_logged_in, f95_login, f95_logout,
     fakku_is_logged_in, fakku_login, fakku_logout, fetch_dlsite_metadata, fetch_f95_metadata,
     fetch_fakku_metadata, fetch_igdb_metadata, fetch_johren_metadata, fetch_mangagamer_metadata,
-    fetch_mobygames_metadata, fetch_rawg_metadata, fetch_vndb_metadata, get_api_key,
-    get_scraper_health_snapshot, search_suggest_links, set_api_key,
+    fetch_mobygames_metadata, fetch_rawg_metadata, fetch_steamgriddb_artwork,
+    fetch_vndb_metadata, get_api_key, get_scraper_health_snapshot, search_suggest_links,
+    set_api_key,
 };
 
 mod custom_metadata;
@@ -2861,6 +2866,43 @@ struct ExplorerZipInstallStatus {
     menu_title: String,
     executable_path: Option<String>,
     command: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExternalCliInvocationPayload {
+    subcommand: Option<String>,
+    path: Option<String>,
+    name: Option<String>,
+}
+
+fn parse_external_cli_invocation(argv: &[String]) -> ExternalCliInvocationPayload {
+    let mut payload = ExternalCliInvocationPayload {
+        subcommand: None,
+        path: None,
+        name: None,
+    };
+
+    let Some(subcommand) = argv
+        .get(1)
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+    else {
+        return payload;
+    };
+
+    let value = argv
+        .get(2)
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty());
+
+    payload.subcommand = Some(subcommand.clone());
+    match subcommand.as_str() {
+        "quick-launch-exe" | "quick-install-zip" => payload.path = value,
+        "launch" => payload.name = value,
+        _ => {}
+    }
+    payload
 }
 
 #[cfg(windows)]
@@ -5758,6 +5800,249 @@ fn split_args(s: &str) -> Vec<String> {
     args
 }
 
+// ─── MUGEN game engine compatibility ─────────────────────────────────────────
+
+/// Detect if the given exe path belongs to a MUGEN-engine game by inspecting
+/// the exe name and characteristic data files in the game directory.
+#[tauri::command]
+fn detect_mugen_game(path: String) -> bool {
+    let exe_path = std::path::Path::new(&path);
+    let game_dir = match exe_path.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // Common MUGEN executable names
+    let exe_name = exe_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if matches!(
+        exe_name.as_str(),
+        "mugen.exe" | "winmugen.exe" | "ikemen.exe" | "ikemen_go.exe" | "ikemen-go.exe"
+    ) {
+        return true;
+    }
+
+    // Top-level config files
+    for name in &["mugen.cfg", "ikemen.go", "go.exe"] {
+        if game_dir.join(name).exists() {
+            return true;
+        }
+    }
+
+    // Characteristic sub-directory layout used by MUGEN / Ikemen GO
+    let data_dir = game_dir.join("data");
+    if data_dir.is_dir() {
+        for name in &["system.def", "select.def", "mugen.cfg"] {
+            if data_dir.join(name).exists() {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Copy dgVoodoo2 wrapper DLLs into the game's directory.
+///
+/// `dgvoodoo_folder` must be the root of a dgVoodoo2 extraction (the folder
+/// that contains `MS/x86/` and optionally `MS/x86_64/`).  MUGEN is 32-bit so
+/// we always prefer the x86 DLLs.  Returns the list of DLL names copied.
+#[tauri::command]
+fn apply_dgvoodoo_wrapper(game_path: String, dgvoodoo_folder: String) -> Result<Vec<String>, String> {
+    let game_dir = std::path::Path::new(&game_path)
+        .parent()
+        .ok_or_else(|| "Invalid game path".to_string())?;
+    let dg_root = std::path::Path::new(&dgvoodoo_folder);
+
+    // Prefer 32-bit DLLs (MUGEN is x86)
+    let src_dir = {
+        let x86 = dg_root.join("MS").join("x86");
+        let x64 = dg_root.join("MS").join("x86_64");
+        if x86.is_dir() {
+            x86
+        } else if x64.is_dir() {
+            x64
+        } else {
+            return Err(format!(
+                "dgVoodoo2 structure not found — expected MS/x86/ inside: {}",
+                dg_root.display()
+            ));
+        }
+    };
+
+    let candidates = ["D3D8.dll", "D3D9.dll", "D3D11.dll", "D3DImm.dll", "DDraw.dll"];
+    let mut copied: Vec<String> = Vec::new();
+    for dll in &candidates {
+        let src = src_dir.join(dll);
+        if src.exists() {
+            let dst = game_dir.join(dll);
+            std::fs::copy(&src, &dst)
+                .map_err(|e| format!("Failed to copy {dll}: {e}"))?;
+            copied.push((*dll).to_string());
+        }
+    }
+    if copied.is_empty() {
+        return Err(format!("No recognised DLLs found in {}", src_dir.display()));
+    }
+    Ok(copied)
+}
+
+/// Remove dgVoodoo2 wrapper DLLs that were previously copied into the game
+/// directory.  Returns the list of DLL names that were actually removed.
+#[tauri::command]
+fn remove_dgvoodoo_wrapper(game_path: String) -> Result<Vec<String>, String> {
+    let game_dir = std::path::Path::new(&game_path)
+        .parent()
+        .ok_or_else(|| "Invalid game path".to_string())?;
+    let candidates = ["D3D8.dll", "D3D9.dll", "D3D11.dll", "D3DImm.dll", "DDraw.dll"];
+    let mut removed: Vec<String> = Vec::new();
+    for dll in &candidates {
+        let p = game_dir.join(dll);
+        if p.exists() {
+            std::fs::remove_file(&p)
+                .map_err(|e| format!("Failed to remove {dll}: {e}"))?;
+            removed.push((*dll).to_string());
+        }
+    }
+    Ok(removed)
+}
+
+#[cfg(windows)]
+const IMAGE_FILE_LARGE_ADDRESS_AWARE_FLAG: u16 = 0x0020;
+
+#[cfg(windows)]
+fn pe_characteristics_offset(exe_path: &Path) -> Result<u64, String> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(exe_path)
+        .map_err(|e| format!("Failed to open executable '{}': {}", exe_path.display(), e))?;
+
+    let mut mz = [0u8; 2];
+    file.read_exact(&mut mz)
+        .map_err(|e| format!("Failed to read DOS header: {}", e))?;
+    if mz != [b'M', b'Z'] {
+        return Err("Not a valid PE executable (missing MZ header)".to_string());
+    }
+
+    file.seek(SeekFrom::Start(0x3C))
+        .map_err(|e| format!("Failed to seek to PE offset: {}", e))?;
+    let mut pe_ptr = [0u8; 4];
+    file.read_exact(&mut pe_ptr)
+        .map_err(|e| format!("Failed to read PE header pointer: {}", e))?;
+    let pe_offset = u32::from_le_bytes(pe_ptr) as u64;
+
+    file.seek(SeekFrom::Start(pe_offset))
+        .map_err(|e| format!("Failed to seek to PE header: {}", e))?;
+    let mut pe_sig = [0u8; 4];
+    file.read_exact(&mut pe_sig)
+        .map_err(|e| format!("Failed to read PE signature: {}", e))?;
+    if pe_sig != [b'P', b'E', 0, 0] {
+        return Err("Not a valid PE executable (missing PE signature)".to_string());
+    }
+
+    Ok(pe_offset + 4 + 18)
+}
+
+#[cfg(windows)]
+fn read_pe_characteristics(exe_path: &Path) -> Result<u16, String> {
+    let char_offset = pe_characteristics_offset(exe_path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(exe_path)
+        .map_err(|e| format!("Failed to open executable '{}': {}", exe_path.display(), e))?;
+    file.seek(SeekFrom::Start(char_offset))
+        .map_err(|e| format!("Failed to seek to characteristics field: {}", e))?;
+    let mut flags = [0u8; 2];
+    file.read_exact(&mut flags)
+        .map_err(|e| format!("Failed to read PE characteristics: {}", e))?;
+    Ok(u16::from_le_bytes(flags))
+}
+
+#[cfg(windows)]
+fn write_pe_characteristics(exe_path: &Path, characteristics: u16) -> Result<(), String> {
+    let char_offset = pe_characteristics_offset(exe_path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(exe_path)
+        .map_err(|e| format!("Failed to open executable for patching '{}': {}", exe_path.display(), e))?;
+    file.seek(SeekFrom::Start(char_offset))
+        .map_err(|e| format!("Failed to seek to characteristics field: {}", e))?;
+    file.write_all(&characteristics.to_le_bytes())
+        .map_err(|e| format!("Failed to write PE characteristics: {}", e))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_laa_backup(exe_path: &Path) -> Result<(), String> {
+    let mut backup_name = exe_path.as_os_str().to_os_string();
+    backup_name.push(".laa.bak");
+    let backup_path = PathBuf::from(backup_name);
+    if backup_path.exists() {
+        return Ok(());
+    }
+    std::fs::copy(exe_path, &backup_path).map_err(|e| {
+        format!(
+            "Failed to create LAA backup '{}' from '{}': {}",
+            backup_path.display(),
+            exe_path.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+/// Returns true when IMAGE_FILE_LARGE_ADDRESS_AWARE is enabled in the PE
+/// header of the given executable.
+#[tauri::command]
+fn get_mugen_large_address_aware(game_path: String) -> Result<bool, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = game_path;
+        return Err("LAA patching is only supported on Windows".to_string());
+    }
+    #[cfg(windows)]
+    {
+        let exe_path = Path::new(&game_path);
+        let flags = read_pe_characteristics(exe_path)?;
+        Ok((flags & IMAGE_FILE_LARGE_ADDRESS_AWARE_FLAG) != 0)
+    }
+}
+
+/// Enables or disables IMAGE_FILE_LARGE_ADDRESS_AWARE in the executable's PE
+/// characteristics. Returns the resulting enabled state.
+#[tauri::command]
+fn set_mugen_large_address_aware(game_path: String, enabled: bool) -> Result<bool, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (game_path, enabled);
+        return Err("LAA patching is only supported on Windows".to_string());
+    }
+    #[cfg(windows)]
+    {
+        let exe_path = Path::new(&game_path);
+        let current = read_pe_characteristics(exe_path)?;
+        let next = if enabled {
+            current | IMAGE_FILE_LARGE_ADDRESS_AWARE_FLAG
+        } else {
+            current & !IMAGE_FILE_LARGE_ADDRESS_AWARE_FLAG
+        };
+        if next != current {
+            // Preserve a one-time backup before modifying the executable header.
+            ensure_laa_backup(exe_path)?;
+            write_pe_characteristics(exe_path, next)?;
+        }
+        Ok((next & IMAGE_FILE_LARGE_ADDRESS_AWARE_FLAG) != 0)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[tauri::command]
 fn launch_game(
     app: AppHandle,
@@ -5766,6 +6051,7 @@ fn launch_game(
     prefix: Option<String>,
     args: Option<String>,
     boss_key: Option<screenshot::BossKeyConfig>,
+    cpu_affinity_mask: Option<u64>,
 ) -> Result<(), String> {
     let path_clone = path.clone();
     thread::spawn(move || {
@@ -5833,6 +6119,20 @@ fn launch_game(
         match command.spawn() {
             Ok(mut child) => {
                 let root_pid = child.id();
+
+                // Windows-only: pin the game process to specific CPU cores when
+                // requested (e.g. single-core affinity for MUGEN compatibility).
+                #[cfg(windows)]
+                if let Some(mask) = cpu_affinity_mask {
+                    use std::os::windows::io::AsRawHandle;
+                    use winapi::um::winbase::SetProcessAffinityMask;
+                    let handle = child.as_raw_handle();
+                    let affinity = u32::try_from(mask).unwrap_or(u32::MAX);
+                    unsafe {
+                        SetProcessAffinityMask(handle as winapi::um::winnt::HANDLE, affinity);
+                    }
+                }
+
                 discord::set_game_window_pid(root_pid as i32);
                 let start_time = Instant::now();
                 let initial_related = vec![root_pid];
@@ -8767,6 +9067,24 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_cli::init())
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let payload = parse_external_cli_invocation(&argv);
+            if payload.subcommand.is_none() {
+                return;
+            }
+
+            if matches!(
+                payload.subcommand.as_deref(),
+                Some("launch") | Some("quick-install-zip")
+            ) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+
+            let _ = app.emit("external-cli-invoked", payload);
+        }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -8815,6 +9133,11 @@ pub fn run() {
             itch_butler_check_updates,
             itch_butler_apply_update,
             launch_game,
+            detect_mugen_game,
+            apply_dgvoodoo_wrapper,
+            remove_dgvoodoo_wrapper,
+            get_mugen_large_address_aware,
+            set_mugen_large_address_aware,
             launch_steam_game,
             launch_store_uri,
             kill_game,
@@ -8834,6 +9157,7 @@ pub fn run() {
             fetch_igdb_metadata,
             fetch_rawg_metadata,
             fetch_mobygames_metadata,
+            fetch_steamgriddb_artwork,
             fetch_custom_metadata_command,
             custom_metadata_list_templates,
             custom_metadata_export_templates,
@@ -9005,7 +9329,7 @@ pub fn run() {
                                     let path = game.path.clone();
                                     let app2 = app.clone();
                                     thread::spawn(move || {
-                                        let _ = launch_game(app2, path, None, None, None, None);
+                                        let _ = launch_game(app2, path, None, None, None, None, None);
                                     });
                                 }
                             }

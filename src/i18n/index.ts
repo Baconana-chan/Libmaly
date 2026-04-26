@@ -132,7 +132,9 @@ const resources: Resource = {
           "scanner": "Scanner",
           "import": "Import",
           "rss": "RSS Feeds",
-          "wine": "Wine / Proton"
+          "wine": "Wine / Proton",
+          "metarules": "Metadata Rules",
+          "emulators": "Emulators"
         },
         "language": "Language",
         "profiles": {
@@ -170,6 +172,7 @@ const resources: Resource = {
           "title": "System & Notifications",
           "startup": "Start minimized in tray with Windows",
           "updates": "Check for game updates (F95/DLsite)",
+          "app_update_checker": "Check for app updates",
           "notifications": "Show system notification on session end",
           "tray_tooltip": "Live session duration in tray tooltip",
           "surprise_launch": "Surprise me launches immediately",
@@ -195,6 +198,7 @@ const resources: Resource = {
           "sidebar_show_developers": "Show Developers",
           "sidebar_show_wishlist": "Show Wishlist",
           "sidebar_show_surprise": "Show Surprise button",
+          "sidebar_show_global_notes": "Show Global Notes",
           "sidebar_show_add": "Show Add button",
           "sidebar_show_settings": "Show Settings button",
           "sidebar_show_logs": "Show Logs button",
@@ -369,6 +373,9 @@ const resources: Resource = {
           "settings": "Settings",
           "logs": "Logs",
           "surprise": "Surprise me",
+          "global_notes": "Notes",
+          "global_notes_has_content": "Has notes",
+          "global_notes_placeholder": "Your notes…",
           "news": "News",
           "stats": "Stats",
           "search_placeholder": "Search library...",
@@ -384,6 +391,7 @@ const resources: Resource = {
           "scan_dir_hint": "scan dir",
           "exe_sh_hint": ".exe / .sh",
           "update_available_tooltip": "v{{version}} is available — click to install",
+          "snooze_update": "Dismiss update notification",
           "new_update_badge": "New update available!",
           "sort_options": {
             "lastPlayed": "Recent",
@@ -828,7 +836,9 @@ const resources: Resource = {
           "scanner": "Сканер",
           "import": "Импорт",
           "rss": "RSS Ленты",
-          "wine": "Wine / Proton"
+          "wine": "Wine / Proton",
+          "metarules": "Правила метаданных",
+          "emulators": "Эмуляторы"
         },
         "language": "Язык",
         "profiles": {
@@ -866,6 +876,7 @@ const resources: Resource = {
           "title": "Система и Уведомления",
           "startup": "Запускать свернутым в трей вместе с Windows",
           "updates": "Проверять обновления игр (F95/DLsite)",
+          "app_update_checker": "Проверять обновления приложения",
           "notifications": "Показывать уведомление по завершении сессии",
           "tray_tooltip": "Длительность сессии в подсказке трея",
           "surprise_launch": "Мгновенный запуск при выборе случайной игры",
@@ -891,6 +902,7 @@ const resources: Resource = {
           "sidebar_show_developers": "Показывать разработчиков",
           "sidebar_show_wishlist": "Показывать wishlist",
           "sidebar_show_surprise": "Показывать кнопку случайной игры",
+          "sidebar_show_global_notes": "Показывать глобальные заметки",
           "sidebar_show_add": "Показывать кнопку добавления",
           "sidebar_show_settings": "Показывать кнопку настроек",
           "sidebar_show_logs": "Показывать кнопку логов",
@@ -1065,6 +1077,9 @@ const resources: Resource = {
           "settings": "Настройки",
           "logs": "Логи",
           "surprise": "Случайная игра",
+          "global_notes": "Заметки",
+          "global_notes_has_content": "Есть заметки",
+          "global_notes_placeholder": "Ваши заметки…",
           "news": "Новости",
           "stats": "Статистика",
           "search_placeholder": "Поиск в библиотеке...",
@@ -1080,6 +1095,7 @@ const resources: Resource = {
           "scan_dir_hint": "папка сканирования",
           "exe_sh_hint": ".exe / .sh",
           "update_available_tooltip": "Доступна v{{version}} — нажать для установки",
+          "snooze_update": "Скрыть уведомление об обновлении",
           "new_update_badge": "Доступно обновление!",
           "sort_options": {
             "lastPlayed": "Недавние",
@@ -1508,7 +1524,9 @@ const resources: Resource = {
           "scanner": "スキャナー",
           "import": "インポート",
           "rss": "RSSフィード",
-          "wine": "Wine / Proton"
+          "wine": "Wine / Proton",
+          "metarules": "メタデータルール",
+          "emulators": "エミュレーター"
         },
         "language": "言語",
         "profiles": {
@@ -1554,6 +1572,7 @@ const resources: Resource = {
           "title": "システムと通知",
           "startup": "Windows 起動時にトレイに最小化して起動",
           "updates": "ゲームの更新を確認（F95/DLsite）",
+          "app_update_checker": "アプリの更新を確認",
           "notifications": "セッション終了時にシステム通知を表示",
           "tray_tooltip": "トレイツールチップにセッション時間を表示",
           "surprise_launch": "「ランダム起動」を選択するとすぐに実行",
@@ -1693,6 +1712,7 @@ const resources: Resource = {
           "scan_dir_hint": "スキャンディレクトリ",
           "exe_sh_hint": ".exe / .sh",
           "update_available_tooltip": "v{{version}} 利用可能 — クリックしてインストール",
+          "snooze_update": "更新通知を閉じる",
           "new_update_badge": "新しいアップデートがあります！",
           "sort_options": {
             "lastPlayed": "最近",
@@ -2125,7 +2145,9 @@ const resources: Resource = {
           "scanner": "扫描器",
           "import": "导入",
           "rss": "RSS订阅",
-          "wine": "Wine / Proton"
+          "wine": "Wine / Proton",
+          "metarules": "元数据规则",
+          "emulators": "模拟器"
         },
         "language": "语言",
         "profiles": {
@@ -2171,6 +2193,7 @@ const resources: Resource = {
           "title": "系统与通知",
           "startup": "随 Windows 启动并最小化到托盘",
           "updates": "检查游戏更新 (F95/DLsite)",
+          "app_update_checker": "检查应用程序更新",
           "notifications": "会话结束时显示系统通知",
           "tray_tooltip": "托盘图标显示实时会话时长",
           "surprise_launch": "点击'随机启动'后立即运行",
@@ -2323,6 +2346,7 @@ const resources: Resource = {
           "scan_dir_hint": "扫描目录",
           "exe_sh_hint": ".exe / .sh",
           "update_available_tooltip": "v{{version}} 可用 — 点击安装",
+          "snooze_update": "关闭更新提示",
           "new_update_badge": "发现新版本！",
           "sort_options": {
             "lastPlayed": "最近",
@@ -2730,7 +2754,9 @@ const resources: Resource = {
           "scanner": "스캐너",
           "import": "가져오기",
           "rss": "RSS 피드",
-          "wine": "Wine / Proton"
+          "wine": "Wine / Proton",
+          "metarules": "메타데이터 규칙",
+          "emulators": "에뮬레이터"
         },
         "language": "언어",
         "profiles": {
@@ -2750,6 +2776,7 @@ const resources: Resource = {
           "title": "시스템 및 알림",
           "startup": "Windows 시작 시 트레이로 최소화",
           "updates": "게임 업데이트 확인 (F95/DLsite)",
+          "app_update_checker": "앱 업데이트 확인",
           "notifications": "세션 종료 시 시스템 알림 표시",
           "tray_tooltip": "트레이 툴팁에 실시간 세션 시간 표시",
           "surprise_launch": "랜덤 실행 즉시 시작",
@@ -2928,6 +2955,7 @@ const resources: Resource = {
           "scan_dir_hint": "스캔 디렉토리",
           "exe_sh_hint": ".exe / .sh",
           "update_available_tooltip": "v{{version}} 사용 가능 — 클릭하여 설치",
+          "snooze_update": "업데이트 알림 닫기",
           "new_update_badge": "새 업데이트 사용 가능!",
           "sort_options": {
             "lastPlayed": "최근",
@@ -3343,7 +3371,9 @@ const resources: Resource = {
           "scanner": "掃描器",
           "import": "匯入",
           "rss": "RSS 訂閱源",
-          "wine": "Wine / Proton"
+          "wine": "Wine / Proton",
+          "metarules": "元資料規則",
+          "emulators": "模擬器"
         },
         "language": "語言",
         "profiles": {
@@ -3363,6 +3393,7 @@ const resources: Resource = {
           "title": "系統與通知",
           "startup": "隨 Windows 啟動並最小化至系統匣",
           "updates": "檢查遊戲更新（F95/DLsite）",
+          "app_update_checker": "檢查應用程式更新",
           "notifications": "時段結束時顯示系統通知",
           "tray_tooltip": "系統匣工具提示顯示即時時段時長",
           "surprise_launch": "隨機啟動立即執行",
@@ -3541,6 +3572,7 @@ const resources: Resource = {
           "scan_dir_hint": "掃描目錄",
           "exe_sh_hint": ".exe / .sh",
           "update_available_tooltip": "v{{version}} 可用 — 點擊安裝",
+          "snooze_update": "關閉更新提示",
           "new_update_badge": "有新版本可用！",
           "sort_options": {
             "lastPlayed": "最近",
@@ -3956,7 +3988,9 @@ const resources: Resource = {
           "scanner": "Skaner",
           "import": "Import",
           "rss": "Kanały RSS",
-          "wine": "Wine / Proton"
+          "wine": "Wine / Proton",
+          "metarules": "Reguły metadanych",
+          "emulators": "Emulatory"
         },
         "language": "Język",
         "profiles": {
@@ -3976,6 +4010,7 @@ const resources: Resource = {
           "title": "System i powiadomienia",
           "startup": "Uruchamiaj zminimalizowany do zasobnika z Windows",
           "updates": "Sprawdzaj aktualizacje gier (F95/DLsite)",
+          "app_update_checker": "Sprawdzaj aktualizacje aplikacji",
           "notifications": "Pokazuj powiadomienie systemowe po zakończeniu sesji",
           "tray_tooltip": "Czas trwania sesji na żywo w podpowiedzi zasobnika",
           "surprise_launch": "Zaskocz mnie uruchamia natychmiast",
@@ -4154,6 +4189,7 @@ const resources: Resource = {
           "scan_dir_hint": "katalog skanowania",
           "exe_sh_hint": ".exe / .sh",
           "update_available_tooltip": "v{{version}} dostępna — kliknij, aby zainstalować",
+          "snooze_update": "Odsuń powiadomienie o aktualizacji",
           "new_update_badge": "Dostępna nowa aktualizacja!",
           "sort_options": {
             "lastPlayed": "Ostatnie",
@@ -4569,7 +4605,9 @@ const resources: Resource = {
           "scanner": "Сканер",
           "import": "Імпорт",
           "rss": "RSS Канали",
-          "wine": "Wine / Proton"
+          "wine": "Wine / Proton",
+          "metarules": "Правила метаданих",
+          "emulators": "Емулятори"
         },
         "language": "Мова",
         "profiles": {
@@ -4589,6 +4627,7 @@ const resources: Resource = {
           "title": "Система та Сповіщення",
           "startup": "Запускати згорнутим у трей разом з Windows",
           "updates": "Перевіряти оновлення ігор (F95/DLsite)",
+          "app_update_checker": "Перевіряти оновлення застосунку",
           "notifications": "Показувати системне сповіщення після завершення сесії",
           "tray_tooltip": "Тривалість сесії у підказці трею",
           "surprise_launch": "«Здивуй мене» запускає миттєво",
@@ -4767,6 +4806,7 @@ const resources: Resource = {
           "scan_dir_hint": "папка сканування",
           "exe_sh_hint": ".exe / .sh",
           "update_available_tooltip": "Доступна v{{version}} — натисніть для встановлення",
+          "snooze_update": "Закрити сповіщення про оновлення",
           "new_update_badge": "Доступне оновлення!",
           "sort_options": {
             "lastPlayed": "Недавні",
@@ -5182,7 +5222,9 @@ const resources: Resource = {
           "scanner": "Scanner",
           "import": "Import",
           "rss": "RSS-Feeds",
-          "wine": "Wine / Proton"
+          "wine": "Wine / Proton",
+          "metarules": "Metadaten-Regeln",
+          "emulators": "Emulatoren"
         },
         "language": "Sprache",
         "profiles": {
@@ -5202,6 +5244,7 @@ const resources: Resource = {
           "title": "System & Benachrichtigungen",
           "startup": "Minimiert im Tray mit Windows starten",
           "updates": "Nach Spielupdates suchen (F95/DLsite)",
+          "app_update_checker": "App-Updates suchen",
           "notifications": "Systembenachrichtigung bei Sitzungsende",
           "tray_tooltip": "Live-Sitzungsdauer im Tray-Tooltip",
           "surprise_launch": "Überraschung startet sofort",
@@ -5380,6 +5423,7 @@ const resources: Resource = {
           "scan_dir_hint": "Verzeichnis scannen",
           "exe_sh_hint": ".exe / .sh",
           "update_available_tooltip": "v{{version}} verfügbar — klicken zum Installieren",
+          "snooze_update": "Update-Benachrichtigung schließen",
           "new_update_badge": "Neues Update verfügbar!",
           "sort_options": {
             "lastPlayed": "Kürzlich",
@@ -5795,7 +5839,9 @@ const resources: Resource = {
           "scanner": "Scanner",
           "import": "Import",
           "rss": "Flux RSS",
-          "wine": "Wine / Proton"
+          "wine": "Wine / Proton",
+          "metarules": "Règles de métadonnées",
+          "emulators": "Émulateurs"
         },
         "language": "Langue",
         "profiles": {
@@ -5815,6 +5861,7 @@ const resources: Resource = {
           "title": "Système & Notifications",
           "startup": "Démarrer minimisé dans la barre avec Windows",
           "updates": "Vérifier les mises à jour de jeux (F95/DLsite)",
+          "app_update_checker": "Vérifier les mises à jour de l'application",
           "notifications": "Notification système à la fin de session",
           "tray_tooltip": "Durée de session en direct dans l'info-bulle",
           "surprise_launch": "Surprise moi lance immédiatement",
@@ -5993,6 +6040,7 @@ const resources: Resource = {
           "scan_dir_hint": "scanner le dossier",
           "exe_sh_hint": ".exe / .sh",
           "update_available_tooltip": "v{{version}} disponible — cliquer pour installer",
+          "snooze_update": "Ignorer la notification de mise à jour",
           "new_update_badge": "Nouvelle mise à jour !",
           "sort_options": {
             "lastPlayed": "Récent",

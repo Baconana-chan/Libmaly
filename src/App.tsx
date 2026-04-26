@@ -32,13 +32,13 @@ import { mergeFolderGames, mergeFolderMtimes } from "./lib/scanner";
 import { appStorageGetItem, appStorageRemoveItem, appStorageSetItem, getAppStorageProfile, setAppStorageProfile } from "./lib/appStorage";
 import {
   SK_GAMES, SK_MTIMES, SK_PATH, SK_FOLDERS, SK_STATS, SK_META, SK_HIDDEN, SK_FAVS, SK_GHOST,
-  SK_CUSTOM, SK_NOTES, SK_ACHIEVEMENTS, SK_COLLECTIONS, SK_LAUNCH, SK_RECENT, SK_ORDER, SK_SESSION_LOG,
+  SK_CUSTOM, SK_NOTES, SK_GLOBAL_NOTES, SK_ACHIEVEMENTS, SK_COLLECTIONS, SK_LAUNCH, SK_RECENT, SK_ORDER, SK_SESSION_LOG,
   SK_WISHLIST, SK_HISTORY, SK_SETTINGS, SK_VIEW_MODE, SK_SIDEBAR_WIDTH, SK_LAYOUT_PRESETS, SK_STEAM_WEB_API_KEY, SK_STEAM_PROFILE_REF,
   JOB_INCREMENTAL_SYNC, JOB_FULL_SCAN, JOB_INTEGRITY_CHECK, JOB_BATCH_METADATA_REFRESH,
   JOB_AUTO_METADATA_REFRESH, JOB_UPDATE_CHECKER, JOB_AUTO_HEAL_PATHS, JOB_BACKUP_RETENTION, JOB_DB_VACUUM, JOB_AUTO_CLOUD_BACKUP,
   DEFAULT_METADATA_QUEUE_CONCURRENCY, DEFAULT_METADATA_QUEUE_MAX_ATTEMPTS, DEFAULT_METADATA_QUEUE_BACKOFF_MS,
   COLLECTION_COLORS, SCREENSHOT_TOAST_TTL_MS, DEFAULT_SETTINGS, DEFAULT_LAUNCH_CONFIG,
-  GENERIC_EXE_NAMES, RATING_CATEGORIES,
+  GENERIC_EXE_NAMES, RATING_CATEGORIES, SK_METADATA_RULES, SK_EMULATOR_PROFILES,
 } from "./lib/constants";
 import type { GameAchievementItem, GameAchievementsByPath } from "./lib/gameAchievements";
 import { normalizeAchievementsMap } from "./lib/gameAchievements";
@@ -563,6 +563,10 @@ interface GameCustomization {
   displayName?: string;
   coverUrl?: string;
   backgroundUrl?: string;
+  /** Optional game logo artwork URL (e.g. SteamGridDB logos) */
+  logoUrl?: string;
+  /** Optional game icon artwork URL (e.g. SteamGridDB icons) */
+  iconUrl?: string;
   /** Alternate executable to launch instead of the scanned game.path */
   exeOverride?: string;
   /** Command-line arguments for the primary or override executable */
@@ -608,6 +612,14 @@ interface GameCustomization {
   manualGenres?: string;
   manualReleaseDate?: string;
   manualDescription?: string;
+  /** MUGEN engine compatibility: force process affinity to core 0 only */
+  mugenForceSingleCore?: boolean;
+  /** MUGEN engine compatibility: path to dgVoodoo2 root folder for wrapper DLLs */
+  mugenDgVoodooFolder?: string;
+  /** Emulator profile ID to launch this game via an emulator */
+  emulatorProfileId?: string;
+  /** Absolute path to the ROM file (used with emulatorProfileId) */
+  romPath?: string;
 }
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
@@ -636,8 +648,60 @@ const METADATA_SOURCE_PRIORITY = [
   "mobygames",
 ] as const;
 
-function metadataSourceRank(source?: string | null) {
+// ─── Metadata post-processing rules ──────────────────────────────────────────
+
+export type MetadataCleanupField =
+  | "title" | "developer" | "publisher" | "overview" | "engine"
+  | "version" | "release_date" | "circle" | "tags" | "genres" | "*";
+
+export type MetadataCleanupRuleType =
+  | "regex_replace"
+  | "trim_prefix"
+  | "trim_suffix"
+  | "strip_brackets"
+  | "exclude_item"
+  | "lowercase_all"
+  | "uppercase_first";
+
+export interface MetadataCleanupRule {
+  id: string;
+  enabled: boolean;
+  field: MetadataCleanupField;
+  type: MetadataCleanupRuleType;
+  /** pattern for regex_replace / exclude_item / trim_prefix / trim_suffix */
+  pattern?: string;
+  /** replacement string for regex_replace */
+  replacement?: string;
+  description?: string;
+}
+
+export interface MetadataFieldSourceOverride {
+  field: MetadataCleanupField;
+  /** ordered list of sources to prefer for this field */
+  sources: string[];
+}
+
+export interface MetadataPostProcessingConfig {
+  /** Reordered global source list; replaces METADATA_SOURCE_PRIORITY baseline */
+  globalSourceOrder: string[];
+  /** Per-field source preference overrides */
+  fieldSourceOverrides: MetadataFieldSourceOverride[];
+  /** Post-merge text cleanup rules */
+  cleanupRules: MetadataCleanupRule[];
+}
+
+export const DEFAULT_METADATA_RULES: MetadataPostProcessingConfig = {
+  globalSourceOrder: [],
+  fieldSourceOverrides: [],
+  cleanupRules: [],
+};
+
+function metadataSourceRank(source?: string | null, customOrder?: string[]) {
   const normalized = (source || "").trim().toLowerCase();
+  if (customOrder && customOrder.length > 0) {
+    const idx = customOrder.indexOf(normalized);
+    return idx === -1 ? customOrder.length + 1 : idx;
+  }
   const idx = METADATA_SOURCE_PRIORITY.indexOf(normalized as typeof METADATA_SOURCE_PRIORITY[number]);
   return idx === -1 ? METADATA_SOURCE_PRIORITY.length + 1 : idx;
 }
@@ -806,10 +870,14 @@ function pickMetadataStringField(
     | "file_format"
     | "file_size",
   preferredSources?: readonly string[],
+  customOrder?: string[],
 ): string | undefined {
+  const baseFallback = customOrder && customOrder.length > 0
+    ? customOrder
+    : [...METADATA_SOURCE_PRIORITY];
   const order = [
     ...(preferredSources ?? []),
-    ...METADATA_SOURCE_PRIORITY,
+    ...baseFallback,
     ...Array.from(snapshotsBySource.keys()),
   ];
   const seen = new Set<string>();
@@ -828,10 +896,14 @@ function mergeMetadataArrayField(
   snapshotsBySource: Map<string, MetadataSourceSnapshot>,
   field: "screenshots" | "tags" | "genres" | "relations",
   preferredSources?: readonly string[],
+  customOrder?: string[],
 ) {
+  const baseFallback = customOrder && customOrder.length > 0
+    ? customOrder
+    : [...METADATA_SOURCE_PRIORITY];
   const order = [
     ...(preferredSources ?? []),
-    ...METADATA_SOURCE_PRIORITY,
+    ...baseFallback,
     ...Array.from(snapshotsBySource.keys()),
   ];
   const seenSources = new Set<string>();
@@ -854,7 +926,26 @@ function mergeMetadataArrayField(
   return next;
 }
 
-function mergeMetadataSnapshots(inputSnapshots: MetadataSourceSnapshot[]): GameMetadata {
+function resolveFieldSourceOrder(
+  field: string,
+  defaultPreferred: string[],
+  config?: MetadataPostProcessingConfig,
+): { preferred: string[]; customOrder: string[] } {
+  const globalOrder = config?.globalSourceOrder.length ? config.globalSourceOrder : [];
+  const fieldOverride = config?.fieldSourceOverrides.find(
+    (o) => o.field === field || o.field === "*",
+  );
+  const preferred = fieldOverride?.sources.length
+    ? fieldOverride.sources
+    : defaultPreferred;
+  return { preferred, customOrder: globalOrder };
+}
+
+function mergeMetadataSnapshots(
+  inputSnapshots: MetadataSourceSnapshot[],
+  config?: MetadataPostProcessingConfig,
+): GameMetadata {
+  const globalOrder = config?.globalSourceOrder.length ? config.globalSourceOrder : [];
   const snapshots = inputSnapshots
     .filter((snapshot) => isNonEmptyMetadataString(snapshot.source))
     .map(normalizeMetadataSnapshot);
@@ -862,7 +953,8 @@ function mergeMetadataSnapshots(inputSnapshots: MetadataSourceSnapshot[]): GameM
   for (const snapshot of snapshots) {
     snapshotsBySource.set(snapshot.source, snapshot);
   }
-  const aggregatedSources = Array.from(snapshotsBySource.keys()).sort((a, b) => metadataSourceRank(a) - metadataSourceRank(b));
+  const rank = (src: string) => metadataSourceRank(src, globalOrder.length ? globalOrder : undefined);
+  const aggregatedSources = Array.from(snapshotsBySource.keys()).sort((a, b) => rank(a) - rank(b));
   const sourceLinks = buildMetadataSourceLinks(Array.from(snapshotsBySource.values()));
   const primaryLink = sourceLinks[0] ?? null;
   const fetchedAt = Array.from(snapshotsBySource.values()).reduce<number | undefined>((latest, snapshot) => {
@@ -870,53 +962,164 @@ function mergeMetadataSnapshots(inputSnapshots: MetadataSourceSnapshot[]): GameM
     return latest ? Math.max(latest, snapshot.fetchedAt) : snapshot.fetchedAt;
   }, undefined);
 
-  return {
+  const pick = (field: Parameters<typeof pickMetadataStringField>[1], def: string[]) => {
+    const { preferred, customOrder } = resolveFieldSourceOrder(field, def, config);
+    return pickMetadataStringField(snapshotsBySource, field, preferred, customOrder);
+  };
+  const arr = (field: "screenshots" | "tags" | "genres" | "relations", def: string[]) => {
+    const { preferred, customOrder } = resolveFieldSourceOrder(field, def, config);
+    return mergeMetadataArrayField(snapshotsBySource, field, preferred, customOrder);
+  };
+
+  const merged: GameMetadata = {
     source: primaryLink?.source ?? aggregatedSources[0] ?? "",
     source_label: primaryLink?.source_label ?? snapshotsBySource.get(primaryLink?.source ?? aggregatedSources[0] ?? "")?.source_label,
     source_url: primaryLink?.source_url ?? "",
     fetchedAt,
-    title: pickMetadataStringField(snapshotsBySource, "title", ["f95", "dlsite", "vndb"]),
-    version: pickMetadataStringField(snapshotsBySource, "version", ["f95", "dlsite", "mangagamer", "johren", "fakku", "vndb"]),
-    developer: pickMetadataStringField(snapshotsBySource, "developer", ["dlsite", "f95", "mangagamer", "johren", "fakku", "vndb"]),
-    publisher: pickMetadataStringField(snapshotsBySource, "publisher", ["dlsite", "vndb", "igdb", "rawg", "mobygames"]),
-    genres: mergeMetadataArrayField(snapshotsBySource, "genres", ["vndb", "igdb", "rawg", "mobygames"]),
-    overview: pickMetadataStringField(snapshotsBySource, "overview", ["dlsite", "f95", "fakku", "mangagamer", "johren", "vndb"]),
-    overview_html: pickMetadataStringField(snapshotsBySource, "overview_html", ["dlsite", "fakku", "mangagamer", "johren"]),
-    cover_url: pickMetadataStringField(snapshotsBySource, "cover_url", ["vndb", "dlsite", "f95", "fakku", "igdb", "rawg", "mobygames"]),
-    screenshots: mergeMetadataArrayField(snapshotsBySource, "screenshots", ["vndb", "dlsite", "f95", "igdb", "rawg", "mobygames"]),
-    tags: mergeMetadataArrayField(snapshotsBySource, "tags", ["f95", "dlsite", "vndb", "igdb", "rawg", "mobygames"]),
-    relations: mergeMetadataArrayField(snapshotsBySource, "relations", ["vndb", "igdb", "rawg", "mobygames"]),
-    engine: pickMetadataStringField(snapshotsBySource, "engine", ["f95", "vndb", "igdb", "rawg"]),
-    os: pickMetadataStringField(snapshotsBySource, "os", ["dlsite", "f95", "vndb"]),
-    language: pickMetadataStringField(snapshotsBySource, "language", ["dlsite", "vndb", "f95"]),
-    censored: pickMetadataStringField(snapshotsBySource, "censored", ["dlsite", "f95", "fakku"]),
-    release_date: pickMetadataStringField(snapshotsBySource, "release_date", ["vndb", "dlsite", "f95", "igdb", "rawg", "mobygames"]),
-    last_updated: pickMetadataStringField(snapshotsBySource, "last_updated", ["f95", "dlsite", "rawg", "mobygames"]),
-    rating: pickMetadataStringField(snapshotsBySource, "rating", ["dlsite", "f95", "igdb", "rawg", "mobygames"]),
-    price: pickMetadataStringField(snapshotsBySource, "price", ["dlsite", "fakku", "mangagamer", "johren", "rawg"]),
-    circle: pickMetadataStringField(snapshotsBySource, "circle", ["dlsite"]),
-    series: pickMetadataStringField(snapshotsBySource, "series", ["dlsite", "vndb"]),
-    author: pickMetadataStringField(snapshotsBySource, "author", ["dlsite"]),
-    illustration: pickMetadataStringField(snapshotsBySource, "illustration", ["dlsite"]),
-    voice_actor: pickMetadataStringField(snapshotsBySource, "voice_actor", ["dlsite"]),
-    music: pickMetadataStringField(snapshotsBySource, "music", ["dlsite"]),
-    age_rating: pickMetadataStringField(snapshotsBySource, "age_rating", ["dlsite", "fakku"]),
-    product_format: pickMetadataStringField(snapshotsBySource, "product_format", ["dlsite"]),
-    file_format: pickMetadataStringField(snapshotsBySource, "file_format", ["dlsite"]),
-    file_size: pickMetadataStringField(snapshotsBySource, "file_size", ["dlsite"]),
+    title: pick("title", ["f95", "dlsite", "vndb"]),
+    version: pick("version", ["f95", "dlsite", "mangagamer", "johren", "fakku", "vndb"]),
+    developer: pick("developer", ["dlsite", "f95", "mangagamer", "johren", "fakku", "vndb"]),
+    publisher: pick("publisher", ["dlsite", "vndb", "igdb", "rawg", "mobygames"]),
+    genres: arr("genres", ["vndb", "igdb", "rawg", "mobygames"]),
+    overview: pick("overview", ["dlsite", "f95", "fakku", "mangagamer", "johren", "vndb"]),
+    overview_html: pick("overview_html", ["dlsite", "fakku", "mangagamer", "johren"]),
+    cover_url: pick("cover_url", ["vndb", "dlsite", "f95", "fakku", "igdb", "rawg", "mobygames"]),
+    screenshots: arr("screenshots", ["vndb", "dlsite", "f95", "igdb", "rawg", "mobygames"]),
+    tags: arr("tags", ["f95", "dlsite", "vndb", "igdb", "rawg", "mobygames"]),
+    relations: arr("relations", ["vndb", "igdb", "rawg", "mobygames"]),
+    engine: pick("engine", ["f95", "vndb", "igdb", "rawg"]),
+    os: pick("os", ["dlsite", "f95", "vndb"]),
+    language: pick("language", ["dlsite", "vndb", "f95"]),
+    censored: pick("censored", ["dlsite", "f95", "fakku"]),
+    release_date: pick("release_date", ["vndb", "dlsite", "f95", "igdb", "rawg", "mobygames"]),
+    last_updated: pick("last_updated", ["f95", "dlsite", "rawg", "mobygames"]),
+    rating: pick("rating", ["dlsite", "f95", "igdb", "rawg", "mobygames"]),
+    price: pick("price", ["dlsite", "fakku", "mangagamer", "johren", "rawg"]),
+    circle: pick("circle", ["dlsite"]),
+    series: pick("series", ["dlsite", "vndb"]),
+    author: pick("author", ["dlsite"]),
+    illustration: pick("illustration", ["dlsite"]),
+    voice_actor: pick("voice_actor", ["dlsite"]),
+    music: pick("music", ["dlsite"]),
+    age_rating: pick("age_rating", ["dlsite", "fakku"]),
+    product_format: pick("product_format", ["dlsite"]),
+    file_format: pick("file_format", ["dlsite"]),
+    file_size: pick("file_size", ["dlsite"]),
     source_links: sourceLinks,
     source_snapshots: Object.fromEntries(Array.from(snapshotsBySource.entries())),
     aggregated_sources: aggregatedSources,
   };
+  return config ? applyMetadataPostProcessing(merged, config) : merged;
 }
 
-function mergeMetadataWithSnapshot(existing: GameMetadata | undefined, incoming: GameMetadata | MetadataSourceSnapshot) {
+function applyCleanupRuleToString(value: string, rule: MetadataCleanupRule): string {
+  try {
+    switch (rule.type) {
+      case "regex_replace": {
+        if (!rule.pattern) return value;
+        const regex = new RegExp(rule.pattern, "g");
+        return value.replace(regex, rule.replacement ?? "");
+      }
+      case "trim_prefix":
+        return rule.pattern && value.toLowerCase().startsWith(rule.pattern.toLowerCase())
+          ? value.slice(rule.pattern.length).trimStart()
+          : value;
+      case "trim_suffix":
+        return rule.pattern && value.toLowerCase().endsWith(rule.pattern.toLowerCase())
+          ? value.slice(0, value.length - rule.pattern.length).trimEnd()
+          : value;
+      case "strip_brackets":
+        return value.replace(/^[\[\({](.+)[\]\)}]$/, "$1").trim();
+      case "lowercase_all":
+        return value.toLowerCase();
+      case "uppercase_first":
+        return value.charAt(0).toUpperCase() + value.slice(1);
+      default:
+        return value;
+    }
+  } catch {
+    return value;
+  }
+}
+
+function applyMetadataPostProcessing(
+  meta: GameMetadata,
+  config: MetadataPostProcessingConfig,
+): GameMetadata {
+  if (!config.cleanupRules.length) return meta;
+  const activeRules = config.cleanupRules.filter((r) => r.enabled);
+  if (!activeRules.length) return meta;
+
+  const applyToString = (field: string, value: string | undefined): string | undefined => {
+    if (!value) return value;
+    let v = value;
+    for (const rule of activeRules) {
+      if (rule.field !== field && rule.field !== "*") continue;
+      if (rule.type === "exclude_item") continue; // only for arrays
+      v = applyCleanupRuleToString(v, rule);
+    }
+    return v.trim() || undefined;
+  };
+
+  const applyToArray = (field: string, values: string[] | undefined): string[] | undefined => {
+    if (!values) return values;
+    const result: string[] = [];
+    for (const rawVal of values) {
+      let v = rawVal;
+      let excluded = false;
+      for (const rule of activeRules) {
+        if (rule.field !== field && rule.field !== "*") continue;
+        if (rule.type === "exclude_item") {
+          if (rule.pattern) {
+            try {
+              excluded = new RegExp(rule.pattern, "i").test(v);
+            } catch {
+              excluded = v.toLowerCase().includes(rule.pattern.toLowerCase());
+            }
+            if (excluded) break;
+          }
+          continue;
+        }
+        v = applyCleanupRuleToString(v, rule);
+      }
+      if (!excluded && v.trim()) result.push(v.trim());
+    }
+    // deduplicate after transforms
+    const seen = new Set<string>();
+    return result.filter((x) => {
+      const key = x.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  return {
+    ...meta,
+    title: applyToString("title", meta.title),
+    developer: applyToString("developer", meta.developer),
+    publisher: applyToString("publisher", meta.publisher),
+    overview: applyToString("overview", meta.overview),
+    engine: applyToString("engine", meta.engine),
+    version: applyToString("version", meta.version),
+    release_date: applyToString("release_date", meta.release_date),
+    circle: applyToString("circle", meta.circle),
+    tags: applyToArray("tags", meta.tags) ?? [],
+    genres: applyToArray("genres", meta.genres),
+  };
+}
+
+function mergeMetadataWithSnapshot(
+  existing: GameMetadata | undefined,
+  incoming: GameMetadata | MetadataSourceSnapshot,
+  config?: MetadataPostProcessingConfig,
+) {
   const existingSnapshots = metadataSnapshotsFromMeta(existing);
   const incomingSnapshot = "source_snapshots" in incoming || "aggregated_sources" in incoming || "source_links" in incoming
     ? metadataSnapshotFromMeta(incoming as GameMetadata)
     : normalizeMetadataSnapshot(incoming as MetadataSourceSnapshot);
   const nextSnapshots = incomingSnapshot ? [...existingSnapshots, incomingSnapshot] : existingSnapshots;
-  return mergeMetadataSnapshots(nextSnapshots);
+  return mergeMetadataSnapshots(nextSnapshots, config);
 }
 
 function metadataHasLinkedSources(meta?: GameMetadata | null) {
@@ -982,6 +1185,22 @@ interface RunnerOverrideConfig {
   prefixPath: string;
 }
 
+/** A configured emulator profile for launching ROMs */
+export interface EmulatorProfile {
+  /** Unique identifier */
+  id: string;
+  /** Human-readable name, e.g. "RetroArch GBA" */
+  name: string;
+  /** Absolute path to the emulator executable */
+  emulatorPath: string;
+  /** Launch args template. Tokens: {rom} {core} {dir} {name} */
+  args: string;
+  /** Optional core path (e.g. RetroArch .dll/.so core) */
+  corePath?: string;
+  /** ROM file extensions supported, e.g. ["gba","gb","gbc"] */
+  extensions: string[];
+}
+
 interface PrefixInfo {
   name: string;
   path: string;
@@ -1027,6 +1246,7 @@ interface InteropGameEntry {
 
 interface AppSettings {
   updateCheckerEnabled: boolean;
+  appUpdateCheckerEnabled: boolean;
   sessionToastEnabled: boolean;
   trayTooltipEnabled: boolean;
   startupWithWindows: boolean;
@@ -1056,6 +1276,7 @@ interface AppSettings {
   sidebarShowDevelopers?: boolean;
   sidebarShowWishlist?: boolean;
   sidebarShowSurpriseButton?: boolean;
+  sidebarShowGlobalNotes?: boolean;
   sidebarShowAddButton?: boolean;
   sidebarShowSettingsButton?: boolean;
   sidebarShowLogsButton?: boolean;
@@ -1090,6 +1311,7 @@ type LayoutPresetConfig = {
   sidebarShowDevelopers: boolean;
   sidebarShowWishlist: boolean;
   sidebarShowSurpriseButton: boolean;
+  sidebarShowGlobalNotes: boolean;
   sidebarShowAddButton: boolean;
   sidebarShowSettingsButton: boolean;
   sidebarShowLogsButton: boolean;
@@ -1114,6 +1336,7 @@ const LAYOUT_SIDEBAR_SETTING_KEYS = [
   "sidebarShowDevelopers",
   "sidebarShowWishlist",
   "sidebarShowSurpriseButton",
+  "sidebarShowGlobalNotes",
   "sidebarShowAddButton",
   "sidebarShowSettingsButton",
   "sidebarShowLogsButton",
@@ -1135,6 +1358,7 @@ function captureLayoutPresetConfig(viewMode: LayoutViewMode, sidebarWidth: numbe
     sidebarShowDevelopers: appSettings.sidebarShowDevelopers !== false,
     sidebarShowWishlist: appSettings.sidebarShowWishlist !== false,
     sidebarShowSurpriseButton: appSettings.sidebarShowSurpriseButton !== false,
+    sidebarShowGlobalNotes: appSettings.sidebarShowGlobalNotes !== false,
     sidebarShowAddButton: appSettings.sidebarShowAddButton !== false,
     sidebarShowSettingsButton: appSettings.sidebarShowSettingsButton !== false,
     sidebarShowLogsButton: appSettings.sidebarShowLogsButton !== false,
@@ -1174,6 +1398,7 @@ const BUILTIN_LAYOUT_PRESETS: LayoutPresetDescriptor[] = [
       sidebarShowDevelopers: false,
       sidebarShowWishlist: false,
       sidebarShowSurpriseButton: false,
+      sidebarShowGlobalNotes: false,
       sidebarShowAddButton: true,
       sidebarShowSettingsButton: true,
       sidebarShowLogsButton: false,
@@ -1195,6 +1420,7 @@ const BUILTIN_LAYOUT_PRESETS: LayoutPresetDescriptor[] = [
       sidebarShowDevelopers: true,
       sidebarShowWishlist: true,
       sidebarShowSurpriseButton: true,
+      sidebarShowGlobalNotes: true,
       sidebarShowAddButton: true,
       sidebarShowSettingsButton: true,
       sidebarShowLogsButton: true,
@@ -1216,6 +1442,7 @@ const BUILTIN_LAYOUT_PRESETS: LayoutPresetDescriptor[] = [
       sidebarShowDevelopers: false,
       sidebarShowWishlist: false,
       sidebarShowSurpriseButton: true,
+      sidebarShowGlobalNotes: false,
       sidebarShowAddButton: true,
       sidebarShowSettingsButton: true,
       sidebarShowLogsButton: true,
@@ -2336,15 +2563,18 @@ function NotesModal({ displayTitle, initialNote, onSave, onClose }: {
 
 
 // ─── Customise Modal ──────────────────────────────────────────────────────────
-function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSave, onClose }: {
+function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, emulatorProfiles, onSave, onClose }: {
   game: Game; meta?: GameMetadata; custom: GameCustomization;
   platform: string;
   globalLaunchConfig: LaunchConfig;
+  emulatorProfiles: EmulatorProfile[];
   onSave: (c: GameCustomization) => void; onClose: () => void;
 }) {
   const [displayName, setDisplayName] = useState(custom.displayName ?? meta?.title ?? game.name);
   const [coverUrl, setCoverUrl] = useState(custom.coverUrl ?? "");
   const [bgUrl, setBgUrl] = useState(custom.backgroundUrl ?? "");
+  const [logoUrl, setLogoUrl] = useState(custom.logoUrl ?? "");
+  const [iconUrl, setIconUrl] = useState(custom.iconUrl ?? "");
   const [exeOverride, setExeOverride] = useState(custom.exeOverride ?? "");
   const [launchArgs, setLaunchArgs] = useState(custom.launchArgs ?? "");
   const [pinnedExes, setPinnedExes] = useState<{ name: string; path: string }[]>(custom.pinnedExes ?? []);
@@ -2369,6 +2599,22 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
   const [manualReleaseDate, setManualReleaseDate] = useState(custom.manualReleaseDate ?? meta?.release_date ?? "");
   const [manualDescription, setManualDescription] = useState(custom.manualDescription ?? meta?.overview ?? "");
 
+  // MUGEN compatibility state
+  const [mugenForceSingleCore, setMugenForceSingleCore] = useState(!!custom.mugenForceSingleCore);
+  const [mugenDgVoodooFolder, setMugenDgVoodooFolder] = useState(custom.mugenDgVoodooFolder ?? "");
+  const [mugenDetected, setMugenDetected] = useState<boolean | null>(null);
+  const [dgVoodooWorking, setDgVoodooWorking] = useState(false);
+  const [dgVoodooStatus, setDgVoodooStatus] = useState<string | null>(null);
+  const [mugenLaaWorking, setMugenLaaWorking] = useState(false);
+  const [mugenLaaEnabled, setMugenLaaEnabled] = useState<boolean | null>(null);
+  const [mugenLaaStatus, setMugenLaaStatus] = useState<string | null>(null);
+  const [sgdbSyncing, setSgdbSyncing] = useState(false);
+  const [sgdbStatus, setSgdbStatus] = useState<string | null>(null);
+
+  // Emulator launch state
+  const [emuProfileId, setEmuProfileId] = useState(custom.emulatorProfileId ?? "");
+  const [romPath, setRomPath] = useState(custom.romPath ?? "");
+
   // Derive game folder from its exe path
   const gameFolder = game.path.replace(/[\\/][^\\/]+$/, "");
 
@@ -2380,6 +2626,23 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
       .catch(() => setDetectedRunners([]))
       .finally(() => setDetectingRunners(false));
   }, [platform]);
+
+  // Detect MUGEN engine in the background when the modal opens
+  useEffect(() => {
+    invoke<boolean>("detect_mugen_game", { path: game.path })
+      .then(setMugenDetected)
+      .catch(() => setMugenDetected(false));
+  }, [game.path]);
+
+  useEffect(() => {
+    if (platform !== "windows") {
+      setMugenLaaEnabled(null);
+      return;
+    }
+    invoke<boolean>("get_mugen_large_address_aware", { gamePath: game.path })
+      .then(setMugenLaaEnabled)
+      .catch(() => setMugenLaaEnabled(null));
+  }, [game.path, platform]);
 
   const pickImage = async (setter: (s: string) => void) => {
     const sel = await open({
@@ -2414,11 +2677,128 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
     }
   };
 
+  const pickDgVoodooFolder = async () => {
+    const sel = await open({ multiple: false, directory: true }).catch(() => null);
+    if (sel && typeof sel === "string") setMugenDgVoodooFolder(sel);
+  };
+
+  const pickRom = async () => {
+    const sel = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "ROM", extensions: ["zip", "7z", "iso", "cue", "bin", "gba", "gb", "gbc", "nes", "sfc", "smc", "n64", "z64", "chd", "md", "gen", "nds", "3ds", "psx", "pbp"] }],
+    }).catch(() => null);
+    if (sel && typeof sel === "string") setRomPath(sel);
+  };
+
+  const syncSteamGridDbArtwork = async () => {
+    setSgdbSyncing(true);
+    setSgdbStatus(null);
+    try {
+      const key = await invoke<string>("get_api_key", { provider: "steamgriddb" }).catch(() => "");
+      if (!key || !key.trim()) {
+        setSgdbStatus("SteamGridDB API key is missing. Configure it in Settings > Sources & Accounts > Third-party API Keys.");
+        return;
+      }
+      const result = await invoke<{
+        gameName?: string;
+        coverUrl?: string | null;
+        heroUrl?: string | null;
+        logoUrl?: string | null;
+        iconUrl?: string | null;
+      }>("fetch_steamgriddb_artwork", {
+        query: (displayName || game.name || "").trim(),
+        steamAppId: custom.steamAppId || null,
+      });
+
+      let applied = 0;
+      if (result.coverUrl) {
+        setCoverUrl(result.coverUrl);
+        applied += 1;
+      }
+      if (result.heroUrl) {
+        setBgUrl(result.heroUrl);
+        applied += 1;
+      }
+      if (result.logoUrl) {
+        setLogoUrl(result.logoUrl);
+        applied += 1;
+      }
+      if (result.iconUrl) {
+        setIconUrl(result.iconUrl);
+        applied += 1;
+      }
+
+      if (applied === 0) {
+        setSgdbStatus("SteamGridDB did not return usable artwork for this game.");
+      } else {
+        const matchedName = result.gameName ? ` (${result.gameName})` : "";
+        setSgdbStatus(`Synced ${applied} artwork item(s) from SteamGridDB${matchedName}.`);
+      }
+    } catch (e) {
+      setSgdbStatus(`Error: ${e}`);
+    } finally {
+      setSgdbSyncing(false);
+    }
+  };
+
+  const applyDgVoodoo = async () => {
+    if (!mugenDgVoodooFolder.trim()) { alert("Please select the dgVoodoo2 folder first."); return; }
+    setDgVoodooWorking(true);
+    setDgVoodooStatus(null);
+    try {
+      const copied = await invoke<string[]>("apply_dgvoodoo_wrapper", {
+        gamePath: game.path,
+        dgvoodooFolder: mugenDgVoodooFolder.trim(),
+      });
+      setDgVoodooStatus(`Applied: ${copied.join(", ")}`);
+    } catch (e) {
+      setDgVoodooStatus(`Error: ${e}`);
+    } finally {
+      setDgVoodooWorking(false);
+    }
+  };
+
+  const removeDgVoodoo = async () => {
+    setDgVoodooWorking(true);
+    setDgVoodooStatus(null);
+    try {
+      const removed = await invoke<string[]>("remove_dgvoodoo_wrapper", { gamePath: game.path });
+      setDgVoodooStatus(removed.length > 0 ? `Removed: ${removed.join(", ")}` : "No wrapper DLLs found in game folder.");
+    } catch (e) {
+      setDgVoodooStatus(`Error: ${e}`);
+    } finally {
+      setDgVoodooWorking(false);
+    }
+  };
+
+  const setMugenLaa = async (enabled: boolean) => {
+    if (platform !== "windows") return;
+    setMugenLaaWorking(true);
+    setMugenLaaStatus(null);
+    try {
+      const next = await invoke<boolean>("set_mugen_large_address_aware", {
+        gamePath: game.path,
+        enabled,
+      });
+      setMugenLaaEnabled(next);
+      setMugenLaaStatus(next
+        ? "LAA enabled: this executable can use up to 4 GB address space on 64-bit Windows."
+        : "LAA disabled: executable reverted to default 2 GB address space flag.");
+    } catch (e) {
+      setMugenLaaStatus(`Error: ${e}`);
+    } finally {
+      setMugenLaaWorking(false);
+    }
+  };
+
   const doSave = () => {
     onSave({
       displayName: displayName.trim() || undefined,
       coverUrl: coverUrl.trim() || undefined,
       backgroundUrl: bgUrl.trim() || undefined,
+      logoUrl: logoUrl.trim() || undefined,
+      iconUrl: iconUrl.trim() || undefined,
       exeOverride: exeOverride.trim() && exeOverride.trim() !== game.path ? exeOverride.trim() : undefined,
       launchArgs: launchArgs.trim() || undefined,
       pinnedExes: pinnedExes.length > 0 ? pinnedExes : undefined,
@@ -2435,6 +2815,10 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
       manualGenres: manualGenres.trim() || undefined,
       manualReleaseDate: manualReleaseDate.trim() || undefined,
       manualDescription: manualDescription.trim() || undefined,
+      mugenForceSingleCore: mugenForceSingleCore || undefined,
+      mugenDgVoodooFolder: mugenDgVoodooFolder.trim() || undefined,
+      emulatorProfileId: emuProfileId.trim() || undefined,
+      romPath: romPath.trim() || undefined,
     });
     onClose();
   };
@@ -2755,6 +3139,51 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
             )}
           </div>
 
+          {/* SteamGridDB artwork sync */}
+          <div>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
+              SteamGridDB Artwork Sync <span style={{ fontWeight: "normal", color: "var(--color-text-dim)" }}>(covers / heroes / logos / icons)</span>
+            </label>
+            <div className="rounded p-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+              <p className="text-[10px] mb-2" style={{ color: "var(--color-text-dim)" }}>
+                Uses your SteamGridDB API key from Settings and auto-applies the best matched artwork to this game.
+              </p>
+              <div className="flex gap-2 items-center">
+                <button
+                  onClick={syncSteamGridDbArtwork}
+                  disabled={sgdbSyncing}
+                  className="px-3 py-1.5 rounded text-xs font-medium disabled:opacity-50"
+                  style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>
+                  {sgdbSyncing ? "Syncing..." : "Sync from SteamGridDB"}
+                </button>
+                <span className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                  Query: {(displayName || game.name || "").trim() || "(empty)"}
+                </span>
+              </div>
+              {sgdbStatus && (
+                <p className="mt-2 text-[10px]" style={{ color: sgdbStatus.startsWith("Error") ? "var(--color-danger)" : "var(--color-success, var(--color-accent))" }}>
+                  {sgdbStatus}
+                </p>
+              )}
+              {(logoUrl || iconUrl) && (
+                <div className="mt-2 flex items-center gap-3 text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                  {logoUrl && (
+                    <div className="flex items-center gap-1.5">
+                      <span>Logo:</span>
+                      <img src={logoUrl} alt="logo" className="h-6 max-w-[120px] object-contain" />
+                    </div>
+                  )}
+                  {iconUrl && (
+                    <div className="flex items-center gap-1.5">
+                      <span>Icon:</span>
+                      <img src={iconUrl} alt="icon" className="h-6 w-6 object-contain rounded" />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Custom tags */}
           <div>
             <label className="block text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
@@ -2869,6 +3298,169 @@ function CustomizeModal({ game, meta, custom, platform, globalLaunchConfig, onSa
               These fields override scraped metadata. Use when scrapers fail or for custom entries.
             </p>
           </div>
+
+          {/* ── Emulator Launch ─────────────────────────────────────────────── */}
+          <div>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
+              Emulator Launch
+            </label>
+            <div className="rounded p-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+              <label className="block text-[10px] uppercase tracking-widest mb-1" style={{ color: "var(--color-text-dim)" }}>
+                Emulator Profile
+              </label>
+              <select
+                value={emuProfileId}
+                onChange={(e) => setEmuProfileId((e.target as HTMLSelectElement).value)}
+                className="w-full px-3 py-2 rounded text-xs outline-none mb-2"
+                style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+              >
+                <option value="">Disabled (launch executable directly)</option>
+                {emulatorProfiles.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+
+              <label className="block text-[10px] uppercase tracking-widest mb-1" style={{ color: "var(--color-text-dim)" }}>
+                ROM File
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Path to ROM file..."
+                  value={romPath}
+                  onInput={(e) => setRomPath((e.target as HTMLInputElement).value)}
+                  className="flex-1 px-3 py-2 rounded text-xs outline-none font-mono"
+                  style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-border-soft)" }}
+                />
+                <button onClick={pickRom}
+                  className="px-2.5 py-2 rounded text-xs flex-shrink-0"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}>
+                  Browse
+                </button>
+              </div>
+              <p className="mt-2 text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                Use an emulator profile to launch this entry as a ROM target instead of a direct executable.
+              </p>
+            </div>
+          </div>
+
+          {/* ── MUGEN Compatibility ──────────────────────────────────────────── */}
+          {(mugenDetected === true || mugenForceSingleCore || !!mugenDgVoodooFolder) && (
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <label className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                  MUGEN Engine Compatibility
+                </label>
+                {mugenDetected && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded"
+                    style={{ background: "var(--color-accent-deep)", color: "var(--color-accent)", border: "1px solid var(--color-accent)" }}>
+                    MUGEN detected
+                  </span>
+                )}
+              </div>
+
+              {/* Single-core affinity toggle */}
+              <div className="rounded p-3 mb-2" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input type="checkbox" checked={mugenForceSingleCore}
+                    onChange={(e) => setMugenForceSingleCore((e.target as HTMLInputElement).checked)}
+                    className="mt-0.5 flex-shrink-0" />
+                  <div>
+                    <span className="text-xs font-medium" style={{ color: "var(--color-text)" }}>
+                      Force single-core CPU affinity
+                    </span>
+                    <p className="text-[10px] mt-0.5" style={{ color: "var(--color-text-dim)" }}>
+                      Pins the game process to CPU core 0 only. Prevents MUGEN from crashing on
+                      multi-core systems (Windows only).
+                    </p>
+                  </div>
+                </label>
+              </div>
+
+              {/* Large Address Aware patch */}
+              <div className="rounded p-3 mb-2" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+                <p className="text-xs font-medium mb-1.5" style={{ color: "var(--color-text)" }}>
+                  Large Address Aware (LAA) patch
+                </p>
+                <p className="text-[10px] mb-2" style={{ color: "var(--color-text-dim)" }}>
+                  Sets IMAGE_FILE_LARGE_ADDRESS_AWARE in the .exe PE header. Useful for 32-bit MUGEN builds
+                  with high-resolution sprites that may crash around character select because of memory limits.
+                </p>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px] px-2 py-0.5 rounded"
+                    style={{
+                      background: mugenLaaEnabled ? "var(--color-success-bg)" : "var(--color-panel-3)",
+                      color: mugenLaaEnabled ? "var(--color-success)" : "var(--color-text-dim)",
+                      border: "1px solid var(--color-border-soft)",
+                    }}>
+                    {mugenLaaEnabled ? "Enabled" : "Disabled"}
+                  </span>
+                  <span className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                    {platform === "windows" ? "Windows only" : "Unavailable on this platform"}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => setMugenLaa(true)} disabled={mugenLaaWorking || platform !== "windows"}
+                    className="px-3 py-1.5 rounded text-xs font-medium disabled:opacity-50"
+                    style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>
+                    {mugenLaaWorking ? "Working…" : "Enable LAA"}
+                  </button>
+                  <button onClick={() => setMugenLaa(false)} disabled={mugenLaaWorking || platform !== "windows"}
+                    className="px-3 py-1.5 rounded text-xs disabled:opacity-50"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}>
+                    Disable LAA
+                  </button>
+                </div>
+                {mugenLaaStatus && (
+                  <p className="mt-1.5 text-[10px]"
+                    style={{ color: mugenLaaStatus.startsWith("Error") ? "var(--color-error)" : "var(--color-success, var(--color-accent))" }}>
+                    {mugenLaaStatus}
+                  </p>
+                )}
+              </div>
+
+              {/* dgVoodoo2 wrapper */}
+              <div className="rounded p-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+                <p className="text-xs font-medium mb-1.5" style={{ color: "var(--color-text)" }}>
+                  dgVoodoo2 graphics wrapper
+                </p>
+                <p className="text-[10px] mb-2" style={{ color: "var(--color-text-dim)" }}>
+                  Copies D3D8/D3D9/D3D11 compatibility DLLs into the game folder to fix
+                  graphical glitches on modern Windows. Requires a dgVoodoo2 download.
+                </p>
+                <div className="flex gap-2 mb-2">
+                  <input type="text" placeholder="Path to dgVoodoo2 folder…"
+                    value={mugenDgVoodooFolder}
+                    onInput={(e) => setMugenDgVoodooFolder((e.target as HTMLInputElement).value)}
+                    className="flex-1 px-3 py-1.5 rounded text-xs outline-none font-mono"
+                    style={{ background: "var(--color-bg-code)", color: "var(--color-text)", border: "1px solid var(--color-border-soft)" }} />
+                  <button onClick={pickDgVoodooFolder}
+                    className="px-2.5 py-1.5 rounded text-xs flex-shrink-0"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}>
+                    Browse
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={applyDgVoodoo} disabled={dgVoodooWorking}
+                    className="px-3 py-1.5 rounded text-xs font-medium"
+                    style={{ background: "var(--color-accent-dark)", color: "var(--color-white)", opacity: dgVoodooWorking ? 0.5 : 1 }}>
+                    {dgVoodooWorking ? "Working…" : "Apply wrapper"}
+                  </button>
+                  <button onClick={removeDgVoodoo} disabled={dgVoodooWorking}
+                    className="px-3 py-1.5 rounded text-xs"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)", opacity: dgVoodooWorking ? 0.5 : 1 }}>
+                    Remove wrapper
+                  </button>
+                </div>
+                {dgVoodooStatus && (
+                  <p className="mt-1.5 text-[10px]"
+                    style={{ color: dgVoodooStatus.startsWith("Error") ? "var(--color-error)" : "var(--color-success, var(--color-accent))" }}>
+                    {dgVoodooStatus}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex items-center justify-between px-6 pb-5">
           <button onClick={() => { onSave({}); onClose(); }}
@@ -5263,7 +5855,7 @@ export default function App() {
     </style></head><body><h1>LIBMALY Library</h1><div class="grid">`;
     for (const g of games) {
       const name = customizations[g.path]?.displayName || metadata[g.path]?.title || g.name;
-      const cvr = customizations[g.path]?.coverUrl || metadata[g.path]?.cover_url || "";
+      const cvr = customizations[g.path]?.coverUrl || customizations[g.path]?.iconUrl || metadata[g.path]?.cover_url || "";
       const pt = stats[g.path]?.totalTime || 0;
       const custom = customizations[g.path];
       const overall100 = resolveOverallScore100(custom);
@@ -5373,6 +5965,18 @@ export default function App() {
   const [ghostGames, setGhostGames] = useState<Record<string, boolean>>(() => loadCache(SK_GHOST, {}));
   const [customizations, setCustomizations] = useState<Record<string, GameCustomization>>(() => loadCache(SK_CUSTOM, {}));
   const [notes, setNotes] = useState<Record<string, string>>(() => loadCache(SK_NOTES, {}));
+  const [globalNotes, setGlobalNotes] = useState<string>(() => loadCache(SK_GLOBAL_NOTES, ""));
+  const [metadataRules, setMetadataRules] = useState<MetadataPostProcessingConfig>(
+    () => loadCache(SK_METADATA_RULES, DEFAULT_METADATA_RULES)
+  );
+  const metadataRulesRef = useRef(metadataRules);
+  useEffect(() => { metadataRulesRef.current = metadataRules; }, [metadataRules]);
+    const [emulatorProfiles, setEmulatorProfiles] = useState<EmulatorProfile[]>(
+      () => loadCache(SK_EMULATOR_PROFILES, [])
+    );
+    const emulatorProfilesRef = useRef(emulatorProfiles);
+    useEffect(() => { emulatorProfilesRef.current = emulatorProfiles; }, [emulatorProfiles]);
+  const [globalNotesExpanded, setGlobalNotesExpanded] = useState(false);
   const [achievements, setAchievements] = useState<GameAchievementsByPath>(() =>
     normalizeAchievementsMap(loadCache(SK_ACHIEVEMENTS, {}))
   );
@@ -5532,6 +6136,7 @@ export default function App() {
       sidebarShowDevelopers: config.sidebarShowDevelopers,
       sidebarShowWishlist: config.sidebarShowWishlist,
       sidebarShowSurpriseButton: config.sidebarShowSurpriseButton,
+      sidebarShowGlobalNotes: config.sidebarShowGlobalNotes,
       sidebarShowAddButton: config.sidebarShowAddButton,
       sidebarShowSettingsButton: config.sidebarShowSettingsButton,
       sidebarShowLogsButton: config.sidebarShowLogsButton,
@@ -6070,7 +6675,7 @@ export default function App() {
   }, []);
 
   const runDeferredStartupTasks = useCallback(async () => {
-    if (!appSettingsRef.current.updateCheckerEnabled) return;
+    if (appSettingsRef.current.appUpdateCheckerEnabled === false) return;
     invoke<{ version: string; url: string; download_url: string } | null>("check_app_update")
       .then((u) => { if (u) setAppUpdate({ version: u.version, url: u.url, downloadUrl: u.download_url }); })
       .catch(() => { });
@@ -6215,6 +6820,24 @@ export default function App() {
       }
     }).catch(() => { });
 
+    const applyCliSubcommand = (subName: string | null | undefined, rawValue: unknown) => {
+      const value = typeof rawValue === "string" ? rawValue : Array.isArray(rawValue) ? rawValue[0] : null;
+      const trimmed = typeof value === "string" ? value.trim() : "";
+      if (!trimmed) return;
+
+      if (subName === "launch") {
+        setPendingLaunchRequest({ mode: "name", value: trimmed });
+        return;
+      }
+      if (subName === "quick-launch-exe") {
+        setPendingLaunchRequest({ mode: "path", value: trimmed, autoHide: true });
+        return;
+      }
+      if (subName === "quick-install-zip") {
+        setPendingZipInstallPath(trimmed);
+      }
+    };
+
     (async () => {
       try {
         const registry = await invoke<LibraryProfileRegistry>("get_library_profiles");
@@ -6235,21 +6858,15 @@ export default function App() {
       getMatches().then((matches: any) => {
         const sub = matches?.subcommand;
         if (sub?.name === "launch") {
-          const nameArg = sub?.matches?.args?.name?.value;
-          const value = typeof nameArg === "string" ? nameArg : Array.isArray(nameArg) ? nameArg[0] : null;
-          if (value && value.trim()) setPendingLaunchRequest({ mode: "name", value: value.trim() });
+          applyCliSubcommand("launch", sub?.matches?.args?.name?.value);
           return;
         }
         if (sub?.name === "quick-launch-exe") {
-          const pathArg = sub?.matches?.args?.path?.value;
-          const value = typeof pathArg === "string" ? pathArg : Array.isArray(pathArg) ? pathArg[0] : null;
-          if (value && value.trim()) setPendingLaunchRequest({ mode: "path", value: value.trim(), autoHide: true });
+          applyCliSubcommand("quick-launch-exe", sub?.matches?.args?.path?.value);
           return;
         }
         if (sub?.name === "quick-install-zip") {
-          const pathArg = sub?.matches?.args?.path?.value;
-          const value = typeof pathArg === "string" ? pathArg : Array.isArray(pathArg) ? pathArg[0] : null;
-          if (value && value.trim()) setPendingZipInstallPath(value.trim());
+          applyCliSubcommand("quick-install-zip", sub?.matches?.args?.path?.value);
         }
       }).catch(() => { });
       getCurrentDeepLinks().then(async (urls) => {
@@ -6333,6 +6950,20 @@ export default function App() {
       setProfileRegistry(ev.payload);
       reloadActiveProfile(ev.payload.activeProfileId);
     });
+    const unlistenExternalCli = listen<{ subcommand?: string | null; path?: string | null; name?: string | null }>("external-cli-invoked", (ev) => {
+      const payload = ev.payload || {};
+      if (payload.subcommand === "launch") {
+        applyCliSubcommand("launch", payload.name);
+        return;
+      }
+      if (payload.subcommand === "quick-launch-exe") {
+        applyCliSubcommand("quick-launch-exe", payload.path);
+        return;
+      }
+      if (payload.subcommand === "quick-install-zip") {
+        applyCliSubcommand("quick-install-zip", payload.path);
+      }
+    });
     const unlistenShot = listen<{ game_exe: string; screenshot: Screenshot }>("screenshot-taken", (ev) => {
       const { game_exe, screenshot } = ev.payload;
       recordScreenshotCapture(game_exe, screenshot, { showToast: true });
@@ -6408,6 +7039,7 @@ export default function App() {
       unlistenFinished.then((f) => f());
       unlistenStarted.then((f) => f());
       unlistenProfileSwitched.then((f) => f());
+      unlistenExternalCli.then((f) => f());
       unlistenShot.then((f) => f());
       unlistenBoss.then((f) => f());
       unlistenDeepLink.then((f) => f());
@@ -7121,7 +7753,7 @@ export default function App() {
           fetchedAt: Date.now(),
           screenshots: [],
           tags: [],
-        });
+        }, metadataRulesRef.current);
       }
       saveCache(SK_META, next);
       return next;
@@ -7345,12 +7977,12 @@ export default function App() {
       throw lastError;
     }
 
-    return mergeMetadataSnapshots(refreshedSnapshots);
+    return mergeMetadataSnapshots(refreshedSnapshots, metadataRulesRef.current);
   };
 
   const applyMetadataUpdate = (path: string, nextMeta: GameMetadata) => {
     setMetadata((prev) => {
-      const next = { ...prev, [path]: mergeMetadataSnapshots(metadataSnapshotsFromMeta(nextMeta)) };
+      const next = { ...prev, [path]: mergeMetadataSnapshots(metadataSnapshotsFromMeta(nextMeta), metadataRulesRef.current) };
       saveCache(SK_META, next);
       return next;
     });
@@ -7554,6 +8186,58 @@ export default function App() {
       if (prev.some((g) => g.path === sel)) return prev; // already exists
       const next = [...prev, newGame];
       saveCache(SK_GAMES, next);
+      return next;
+    });
+    openGameView(newGame);
+  };
+
+  const handleAddRomManually = async () => {
+    setShowAddMenu(false);
+    if (emulatorProfilesRef.current.length === 0) {
+      alert("No emulator profiles configured. Open Settings > Emulators first.");
+      return;
+    }
+    const sel = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "ROM", extensions: ["zip", "7z", "iso", "cue", "bin", "gba", "gb", "gbc", "nes", "sfc", "smc", "n64", "z64", "chd", "md", "gen", "nds", "3ds", "psx", "pbp"] }],
+    }).catch(() => null);
+    if (!sel || typeof sel !== "string") return;
+
+    let profileId: string | null = null;
+    if (emulatorProfilesRef.current.length === 1) {
+      profileId = emulatorProfilesRef.current[0].id;
+    } else {
+      const menuText = emulatorProfilesRef.current
+        .map((p, i) => `${i + 1}. ${p.name}`)
+        .join("\n");
+      const picked = window.prompt(`Choose emulator profile number:\n${menuText}`, "1");
+      const idx = picked ? Number.parseInt(picked, 10) - 1 : -1;
+      if (!Number.isFinite(idx) || idx < 0 || idx >= emulatorProfilesRef.current.length) {
+        return;
+      }
+      profileId = emulatorProfilesRef.current[idx].id;
+    }
+    if (!profileId) return;
+
+    const name = deriveGameName(sel);
+    const newGame: Game = { name, path: sel };
+    setGames((prev) => {
+      if (prev.some((g) => g.path === sel)) return prev;
+      const next = [...prev, newGame];
+      saveCache(SK_GAMES, next);
+      return next;
+    });
+    setCustomizations((prev) => {
+      const next = {
+        ...prev,
+        [sel]: {
+          ...(prev[sel] ?? {}),
+          emulatorProfileId: profileId || undefined,
+          romPath: sel,
+        },
+      };
+      saveCache(SK_CUSTOM, next);
       return next;
     });
     openGameView(newGame);
@@ -8504,6 +9188,45 @@ export default function App() {
 
     let runner: string | null = null;
     let prefix: string | null = null;
+    // ── Emulator launch ─────────────────────────────────────────────────────
+    if (!overridePath && !overrideArgs && gameCustom?.emulatorProfileId && gameCustom?.romPath) {
+      const profile = emulatorProfilesRef.current.find(p => p.id === gameCustom.emulatorProfileId);
+      if (profile) {
+        const corePath = profile.corePath ?? "";
+        const romDir = gameCustom.romPath.replace(/[\\/][^\\/]+$/, "");
+        const romFile = (gameCustom.romPath.replace(/\\/g, "/").split("/").pop() ?? "");
+        const romName = romFile.replace(/\.[^.]+$/, "");
+        const resolvedArgs = profile.args
+          .replace(/\{rom\}/g, gameCustom.romPath)
+          .replace(/\{core\}/g, corePath)
+          .replace(/\{dir\}/g, romDir)
+          .replace(/\{name\}/g, romName);
+        try {
+          await invoke("launch_game", {
+            path: profile.emulatorPath,
+            runner: null,
+            prefix: null,
+            args: resolvedArgs || null,
+            cpuAffinityMask: null,
+          });
+          const emuGame = games.find((g) => g.path === path);
+          if (emuGame) {
+            const displayName = customizations[path]?.displayName ?? metadata[path]?.title ?? emuGame.name;
+            setRecentGames((prev) => {
+              const filtered = prev.filter((r) => r.path !== path);
+              const updated = [{ name: displayName, path }, ...filtered].slice(0, 5);
+              saveCache(SK_RECENT, updated);
+              invoke("set_recent_games", { games: updated }).catch(() => { });
+              return updated;
+            });
+          }
+        } catch (e) {
+          alert("Failed to launch via emulator: " + e);
+        }
+        return;
+      }
+    }
+
 
     if (platform !== "windows") {
       if (gameCustom?.runnerOverrideEnabled) {
@@ -8547,7 +9270,8 @@ export default function App() {
     }
 
     try {
-      await invoke("launch_game", { path: actualPath, runner, prefix, args: args || null });
+      const cpuAffinityMask = gameCustom?.mugenForceSingleCore ? 1 : null;
+      await invoke("launch_game", { path: actualPath, runner, prefix, args: args || null, cpuAffinityMask });
       // ── Track recent games (last 5, deduplicated) ────────────────────────
       const game = games.find((g) => g.path === path);
       if (game) {
@@ -8769,7 +9493,7 @@ export default function App() {
   const handleMetaFetched = (meta: GameMetadata) => {
     if (!selected) return;
     const oldMeta = metadata[selected.path];
-    const mergedMeta = mergeMetadataWithSnapshot(oldMeta, { ...meta, fetchedAt: Date.now() });
+    const mergedMeta = mergeMetadataWithSnapshot(oldMeta, { ...meta, fetchedAt: Date.now() }, metadataRulesRef.current);
     if (oldMeta) {
       setPendingMetaUpdate({ path: selected.path, oldMeta, newMeta: mergedMeta });
     } else {
@@ -9102,6 +9826,8 @@ export default function App() {
       !c.displayName &&
       !c.coverUrl &&
       !c.backgroundUrl &&
+      !c.logoUrl &&
+      !c.iconUrl &&
       !c.exeOverride &&
       !c.launchArgs &&
       !(c.pinnedExes && c.pinnedExes.length > 0) &&
@@ -10431,7 +11157,7 @@ export default function App() {
                   const isDragOver = dragOverPathState === card.primaryGame.path;
                   const m = metadata[activeGroupGame.path] ?? metadata[game.path];
                   const cus = customizations[activeGroupGame.path] ?? customizations[game.path];
-                  const coverSrc = cus?.coverUrl ?? m?.cover_url;
+                  const coverSrc = cus?.coverUrl ?? cus?.iconUrl ?? m?.cover_url;
                   const name = card.displayName;
                   const isFavItem = card.memberGames.some((entry) => !!favGames[entry.path]);
                   const isHiddenItem = card.memberGames.every((entry) => !!hiddenGames[entry.path]);
@@ -10577,6 +11303,58 @@ export default function App() {
               </button>
             )}
 
+            {/* ── Global Notes ── */}
+            {appSettings.sidebarShowGlobalNotes !== false && (
+              <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border-strong)" }}>
+                <button
+                  onClick={() => setGlobalNotesExpanded((p) => !p)}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-xs"
+                  style={{ background: globalNotesExpanded ? "var(--color-panel-2)" : "var(--color-panel-3)", color: "var(--color-text)" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-2)")}
+                  onMouseLeave={(e) => { if (!globalNotesExpanded) e.currentTarget.style.background = "var(--color-panel-3)"; }}
+                >
+                  {/* notepad icon */}
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="16" y1="13" x2="8" y2="13" />
+                    <line x1="16" y1="17" x2="8" y2="17" />
+                    <polyline points="10 9 9 9 8 9" />
+                  </svg>
+                  <span className="flex-1 text-left">{t('library.sidebar.global_notes')}</span>
+                  {globalNotes.trim() && !globalNotesExpanded && (
+                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: "var(--color-accent)" }} title={t('library.sidebar.global_notes_has_content')} />
+                  )}
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                    style={{ transform: globalNotesExpanded ? "rotate(180deg)" : "none", transition: "transform 0.15s", opacity: 0.5 }}>
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </button>
+                {globalNotesExpanded && (
+                  <div style={{ background: "var(--color-panel-2)" }}>
+                    <textarea
+                      value={globalNotes}
+                      onInput={(e) => {
+                        const v = (e.target as HTMLTextAreaElement).value;
+                        setGlobalNotes(v);
+                        saveCache(SK_GLOBAL_NOTES, v);
+                      }}
+                      placeholder={t('library.sidebar.global_notes_placeholder')}
+                      rows={6}
+                      className="w-full px-3 py-2 text-xs outline-none resize-y font-mono"
+                      style={{
+                        background: "transparent",
+                        color: "var(--color-text)",
+                        borderTop: "1px solid var(--color-border-soft)",
+                        minHeight: "80px",
+                        maxHeight: "320px",
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* ── Add dropdown ── */}
             {appSettings.sidebarShowAddButton !== false && (
             <div ref={addMenuRef} className="relative">
@@ -10624,6 +11402,20 @@ export default function App() {
                     {t('library.sidebar.add_game')}
                     <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>{t('library.sidebar.exe_sh_hint')}</span>
                   </button>
+                  <button
+                    onClick={handleAddRomManually}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left"
+                    style={{ color: "var(--color-text)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-panel-3)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="8" width="18" height="13" rx="2" />
+                      <path d="M7 8V5h10v3" />
+                      <path d="M9 13h6" />
+                    </svg>
+                    Add ROM target
+                    <span className="ml-auto text-[9px]" style={{ color: "var(--color-text-dim)" }}>via profile</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -10655,14 +11447,24 @@ export default function App() {
                 {t('library.sidebar.logs')}
               </button>}
               {appUpdate && (
-                <button onClick={() => setShowAppUpdateModal(true)}
-                  className="flex-1 py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1"
-                  style={{ background: "var(--color-success-bg)", color: "var(--color-success)", border: "1px solid var(--color-success-border)" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "#1e4a1e")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-success-bg)")}
-                  title={t('library.sidebar.update_available_tooltip', { version: appUpdate.version })}>
-                  ↑ v{appUpdate.version}
-                </button>
+                <div className="flex-1 flex gap-1">
+                  <button onClick={() => setShowAppUpdateModal(true)}
+                    className="flex-1 py-1.5 rounded text-xs font-semibold flex items-center justify-center gap-1"
+                    style={{ background: "var(--color-success-bg)", color: "var(--color-success)", border: "1px solid var(--color-success-border)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#1e4a1e")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-success-bg)")}
+                    title={t('library.sidebar.update_available_tooltip', { version: appUpdate.version })}>
+                    ↑ v{appUpdate.version}
+                  </button>
+                  <button onClick={() => setAppUpdate(null)}
+                    className="px-2 py-1.5 rounded text-xs"
+                    style={{ background: "var(--color-success-bg)", color: "var(--color-success)", border: "1px solid var(--color-success-border)" }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "#1e4a1e"; e.currentTarget.style.color = "var(--color-text-muted)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-success-bg)"; e.currentTarget.style.color = "var(--color-success)"; }}
+                    title={t('library.sidebar.snooze_update')}>
+                    ✕
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -10683,8 +11485,10 @@ export default function App() {
                 const activeGroupGame = card.primaryGame;
                 const isFavItem = card.memberGames.some((game) => !!favGames[game.path]);
                 const cover = customizations[activeGroupGame.path]?.coverUrl
+                  ?? customizations[activeGroupGame.path]?.iconUrl
                   ?? metadata[activeGroupGame.path]?.cover_url
                   ?? customizations[card.primaryGame.path]?.coverUrl
+                  ?? customizations[card.primaryGame.path]?.iconUrl
                   ?? metadata[card.primaryGame.path]?.cover_url;
                 const groupStats = ownershipGroupStatsById[card.id] ?? { totalTime: 0, lastPlayed: 0, lastSession: 0, launchCount: 0 };
                 return (
@@ -10749,6 +11553,16 @@ export default function App() {
                   </svg>
                   {t('library.sidebar.add_game')}
                 </button>
+                <button onClick={handleAddRomManually}
+                  className="px-5 py-2.5 rounded font-semibold text-sm flex items-center gap-2"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border-strong)" }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="8" width="18" height="13" rx="2" />
+                    <path d="M7 8V5h10v3" />
+                    <path d="M9 13h6" />
+                  </svg>
+                  Add ROM
+                </button>
               </div>
             </div>
           ) : (
@@ -10812,8 +11626,12 @@ export default function App() {
             onStop={killGame}
             isRunning={runningGamePath === selected.path}
             runnerLabel={(() => {
-              if (platform === "windows") return undefined;
               const gc = customizations[selected.path];
+              if (gc?.emulatorProfileId && gc.romPath) {
+                const profile = emulatorProfiles.find((p) => p.id === gc.emulatorProfileId);
+                if (profile) return profile.name;
+              }
+              if (platform === "windows") return undefined;
               if (gc?.runnerOverrideEnabled) {
                 const ov = gc.runnerOverride;
                 if (!ov || (!ov.runnerPath && ov.runner === "custom")) return "Direct";
@@ -10821,6 +11639,11 @@ export default function App() {
               }
               if (!launchConfig.enabled) return undefined;
               return `${launchConfig.runner.charAt(0).toUpperCase()}${launchConfig.runner.slice(1)}`;
+            })()}
+            emulatorProfileName={(() => {
+              const profileId = customizations[selected.path]?.emulatorProfileId;
+              if (!profileId) return undefined;
+              return emulatorProfiles.find((p) => p.id === profileId)?.name;
             })()}
             onDelete={() => setDeleteTarget(selected)}
             onLinkPage={() => setShowLinkModal(true)}
@@ -11037,6 +11860,16 @@ export default function App() {
             onRunCloudBackupNow={() => { runAutoCloudBackup().catch(() => { }); }}
             cloudBackupNowStatus={autoCloudBackupJob?.detail || null}
             isCloudBackupNowBusy={isAutoCloudBackupBusy}
+            metadataRules={metadataRules}
+            onSaveMetadataRules={(cfg) => {
+              setMetadataRules(cfg);
+              saveCache(SK_METADATA_RULES, cfg);
+            }}
+            emulatorProfiles={emulatorProfiles}
+            onSaveEmulatorProfiles={(profiles) => {
+              setEmulatorProfiles(profiles);
+              saveCache(SK_EMULATOR_PROFILES, profiles);
+            }}
           />
         )
       }
@@ -11144,6 +11977,7 @@ export default function App() {
             custom={customizations[selected.path] ?? {}}
             platform={platform}
             globalLaunchConfig={launchConfig}
+            emulatorProfiles={emulatorProfiles}
             onSave={handleSaveCustomization}
             onClose={() => setShowCustomizeModal(false)}
           />

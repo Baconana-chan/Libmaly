@@ -2761,6 +2761,7 @@ struct ApiKeys {
     rawg_api_key: Option<String>,
     mobygames_api_key: Option<String>,
     itch_io_api_key: Option<String>,
+    steamgriddb_api_key: Option<String>,
 }
 
 fn api_key_vault_name(provider: &str) -> Option<&'static str> {
@@ -2770,6 +2771,7 @@ fn api_key_vault_name(provider: &str) -> Option<&'static str> {
         "rawg" => Some("api::rawg"),
         "mobygames" => Some("api::mobygames"),
         "itch_io" => Some("api::itch_io"),
+        "steamgriddb" => Some("api::steamgriddb"),
         _ => None,
     }
 }
@@ -2781,6 +2783,7 @@ fn legacy_api_key_value(keys: &ApiKeys, provider: &str) -> Option<String> {
         "rawg" => keys.rawg_api_key.clone(),
         "mobygames" => keys.mobygames_api_key.clone(),
         "itch_io" => keys.itch_io_api_key.clone(),
+        "steamgriddb" => keys.steamgriddb_api_key.clone(),
         _ => None,
     }
 }
@@ -2823,6 +2826,186 @@ pub fn get_api_key(provider: String) -> Option<String> {
         let _ = std::fs::remove_file(api_keys_path());
     }
     legacy
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SteamGridDbArtworkResult {
+    pub game_name: Option<String>,
+    pub cover_url: Option<String>,
+    pub hero_url: Option<String>,
+    pub logo_url: Option<String>,
+    pub icon_url: Option<String>,
+    pub cover_choices: Vec<String>,
+    pub hero_choices: Vec<String>,
+    pub logo_choices: Vec<String>,
+    pub icon_choices: Vec<String>,
+}
+
+fn sgdb_pick_id_from_response(value: &serde_json::Value) -> Option<i64> {
+    if let Some(id) = value
+        .get("data")
+        .and_then(|d| d.get("id"))
+        .and_then(|v| v.as_i64())
+    {
+        return Some(id);
+    }
+    value
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("id"))
+        .and_then(|v| v.as_i64())
+}
+
+fn sgdb_pick_name_from_response(value: &serde_json::Value) -> Option<String> {
+    if let Some(name) = value
+        .get("data")
+        .and_then(|d| d.get("name"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(name.to_string());
+    }
+    value
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("name"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn sgdb_extract_urls(value: &serde_json::Value) -> Vec<String> {
+    let mut urls = Vec::<String>::new();
+    if let Some(items) = value.get("data").and_then(|d| d.as_array()) {
+        for item in items {
+            let picked = item
+                .get("url")
+                .and_then(|v| v.as_str())
+                .or_else(|| item.get("thumb").and_then(|v| v.as_str()))
+                .or_else(|| item.get("image").and_then(|v| v.as_str()));
+            if let Some(url) = picked {
+                let normalized = url.trim();
+                if !normalized.is_empty() && !urls.iter().any(|u| u == normalized) {
+                    urls.push(normalized.to_string());
+                }
+            }
+        }
+    }
+    urls
+}
+
+#[tauri::command]
+pub async fn fetch_steamgriddb_artwork(
+    query: String,
+    steam_app_id: Option<String>,
+) -> Result<SteamGridDbArtworkResult, String> {
+    let key = get_api_key("steamgriddb".to_string())
+        .ok_or("SteamGridDB API key is not configured")?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("SteamGridDB API key is empty".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent("LIBMALY/1.8.1 (SteamGridDB Artwork Sync)")
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+    let mut game_id: Option<i64> = None;
+    let mut game_name: Option<String> = None;
+
+    if let Some(app_id) = steam_app_id.as_ref().map(|x| x.trim()).filter(|x| !x.is_empty()) {
+        let steam_url = format!("https://www.steamgriddb.com/api/v2/games/steam/{app_id}");
+        if let Ok(resp) = client
+            .get(&steam_url)
+            .header("Authorization", format!("Bearer {key}"))
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(value) = resp.json::<serde_json::Value>().await {
+                    game_id = sgdb_pick_id_from_response(&value);
+                    game_name = sgdb_pick_name_from_response(&value);
+                }
+            }
+        }
+    }
+
+    if game_id.is_none() {
+        let trimmed_query = query.trim();
+        if trimmed_query.is_empty() {
+            return Err("Game query is empty and Steam App ID is unavailable".to_string());
+        }
+        let search_url = format!(
+            "https://www.steamgriddb.com/api/v2/search/autocomplete/{}",
+            urlencoding::encode(trimmed_query)
+        );
+        let search_resp = client
+            .get(&search_url)
+            .header("Authorization", format!("Bearer {key}"))
+            .send()
+            .await
+            .map_err(|e| format!("SteamGridDB search failed: {}", e))?;
+
+        if !search_resp.status().is_success() {
+            return Err(format!(
+                "SteamGridDB search failed with HTTP {}",
+                search_resp.status()
+            ));
+        }
+
+        let search_value = search_resp
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("Failed to parse SteamGridDB search response: {}", e))?;
+        game_id = sgdb_pick_id_from_response(&search_value);
+        game_name = sgdb_pick_name_from_response(&search_value);
+    }
+
+    let Some(game_id) = game_id else {
+        return Err("SteamGridDB could not find a matching game".to_string());
+    };
+
+    let auth_header = format!("Bearer {key}");
+    let fetch_asset = |path: &str| {
+        let url = format!("https://www.steamgriddb.com/api/v2/{path}/game/{game_id}");
+        let client = client.clone();
+        let auth_header = auth_header.clone();
+        async move {
+            let resp = client
+                .get(&url)
+                .header("Authorization", auth_header)
+                .send()
+                .await;
+            match resp {
+                Ok(ok) if ok.status().is_success() => ok
+                    .json::<serde_json::Value>()
+                    .await
+                    .map(|v| sgdb_extract_urls(&v))
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            }
+        }
+    };
+
+    let cover_choices = fetch_asset("grids").await;
+    let hero_choices = fetch_asset("heroes").await;
+    let logo_choices = fetch_asset("logos").await;
+    let icon_choices = fetch_asset("icons").await;
+
+    Ok(SteamGridDbArtworkResult {
+        game_name,
+        cover_url: cover_choices.first().cloned(),
+        hero_url: hero_choices.first().cloned(),
+        logo_url: logo_choices.first().cloned(),
+        icon_url: icon_choices.first().cloned(),
+        cover_choices,
+        hero_choices,
+        logo_choices,
+        icon_choices,
+    })
 }
 
 // ── IGDB Metadata Fetcher ─────────────────────────────────────────────────────

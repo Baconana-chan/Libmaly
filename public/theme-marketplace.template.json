@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "catalogName": "Libmaly Theme Marketplace Template",
+  "_note": "This is a template file. Keep JSON valid (no trailing commas). The app reads the 'themes' array.",
+  "themes": [
+    {
+      "id": "my-first-theme",
+      "name": "My First Theme",
+      "author": "YourName",
+      "description": "Short description shown in marketplace list.",
+      "previewImage": "https://example.com/theme-preview.jpg",
+      "tags": ["dark", "anime", "clean"],
+
+      "accentColor": "#66c0f4",
+
+      "customThemeColors": {
+        "bg": "#1b2838",
+        "bg-elev": "#16202d",
+        "bg-deep": "#0d1117",
+        "bg-overlay": "#0f1923",
+
+        "panel": "#1e2d3d",
+        "panel-2": "#152232",
+        "panel-3": "#2a3f54",
+        "panel-alt": "#1b2d3d",
+        "panel-deep": "#131d28",
+        "panel-low": "#1a2d3d",
+
+        "text": "#c6d4df",
+        "text-soft": "#b8c8d4",
+        "text-muted": "#8f98a0",
+        "text-dim": "#4a5568",
+
+        "border": "#2a475e",
+        "border-soft": "#1e3a50",
+        "border-strong": "#3d5a73",
+        "border-subtle": "#253545"
+      },
+
+      "backgroundImageUrl": "https://example.com/theme-background.jpg",
+      "backgroundOverlay": "rgba(0,0,0,0.36)",
+      "backgroundOpacity": 0.2,
+      "backgroundBlurPx": 0,
+
+      "_fieldHelp": {
+        "id": "Required. Unique stable ID (letters, numbers, hyphen recommended).",
+        "name": "Required. Display name in UI.",
+        "accentColor": "Optional. Hex color #RRGGBB.",
+        "customThemeColors": "Optional. Any subset of supported --color-* keys.",
+        "backgroundImageUrl": "Optional. Wallpaper URL for custom theme mode.",
+        "backgroundOverlay": "Optional. CSS color (e.g. rgba(...)).",
+        "backgroundOpacity": "Optional. Number 0..1.",
+        "backgroundBlurPx": "Optional. Number 0..20 recommended."
+      }
+    }
+  ]
+}

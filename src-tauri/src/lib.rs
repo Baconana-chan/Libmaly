@@ -47,6 +47,7 @@ use metadata::{
     fetch_vndb_metadata, get_api_key, get_scraper_health_snapshot, search_suggest_links,
     set_api_key,
 };
+mod sysmonitor;
 
 mod custom_metadata;
 use custom_metadata::{
@@ -3099,6 +3100,62 @@ fn unregister_explorer_zip_install() -> Result<ExplorerZipInstallStatus, String>
     {
         Err("Explorer ZIP install is only supported on Windows".to_string())
     }
+}
+
+#[tauri::command]
+fn get_system_telemetry() -> sysmonitor::SystemTelemetry {
+    sysmonitor::read()
+}
+
+// ── In-game browser window ─────────────────────────────────────────────────
+
+/// Toolbar JS injected into every page loaded in the overlay-browser window.
+const BROWSER_TOOLBAR_SCRIPT: &str = include_str!("browser_toolbar.js");
+
+/// Open (or navigate) the floating in-game browser window to `url`.
+/// Only `http://` and `https://` schemes are permitted.
+#[tauri::command]
+async fn open_overlay_browser(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed: url::Url = url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => return Err("Only http:// and https:// URLs are allowed".into()),
+    }
+    let url_str = parsed.as_str().to_owned();
+
+    if let Some(w) = app.get_webview_window("overlay-browser") {
+        // Window already exists — navigate it in-place via eval and bring to front
+        let js = format!("location.href = {};", serde_json::to_string(&url_str).unwrap_or_default());
+        let _ = w.eval(&js);
+        let _ = w.show();
+        let _ = w.set_focus();
+    } else {
+        tauri::WebviewWindowBuilder::new(
+            &app,
+            "overlay-browser",
+            tauri::WebviewUrl::External(parsed),
+        )
+        .title("LIBMALY Browser")
+        .inner_size(1024.0, 768.0)
+        .min_inner_size(640.0, 480.0)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(true)
+        .initialization_script(BROWSER_TOOLBAR_SCRIPT)
+        .build()
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Hide the overlay browser window (called from the injected toolbar's close button).
+#[tauri::command]
+async fn close_overlay_browser(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("overlay-browser") {
+        w.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -9245,9 +9302,19 @@ pub fn run() {
             detect_save_paths,
             transfer_saves,
             is_valid_save_directory,
+            get_system_telemetry,
+            open_overlay_browser,
+            close_overlay_browser,
         ])
         .setup(|app| {
             push_rust_log(Some(app.handle()), "info", "LIBMALY started");
+
+            // Start system performance monitor (background thread, runs for the app lifetime)
+            sysmonitor::start_monitor();
+
+            // Start permanent Shift+Tab overlay-toggle keyboard hook (Windows only).
+            // Runs for the app lifetime — independent of whether a game is running.
+            screenshot::start_overlay_toggle_hook(app.handle().clone());
 
             // Capture panics into a persisted crash report file and in-app log stream.
             let app_for_panic = app.handle().clone();

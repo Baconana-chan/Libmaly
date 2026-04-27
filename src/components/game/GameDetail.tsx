@@ -1,10 +1,13 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useTranslation } from "react-i18next";
+import { newAchievementItem, type GameAchievementItem } from "../../lib/gameAchievements";
 import type { PerGameMediaPlaybackAssessment } from "../../lib/mediaPlaybackKnowledge";
 import { RATING_CATEGORIES } from "../../lib/constants";
 import type {
   AppSettings,
   Game,
+  GameDetailLayoutPreset,
   GameCustomization,
   GameMetadata,
   GameStats,
@@ -528,8 +531,12 @@ export function GameDetail({
   onOpenCustomize,
   onSaveCustomization,
   onOpenNotes,
+  noteText,
+  onSaveNoteText,
   hasNotes,
   onOpenAchievements,
+  achievementItems,
+  onSaveAchievementItems,
   achievementSummary,
   achievementHasOpenGoals,
   onManageCollections,
@@ -544,6 +551,8 @@ export function GameDetail({
   onRevealNsfw,
   history,
   onAddHistory,
+  onOpenMaps,
+  onOpenGuides,
 }: {
   game: Game;
   stat: GameStats;
@@ -582,8 +591,12 @@ export function GameDetail({
   onOpenCustomize: () => void;
   onSaveCustomization: (changes: Partial<GameCustomization>) => void;
   onOpenNotes: () => void;
+  noteText: string;
+  onSaveNoteText: (text: string) => void;
   hasNotes: boolean;
   onOpenAchievements: () => void;
+  achievementItems: GameAchievementItem[];
+  onSaveAchievementItems: (items: GameAchievementItem[]) => void;
   /** e.g. "3/7" when the game has checklist rows */
   achievementSummary: string | null;
   /** true when some checklist rows exist and not all are done */
@@ -609,8 +622,18 @@ export function GameDetail({
   onRevealNsfw: (path: string) => void;
   history: HistoryEntry[];
   onAddHistory: (version: string, note: string) => void;
+  onOpenMaps: () => void;
+  onOpenGuides: () => void;
 }) {
   const { t } = useTranslation();
+  const [quickPanelOpen, setQuickPanelOpen] = useState(false);
+  const [showContentMenu, setShowContentMenu] = useState(false);
+  const [showActionsMenu, setShowActionsMenu] = useState(false);
+  const contentMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const [quickPanelTab, setQuickPanelTab] = useState<"notes" | "achievements" | "media" | "maps" | "guides">("notes");
+  const [quickNoteDraft, setQuickNoteDraft] = useState(noteText ?? "");
+  const [quickAchievementDraft, setQuickAchievementDraft] = useState<GameAchievementItem[]>(() => [...achievementItems]);
   const [activeShot, setActiveShot] = useState(0);
   const [metaLightboxShot, setMetaLightboxShot] = useState<string | null>(null);
   const [reviewDraft, setReviewDraft] = useState(customization.personalReview ?? "");
@@ -640,6 +663,9 @@ export function GameDetail({
   const overall100 = ratingMode === "categories"
     ? (typeof categoryAvg === "number" ? categoryAvg : manualOverall)
     : manualOverall;
+  const detailLayoutPreset: GameDetailLayoutPreset = appSettings.gameDetailLayoutPreset || "metadata-first";
+  const contentHasData = hasNotes || !!achievementSummary || achievementHasOpenGoals
+    || (customization.mapLinks?.length ?? 0) > 0 || (customization.guideLinks?.length ?? 0) > 0;
 
   useEffect(() => {
     if (activeShot >= shots.length) setActiveShot(0);
@@ -648,6 +674,97 @@ export function GameDetail({
   useEffect(() => {
     setReviewDraft(customization.personalReview ?? "");
   }, [customization.personalReview, game.path]);
+
+  useEffect(() => {
+    setQuickNoteDraft(noteText ?? "");
+  }, [noteText, game.path]);
+
+  useEffect(() => {
+    setQuickAchievementDraft([...achievementItems]);
+  }, [achievementItems, game.path]);
+
+  useEffect(() => {
+    if (!quickPanelOpen || quickPanelTab !== "notes") return;
+    const timer = setTimeout(() => onSaveNoteText(quickNoteDraft), 450);
+    return () => clearTimeout(timer);
+  }, [quickNoteDraft, quickPanelOpen, quickPanelTab, onSaveNoteText]);
+
+  useEffect(() => {
+    if (!quickPanelOpen || quickPanelTab !== "achievements") return;
+    const timer = setTimeout(() => onSaveAchievementItems(quickAchievementDraft), 450);
+    return () => clearTimeout(timer);
+  }, [quickAchievementDraft, quickPanelOpen, quickPanelTab, onSaveAchievementItems]);
+
+  useEffect(() => {
+    if (!showContentMenu && !showActionsMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (contentMenuRef.current && !contentMenuRef.current.contains(e.target as Node)) setShowContentMenu(false);
+      if (actionsMenuRef.current && !actionsMenuRef.current.contains(e.target as Node)) setShowActionsMenu(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showContentMenu, showActionsMenu]);
+
+  const quickDoneCount = useMemo(
+    () => quickAchievementDraft.filter((entry) => entry.done).length,
+    [quickAchievementDraft],
+  );
+
+  const sectionOrder = useMemo(() => {
+    const metadataFirst: Record<string, number> = {
+      overview: 10,
+      personalReview: 20,
+      notes: 30,
+      screenshots: 40,
+      tags: 50,
+      customTags: 60,
+      noMeta: 70,
+      relations: 80,
+      maps: 85,
+      guides: 86,
+      gallery: 90,
+      history: 100,
+      versions: 110,
+    };
+
+    const screenshotsFirst: Record<string, number> = {
+      screenshots: 10,
+      gallery: 20,
+      overview: 30,
+      tags: 40,
+      customTags: 50,
+      relations: 60,
+      maps: 65,
+      guides: 66,
+      notes: 70,
+      personalReview: 80,
+      history: 90,
+      versions: 100,
+      noMeta: 110,
+    };
+
+    const notesFirst: Record<string, number> = {
+      notes: 10,
+      personalReview: 20,
+      history: 30,
+      versions: 40,
+      overview: 50,
+      screenshots: 60,
+      gallery: 70,
+      tags: 80,
+      customTags: 90,
+      relations: 100,
+      maps: 105,
+      guides: 106,
+      noMeta: 110,
+    };
+
+    if (detailLayoutPreset === "screenshots-first") return screenshotsFirst;
+    if (detailLayoutPreset === "notes-first") return notesFirst;
+    return metadataFirst;
+  }, [detailLayoutPreset]);
+
+  const sectionStyle = (key: string) => ({ order: sectionOrder[key] ?? 999 });
 
   const [dominantColor, setDominantColor] = useState<[number, number, number] | null>(null);
 
@@ -810,68 +927,207 @@ export function GameDetail({
             {ex.name}
           </button>
         ))}
-        <button onClick={onLinkPage} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-          </svg>
-          {meta ? t('game.relink_page') : t('game.link_page')}
-        </button>
-        <button onClick={onUpdate} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }} title="Install a new version safely (preserves saves)">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" /><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
-          </svg>
-          {t('game.update.label')}
-        </button>
-        <button onClick={onBackupSaves} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }} title="Detect and back up save files to zip">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
-          </svg>
-          {t('game.backup_saves')}
-        </button>
-        <button onClick={onBackupSavesToCloud} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-panel-3)", color: "var(--color-accent-soft)", border: "1px solid var(--color-accent)" }} title="Create a save zip and upload it to the configured cloud sync provider">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M7 18a4.6 4.6 0 0 1 .88-9.12A6 6 0 0 1 19 11a4 4 0 0 1-1 7.87" />
-            <path d="M12 12v9" />
-            <path d="m8.5 15.5 3.5-3.5 3.5 3.5" />
-          </svg>
-          Cloud Save Zip
-        </button>
-        {onInstallMediaFixes && (
-          <button onClick={onInstallMediaFixes} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: "var(--color-warning-bg)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }} title="Install media playback fixes for this game's Wine/Proton prefix">
+        {/* Content dropdown: Notes, Tracker, Maps, Guides */}
+        <div ref={contentMenuRef} className="relative">
+          <button
+            onClick={() => { setShowContentMenu(v => !v); setShowActionsMenu(false); }}
+            className="flex items-center gap-1.5 px-3 py-2 rounded text-sm"
+            style={{
+              background: contentHasData ? "var(--color-panel-2)" : "var(--color-panel-3)",
+              color: contentHasData ? "var(--color-accent-soft)" : "var(--color-text-muted)",
+              border: `1px solid ${contentHasData ? "var(--color-accent)" : "var(--color-border-strong)"}`,
+            }}
+            title="Notes, achievements, maps and guides for this game"
+          >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="5 3 19 12 5 21 5 3" />
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
             </svg>
-            Fix Video Playback
+            Content
+            {hasNotes && <span className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--color-success)" }} />}
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
           </button>
-        )}
-        <button onClick={onOpenNotes} className="flex items-center gap-1.5 px-3 py-2 rounded text-sm" style={{ background: hasNotes ? "#1e2d1a" : "var(--color-panel-3)", color: hasNotes ? "var(--color-success)" : "var(--color-text-muted)", border: `1px solid ${hasNotes ? "var(--color-success-border)" : "var(--color-border-strong)"}` }} title="Game notes (Markdown supported)">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-          </svg>
-          {t('game.notes')}{hasNotes && <span className="w-1.5 h-1.5 rounded-full bg-current ml-0.5" />}
-        </button>
+          {showContentMenu && (
+            <div
+              className="absolute top-full left-0 mt-1 rounded-lg shadow-2xl z-30 py-1 min-w-[220px]"
+              style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}
+            >
+              <button
+                onClick={() => { onOpenNotes(); setShowContentMenu(false); }}
+                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-white/5 transition-colors"
+                style={{ color: hasNotes ? "var(--color-success)" : "var(--color-text-muted)" }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                </svg>
+                {t('game.notes')}
+                {hasNotes && <span className="w-1.5 h-1.5 rounded-full bg-current ml-auto" />}
+              </button>
+              <button
+                onClick={() => { onOpenAchievements(); setShowContentMenu(false); }}
+                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-white/5 transition-colors"
+                style={{ color: achievementSummary ? "var(--color-accent-soft)" : "var(--color-text-muted)" }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
+                  <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
+                  <path d="M4 22h16" />
+                  <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+                  <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+                  <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+                </svg>
+                {t("game.achievements")}
+                {achievementSummary && <span className="text-[11px] font-mono opacity-90 ml-1">{achievementSummary}</span>}
+                {achievementHasOpenGoals && <span className="w-1.5 h-1.5 rounded-full bg-current ml-auto" />}
+              </button>
+              <button
+                onClick={() => { onOpenMaps(); setShowContentMenu(false); }}
+                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-white/5 transition-colors"
+                style={{ color: (customization.mapLinks?.length ?? 0) > 0 ? "var(--color-accent-soft)" : "var(--color-text-muted)" }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
+                  <line x1="9" y1="3" x2="9" y2="18" />
+                  <line x1="15" y1="6" x2="15" y2="21" />
+                </svg>
+                {t("game.maps")}
+                {(customization.mapLinks?.length ?? 0) > 0 && (
+                  <span className="text-[11px] font-mono opacity-90 ml-auto">{customization.mapLinks!.length}</span>
+                )}
+              </button>
+              <button
+                onClick={() => { onOpenGuides(); setShowContentMenu(false); }}
+                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-white/5 transition-colors"
+                style={{ color: (customization.guideLinks?.length ?? 0) > 0 ? "var(--color-accent-soft)" : "var(--color-text-muted)" }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                </svg>
+                {t("game.guides")}
+                {(customization.guideLinks?.length ?? 0) > 0 && (
+                  <span className="text-[11px] font-mono opacity-90 ml-auto">{customization.guideLinks!.length}</span>
+                )}
+              </button>
+            </div>
+          )}
+        </div>
+        {/* More dropdown: Re-link, Update, Backup Saves, Cloud Save Zip, Fix Video, F95 Login */}
+        <div ref={actionsMenuRef} className="relative">
+          <button
+            onClick={() => { setShowActionsMenu(v => !v); setShowContentMenu(false); }}
+            className="flex items-center gap-1.5 px-3 py-2 rounded text-sm"
+            style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-strong)" }}
+            title="More actions"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" />
+            </svg>
+            More
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          {showActionsMenu && (
+            <div
+              className="absolute top-full left-0 mt-1 rounded-lg shadow-2xl z-30 py-1 min-w-[220px]"
+              style={{ background: "var(--color-panel)", border: "1px solid var(--color-border)" }}
+            >
+              <button
+                onClick={() => { onLinkPage(); setShowActionsMenu(false); }}
+                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-white/5 transition-colors"
+                style={{ color: "var(--color-text-muted)" }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                </svg>
+                {meta ? t('game.relink_page') : t('game.link_page')}
+              </button>
+              <button
+                onClick={() => { onUpdate(); setShowActionsMenu(false); }}
+                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-white/5 transition-colors"
+                style={{ color: "var(--color-text-muted)" }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" /><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+                </svg>
+                {t('game.update.label')}
+              </button>
+              <button
+                onClick={() => { onBackupSaves(); setShowActionsMenu(false); }}
+                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-white/5 transition-colors"
+                style={{ color: "var(--color-text-muted)" }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                {t('game.backup_saves')}
+              </button>
+              <button
+                onClick={() => { onBackupSavesToCloud(); setShowActionsMenu(false); }}
+                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-white/5 transition-colors"
+                style={{ color: "var(--color-accent-soft)" }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M7 18a4.6 4.6 0 0 1 .88-9.12A6 6 0 0 1 19 11a4 4 0 0 1-1 7.87" />
+                  <path d="M12 12v9" />
+                  <path d="m8.5 15.5 3.5-3.5 3.5 3.5" />
+                </svg>
+                Cloud Save Zip
+              </button>
+              {(onInstallMediaFixes || !f95LoggedIn) && (
+                <div className="my-1" style={{ borderTop: "1px solid var(--color-border-soft)" }} />
+              )}
+              {onInstallMediaFixes && (
+                <button
+                  onClick={() => { onInstallMediaFixes!(); setShowActionsMenu(false); }}
+                  className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-white/5 transition-colors"
+                  style={{ color: "var(--color-warning)" }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="5 3 19 12 5 21 5 3" />
+                  </svg>
+                  Fix Video Playback
+                </button>
+              )}
+              {!f95LoggedIn && (
+                <button
+                  onClick={() => { onOpenF95Login(); setShowActionsMenu(false); }}
+                  className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-white/5 transition-colors"
+                  style={{ color: "var(--color-warning)" }}
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                  F95 Login
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         <button
-          onClick={onOpenAchievements}
+          onClick={() => {
+            setQuickPanelOpen((prev) => {
+              const next = !prev;
+              if (next && quickPanelTab === "media") setQuickPanelTab("notes");
+              return next;
+            });
+          }}
           className="flex items-center gap-1.5 px-3 py-2 rounded text-sm"
           style={{
-            background: achievementSummary ? "var(--color-panel-2)" : "var(--color-panel-3)",
-            color: achievementSummary ? "var(--color-accent-soft)" : "var(--color-text-muted)",
-            border: `1px solid ${achievementSummary ? "var(--color-accent)" : "var(--color-border-strong)"}`,
+            background: quickPanelOpen ? "var(--color-accent-dark)" : "var(--color-panel-3)",
+            color: quickPanelOpen ? "var(--color-white)" : "var(--color-text-muted)",
+            border: `1px solid ${quickPanelOpen ? "var(--color-accent)" : "var(--color-border-strong)"}`,
           }}
-          title={t("game.achievements_tooltip")}
+          title="Open quick side panel"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
-            <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
-            <path d="M4 22h16" />
-            <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
-            <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
-            <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <line x1="9" y1="3" x2="9" y2="21" />
           </svg>
-          {t("game.achievements")}
-          {achievementSummary && <span className="text-[11px] font-mono opacity-90 ml-0.5">{achievementSummary}</span>}
-          {achievementHasOpenGoals && <span className="w-1.5 h-1.5 rounded-full bg-current ml-0.5" />}
+          Quick panel
         </button>
         {sourceLinks.map((link) => (
           <a key={`${link.source}:${link.source_url}`} href={link.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "var(--color-panel-2)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}>
@@ -881,14 +1137,6 @@ export function GameDetail({
             {t('common.open')} {sourceLabel(link.source, link.source_label)}
           </a>
         ))}
-        {!f95LoggedIn && (
-          <button onClick={onOpenF95Login} className="flex items-center gap-1 px-3 py-2 rounded text-xs" style={{ background: "var(--color-warning-bg-2)", color: "var(--color-warning)", border: "1px solid var(--color-warning-border)" }}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
-            F95 Login
-          </button>
-        )}
         <div className="flex-1" />
         {meta && <button onClick={onClearMeta} className="px-3 py-2 rounded text-xs" style={{ background: "transparent", color: "var(--color-text-dim)" }}>✕ {t('game.unlink')}</button>}
         <SettingsMenu isHidden={isHidden} isFav={isFav} onDelete={onDelete} onToggleHide={onToggleHide} onToggleFav={onToggleFav} onCustomize={onOpenCustomize} onManageCollections={onManageCollections} onTransferSaves={onTransferSaves} />
@@ -990,10 +1238,10 @@ export function GameDetail({
       )}
 
       <div className="flex-1 overflow-y-auto px-8 py-5" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
-        <div className="flex gap-6 max-w-5xl">
-          <div className="flex-1 min-w-0 space-y-5">
+        <div className={`flex gap-6 ${quickPanelOpen ? "max-w-[1360px]" : "max-w-5xl"}`}>
+          <div className="flex-1 min-w-0 flex flex-col gap-5">
             {(meta?.overview_html || meta?.overview) && (
-              <section>
+              <section style={sectionStyle("overview")}>
                 <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.overview')}</h2>
                 {meta.overview_html ? (
                   <div className="text-sm leading-relaxed dlsite-overview" style={{ color: "var(--color-text-soft)" }} dangerouslySetInnerHTML={{ __html: meta.overview_html }} />
@@ -1004,8 +1252,28 @@ export function GameDetail({
                 )}
               </section>
             )}
+            {!!noteText?.trim() && (
+              <section style={sectionStyle("notes")}>
+                <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center justify-between" style={{ color: "var(--color-text-muted)" }}>
+                  <span>{t('game.notes')}</span>
+                  <button
+                    type="button"
+                    onClick={onOpenNotes}
+                    className="text-[10px] px-2 py-1 rounded"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+                  >
+                    Open editor
+                  </button>
+                </h2>
+                <div className="rounded-lg p-3" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap" style={{ color: "var(--color-text-soft)" }}>
+                    {noteText}
+                  </p>
+                </div>
+              </section>
+            )}
             {customization.personalReview && (
-              <section>
+              <section style={sectionStyle("personalReview")}>
                 <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center gap-2" style={{ color: "var(--color-text-muted)" }}>
                   <span>📝</span> {t('game.short_review')}
                 </h2>
@@ -1017,7 +1285,7 @@ export function GameDetail({
               </section>
             )}
             {shots.length > 0 && (
-              <section>
+              <section style={sectionStyle("screenshots")}>
                 <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.screenshots')}</h2>
                 <div className="rounded overflow-hidden mb-2" style={{ background: "var(--color-bg-deep)" }}>
                   <button
@@ -1038,12 +1306,12 @@ export function GameDetail({
               </section>
             )}
             {meta?.tags && meta.tags.length > 0 && (
-              <section>
+              <section style={sectionStyle("tags")}>
                 <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.tags')}</h2>
                 <div className="flex flex-wrap gap-1.5">{meta.tags.map((t) => <TagBadge key={t} text={t} />)}</div>
               </section>
             )}
-            <section>
+            <section style={sectionStyle("customTags")}>
               <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center justify-between" style={{ color: "var(--color-text-muted)" }}><span>{t('game.custom_tags')}</span></h2>
               <div className="flex flex-wrap gap-1.5 items-center">
                 {customization.customTags?.map((t) => (
@@ -1070,14 +1338,14 @@ export function GameDetail({
               </div>
             </section>
             {!meta && (
-              <div className="rounded-lg px-6 py-8 text-center" style={{ background: "var(--color-bg-elev)", border: "2px dashed var(--color-panel-3)" }}>
+              <div className="rounded-lg px-6 py-8 text-center" style={{ ...sectionStyle("noMeta"), background: "var(--color-bg-elev)", border: "2px dashed var(--color-panel-3)" }}>
                 <p className="text-sm mb-1" style={{ color: "var(--color-text-muted)" }}>{t('game.no_meta_linked')}</p>
                 <p className="text-xs mb-4" style={{ color: "var(--color-text-dim)" }}>{t('game.no_meta_hint')}</p>
                 <button onClick={onLinkPage} className="px-5 py-2 rounded text-sm font-semibold" style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}>{t('game.link_page')}</button>
               </div>
             )}
             {meta?.relations && meta.relations.length > 0 && (
-              <section>
+              <section style={sectionStyle("relations")}>
                 <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.relations')}</h2>
                 <div className="space-y-2">
                   {meta.relations.map((rawRelation, i) => {
@@ -1134,12 +1402,111 @@ export function GameDetail({
                 </div>
               </section>
             )}
-            <InGameGallery shots={screenshots} onTake={onTakeScreenshot} onAnnotate={onAnnotateScreenshot} onOpenFolder={onOpenScreenshotsFolder} onExportZip={onExportGalleryZip} onUpdateTags={onUpdateScreenshotTags} />
-            <section>
+            {(customization.mapLinks?.length ?? 0) > 0 && (
+              <section style={sectionStyle("maps")}>
+                <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center justify-between" style={{ color: "var(--color-text-muted)" }}>
+                  <span>🗺 {t("game.maps")}</span>
+                  <button
+                    type="button"
+                    onClick={onOpenMaps}
+                    className="text-[10px] px-2 py-1 rounded"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+                  >
+                    Manage
+                  </button>
+                </h2>
+                <div className="flex flex-wrap gap-2">
+                  {customization.mapLinks!.map((link) => (
+                    <a
+                      key={link.id}
+                      href={link.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors"
+                      style={{ background: "var(--color-bg-elev)", color: "var(--color-accent)", border: "1px solid var(--color-border-soft)" }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-panel-3)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-bg-elev)"; }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
+                        <line x1="9" y1="3" x2="9" y2="18" />
+                        <line x1="15" y1="6" x2="15" y2="21" />
+                      </svg>
+                      {link.label}
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}>
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <polyline points="15 3 21 3 21 9" />
+                        <line x1="10" y1="14" x2="21" y2="3" />
+                      </svg>
+                    </a>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={onOpenMaps}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm"
+                    style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px dashed var(--color-border)" }}
+                  >
+                    + Add map
+                  </button>
+                </div>
+              </section>
+            )}
+            {(customization.guideLinks?.length ?? 0) > 0 && (
+              <section style={sectionStyle("guides")}>
+                <h2 className="text-xs uppercase tracking-widest mb-2 flex items-center justify-between" style={{ color: "var(--color-text-muted)" }}>
+                  <span>📋 {t("game.guides")}</span>
+                  <button
+                    type="button"
+                    onClick={onOpenGuides}
+                    className="text-[10px] px-2 py-1 rounded"
+                    style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+                  >
+                    Manage
+                  </button>
+                </h2>
+                <div className="flex flex-wrap gap-2">
+                  {customization.guideLinks!.map((link) => (
+                    <a
+                      key={link.id}
+                      href={link.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors"
+                      style={{ background: "var(--color-bg-elev)", color: "var(--color-accent)", border: "1px solid var(--color-border-soft)" }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-panel-3)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-bg-elev)"; }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                      </svg>
+                      {link.label}
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}>
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <polyline points="15 3 21 3 21 9" />
+                        <line x1="10" y1="14" x2="21" y2="3" />
+                      </svg>
+                    </a>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={onOpenGuides}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm"
+                    style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px dashed var(--color-border)" }}
+                  >
+                    + Add resource
+                  </button>
+                </div>
+              </section>
+            )}
+            <section style={sectionStyle("gallery")}>
+              <InGameGallery shots={screenshots} onTake={onTakeScreenshot} onAnnotate={onAnnotateScreenshot} onOpenFolder={onOpenScreenshotsFolder} onExportZip={onExportGalleryZip} onUpdateTags={onUpdateScreenshotTags} />
+            </section>
+            <section style={sectionStyle("history")}>
               <h2 className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>{t('game.history')}</h2>
               <SessionTimeline sessions={sessions} gamePath={game.path} onEditNote={onEditSessionNote} />
             </section>
-            <section>
+            <section style={sectionStyle("versions")}>
               <VersionTimeline history={history} onAddHistory={onAddHistory} />
             </section>
           </div>
@@ -1275,6 +1642,327 @@ export function GameDetail({
               <div><p className="text-xs mb-0.5" style={{ color: "var(--color-text-muted)" }}>{t('game.files.folder')}</p><p className="text-xs font-mono break-all" style={{ color: "var(--color-text)" }}>{game.path.replace(/[\\/][^\\/]$/, "")}</p></div>
             </div>
           </div>
+          {quickPanelOpen && (
+            <div className="flex-shrink-0 w-80 self-start sticky top-4 rounded-lg overflow-hidden" style={{ background: "var(--color-bg-elev)", border: "1px solid var(--color-border-soft)" }}>
+              <div className="px-4 py-3 border-b" style={{ borderColor: "var(--color-border-soft)" }}>
+                <p className="text-[10px] uppercase tracking-widest font-semibold" style={{ color: "var(--color-text-dim)" }}>
+                  Quick Side Panel
+                </p>
+                <div className="mt-2 flex gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setQuickPanelTab("notes")}
+                    className="px-2.5 py-1 rounded text-xs font-medium"
+                    style={{
+                      background: quickPanelTab === "notes" ? "var(--color-accent-dark)" : "var(--color-panel-3)",
+                      color: quickPanelTab === "notes" ? "var(--color-white)" : "var(--color-text-muted)",
+                    }}
+                  >
+                    Notes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickPanelTab("achievements")}
+                    className="px-2.5 py-1 rounded text-xs font-medium"
+                    style={{
+                      background: quickPanelTab === "achievements" ? "var(--color-accent-dark)" : "var(--color-panel-3)",
+                      color: quickPanelTab === "achievements" ? "var(--color-white)" : "var(--color-text-muted)",
+                    }}
+                  >
+                    Tracker
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickPanelTab("media")}
+                    className="px-2.5 py-1 rounded text-xs font-medium"
+                    style={{
+                      background: quickPanelTab === "media" ? "var(--color-accent-dark)" : "var(--color-panel-3)",
+                      color: quickPanelTab === "media" ? "var(--color-white)" : "var(--color-text-muted)",
+                    }}
+                  >
+                    Media
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickPanelTab("maps")}
+                    className="px-2.5 py-1 rounded text-xs font-medium"
+                    style={{
+                      background: quickPanelTab === "maps" ? "var(--color-accent-dark)" : "var(--color-panel-3)",
+                      color: quickPanelTab === "maps" ? "var(--color-white)" : "var(--color-text-muted)",
+                    }}
+                  >
+                    Maps {(customization.mapLinks?.length ?? 0) > 0 ? `(${customization.mapLinks!.length})` : ""}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickPanelTab("guides")}
+                    className="px-2.5 py-1 rounded text-xs font-medium"
+                    style={{
+                      background: quickPanelTab === "guides" ? "var(--color-accent-dark)" : "var(--color-panel-3)",
+                      color: quickPanelTab === "guides" ? "var(--color-white)" : "var(--color-text-muted)",
+                    }}
+                  >
+                    Guides {(customization.guideLinks?.length ?? 0) > 0 ? `(${customization.guideLinks!.length})` : ""}
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-4" style={{ maxHeight: "72vh", overflowY: "auto", scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+                {quickPanelTab === "notes" && (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs uppercase tracking-widest" style={{ color: "var(--color-text-muted)" }}>Notes</p>
+                      <button
+                        type="button"
+                        onClick={onOpenNotes}
+                        className="text-[10px] px-2 py-1 rounded"
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+                      >
+                        Open full editor
+                      </button>
+                    </div>
+                    <textarea
+                      value={quickNoteDraft}
+                      onInput={(e) => setQuickNoteDraft((e.target as HTMLTextAreaElement).value)}
+                      rows={16}
+                      className="w-full rounded px-2.5 py-2 text-xs outline-none resize-y font-mono"
+                      style={{ background: "var(--color-bg)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                      placeholder="Quick notes..."
+                    />
+                    <p className="text-[10px] mt-1" style={{ color: "var(--color-text-dim)" }}>
+                      Auto-saved while typing · {quickNoteDraft.length} chars
+                    </p>
+                  </div>
+                )}
+
+                {quickPanelTab === "achievements" && (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs uppercase tracking-widest" style={{ color: "var(--color-text-muted)" }}>
+                        Tracker {quickAchievementDraft.length > 0 ? `(${quickDoneCount}/${quickAchievementDraft.length})` : ""}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={onOpenAchievements}
+                        className="text-[10px] px-2 py-1 rounded"
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+                      >
+                        Open full tracker
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {quickAchievementDraft.length === 0 && (
+                        <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>No rows yet. Add one below.</p>
+                      )}
+                      {quickAchievementDraft.map((row) => (
+                        <div key={row.id} className="flex items-start gap-2">
+                          <input
+                            type="checkbox"
+                            checked={row.done}
+                            onChange={() => {
+                              setQuickAchievementDraft((prev) => prev.map((entry) => (
+                                entry.id === row.id ? { ...entry, done: !entry.done } : entry
+                              )));
+                            }}
+                            className="mt-1"
+                            style={{ accentColor: "var(--color-accent)" }}
+                          />
+                          <input
+                            type="text"
+                            value={row.label}
+                            onInput={(e) => {
+                              const value = (e.target as HTMLInputElement).value;
+                              setQuickAchievementDraft((prev) => prev.map((entry) => (
+                                entry.id === row.id ? { ...entry, label: value } : entry
+                              )));
+                            }}
+                            className="flex-1 rounded px-2 py-1.5 text-xs outline-none"
+                            style={{ background: "var(--color-bg)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                            placeholder={t("game.achievements_item_placeholder")}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setQuickAchievementDraft((prev) => prev.filter((entry) => entry.id !== row.id))}
+                            className="px-2 py-1 rounded text-xs"
+                            style={{ background: "transparent", color: "var(--color-text-dim)" }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setQuickAchievementDraft((prev) => [...prev, newAchievementItem()])}
+                      className="mt-3 px-3 py-1.5 rounded text-xs font-medium"
+                      style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                    >
+                      {t("game.achievements_add")}
+                    </button>
+                  </div>
+                )}
+
+                {quickPanelTab === "media" && (
+                  <div>
+                    <p className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)" }}>
+                      Media ({screenshots.length})
+                    </p>
+                    <div className="grid grid-cols-2 gap-1.5 mb-3">
+                      <button onClick={onTakeScreenshot} className="px-2 py-1.5 rounded text-[11px]" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Capture</button>
+                      <button onClick={onAnnotateScreenshot} className="px-2 py-1.5 rounded text-[11px]" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Annotate</button>
+                      <button onClick={onOpenScreenshotsFolder} className="px-2 py-1.5 rounded text-[11px]" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Folder</button>
+                      <button onClick={onExportGalleryZip} className="px-2 py-1.5 rounded text-[11px]" style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>Export ZIP</button>
+                    </div>
+                    {screenshots.length === 0 ? (
+                      <p className="text-xs" style={{ color: "var(--color-text-dim)" }}>No screenshots yet for this game.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {screenshots.slice(0, 8).map((shot) => (
+                          <div key={shot.filename} className="rounded p-2" style={{ background: "var(--color-bg)", border: "1px solid var(--color-border-soft)" }}>
+                            <img
+                              src={convertFileSrc(shot.path)}
+                              alt={shot.filename}
+                              className="w-full rounded mb-1"
+                              style={{ maxHeight: "96px", objectFit: "cover" }}
+                            />
+                            <p className="text-[10px] truncate" style={{ color: "var(--color-text-muted)" }}>{shot.filename}</p>
+                            {shot.tags?.length > 0 && (
+                              <p className="text-[10px] truncate" style={{ color: "var(--color-text-dim)" }}>#{shot.tags.join(" #")}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {quickPanelTab === "maps" && (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs uppercase tracking-widest" style={{ color: "var(--color-text-muted)" }}>Maps</p>
+                      <button
+                        type="button"
+                        onClick={onOpenMaps}
+                        className="text-[10px] px-2 py-1 rounded"
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+                      >
+                        Manage
+                      </button>
+                    </div>
+                    {(customization.mapLinks?.length ?? 0) === 0 ? (
+                      <div className="text-center py-4">
+                        <p className="text-xs mb-2" style={{ color: "var(--color-text-dim)" }}>No maps linked for this game.</p>
+                        <button
+                          type="button"
+                          onClick={onOpenMaps}
+                          className="px-3 py-1.5 rounded text-xs font-medium"
+                          style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                        >
+                          Add map link
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {customization.mapLinks!.map((link) => (
+                          <a
+                            key={link.id}
+                            href={link.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex items-center gap-2 rounded-lg px-2.5 py-2 transition-colors"
+                            style={{ background: "var(--color-bg)", color: "var(--color-text)", border: "1px solid var(--color-border-soft)" }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-panel-3)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-bg)"; }}
+                          >
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
+                              <line x1="9" y1="3" x2="9" y2="18" />
+                              <line x1="15" y1="6" x2="15" y2="21" />
+                            </svg>
+                            <span className="flex-1 text-xs truncate">{link.label}</span>
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5, flexShrink: 0 }}>
+                              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                              <polyline points="15 3 21 3 21 9" />
+                              <line x1="10" y1="14" x2="21" y2="3" />
+                            </svg>
+                          </a>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={onOpenMaps}
+                          className="w-full mt-1 px-2.5 py-1.5 rounded text-xs"
+                          style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px dashed var(--color-border)" }}
+                        >
+                          + Add another map
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {quickPanelTab === "guides" && (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs uppercase tracking-widest" style={{ color: "var(--color-text-muted)" }}>Guides &amp; Resources</p>
+                      <button
+                        type="button"
+                        onClick={onOpenGuides}
+                        className="text-[10px] px-2 py-1 rounded"
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+                      >
+                        Manage
+                      </button>
+                    </div>
+                    {(customization.guideLinks?.length ?? 0) === 0 ? (
+                      <div className="text-center py-4">
+                        <p className="text-xs mb-2" style={{ color: "var(--color-text-dim)" }}>No resources linked for this game.</p>
+                        <button
+                          type="button"
+                          onClick={onOpenGuides}
+                          className="px-3 py-1.5 rounded text-xs font-medium"
+                          style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                        >
+                          Add resource
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {customization.guideLinks!.map((link) => (
+                          <a
+                            key={link.id}
+                            href={link.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex items-center gap-2 rounded-lg px-2.5 py-2 transition-colors"
+                            style={{ background: "var(--color-bg)", color: "var(--color-text)", border: "1px solid var(--color-border-soft)" }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-panel-3)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-bg)"; }}
+                          >
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                            </svg>
+                            <span className="flex-1 text-xs truncate">{link.label}</span>
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5, flexShrink: 0 }}>
+                              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                              <polyline points="15 3 21 3 21 9" />
+                              <line x1="10" y1="14" x2="21" y2="3" />
+                            </svg>
+                          </a>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={onOpenGuides}
+                          className="w-full mt-1 px-2.5 py-1.5 rounded text-xs"
+                          style={{ background: "transparent", color: "var(--color-text-dim)", border: "1px dashed var(--color-border)" }}
+                        >
+                          + Add another resource
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

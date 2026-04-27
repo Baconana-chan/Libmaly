@@ -128,7 +128,13 @@ export const DEFAULT_SETTINGS = {
   bossKeyMuteSystem: false,
   bossKeyFallbackUrl: "",
   customThemeColors: {},
+  themeBackgroundImageUrl: "",
+  themeBackgroundImageOverlay: "rgba(0,0,0,0.36)",
+  themeBackgroundImageOpacity: 0.2,
+  themeBackgroundImageBlurPx: 0,
+  themeMarketplaceRelayUrl: "https://raw.githubusercontent.com/Baconana-chan/Libmaly/main/public/theme-marketplace.json",
   language: "en",
   preferredMetadataSource: "all" as const,
   preferredSearchEngine: "duckduckgo" as const,
+  gameDetailLayoutPreset: "metadata-first" as const,
 };

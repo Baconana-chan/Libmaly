@@ -1,6 +1,6 @@
 [package]
 name = "libmaly"
-version = "1.8.1"
+version = "1.9.0"
 description = "A personal game library manager"
 authors = ["Baconana-chan"]
 edition = "2021"
@@ -54,6 +54,7 @@ s3 = { package = "rust-s3", version = "0.37.1", default-features = false, featur
 keyring = { version = "3", default-features = false, features = ["apple-native", "linux-native", "windows-native"] }
 regex = "1"
 boa_engine = "0.20"
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [
@@ -64,6 +65,7 @@ winapi = { version = "0.3", features = [
     "minwindef",
     "handleapi",
     "winbase",
+    "pdh",
 ] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 winreg = "0.52"

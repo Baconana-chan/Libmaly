@@ -1666,7 +1666,7 @@ pub async fn fetch_vndb_metadata(url: String) -> Result<GameMetadata, String> {
             .build()
             .map_err(|e| format!("VNDB Client failed: {}", e))?
             .post("https://api.vndb.org/kana/vn")
-            .header("User-Agent", "LIBMALY/1.8.1")
+            .header("User-Agent", "LIBMALY/1.9.0")
             .json(&body)
             .send()
             .await
@@ -2183,7 +2183,7 @@ async fn fetch_vndb_alias_queries(query: &str) -> Vec<String> {
 
     let resp = match client
         .post("https://api.vndb.org/kana/vn")
-        .header("User-Agent", "LIBMALY/1.8.1")
+        .header("User-Agent", "LIBMALY/1.9.0")
         .json(&body)
         .send()
         .await
@@ -2645,7 +2645,7 @@ pub async fn search_suggest_links(
 
         if let Ok(resp) = client
             .post("https://api.vndb.org/kana/vn")
-            .header("User-Agent", "LIBMALY/1.8.1")
+            .header("User-Agent", "LIBMALY/1.9.0")
             .json(&body)
             .send()
             .await
@@ -2909,7 +2909,7 @@ pub async fn fetch_steamgriddb_artwork(
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("LIBMALY/1.8.1 (SteamGridDB Artwork Sync)")
+        .user_agent("LIBMALY/1.9.0 (SteamGridDB Artwork Sync)")
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 

@@ -10,9 +10,9 @@ Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the
 
 ## 🎨 UI / UX
 
-- [ ] **Theme Marketplace/Gallery** — browse and install community-made JSON themes from a trusted relay
-- [ ] **Game detail layout presets** — switch between metadata-first, screenshots-first, and notes-first page layouts per profile
-- [ ] **Quick side panel** — optional secondary panel for notes / achievements / media without fully leaving the current view
+- [x] **Theme Marketplace/Gallery** — browse and install community-made JSON themes from a trusted relay
+- [x] **Game detail layout presets** — switch between metadata-first, screenshots-first, and notes-first page layouts per profile
+- [x] **Quick side panel** — optional secondary panel for notes / achievements / media without fully leaving the current view
 ---
 
 ## 📊 Stats & Tracking
@@ -31,23 +31,23 @@ Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the
 
 ## 🌐 Sources & Extensibility
 
-- [ ] **Interactive game maps integration** — attach maps from an external provider (for example Map Genie–style services or community map sources) directly on the game page / overlay when a game is supported
-- [ ] **Guide / wiki provider slots** — configurable external links/providers for walkthroughs, maps, patch notes, and modding resources per game
+- [x] **Interactive game maps integration** — attach maps from an external provider (for example Map Genie–style services or community map sources) directly on the game page / overlay when a game is supported
+- [x] **Guide / wiki provider slots** — configurable external links/providers for walkthroughs, maps, patch notes, and modding resources per game
 - [x] **Metadata post-processing rules** — user-defined cleanup/merge rules for titles, tags, developers, and source priority after multi-source fetches
 
 ---
 
 ## 🕹️ Universal In-Game Overlay
 
-- [ ] **Full-screen Dashboard (Shift+Tab)** — immersive UI that pauses in-game input and provides a centralized navigation hub
+- [x] **Full-screen Dashboard (Shift+Tab)** — immersive UI that pauses in-game input and provides a centralized navigation hub
 - [ ] **Overlay Workspace & Widgets** — drag-and-drop widget layout:
-  - [ ] **Clock & Session Timer** — keep track of time and playtime milestones
-  - [ ] **In-game Web Browser** — mini-WebView for guides, walkthroughs, or searching F95/DLsite mid-game
-  - [ ] **Markdown Note Editor** — view and edit game notes/achievements without Alt-Tabbing
-  - [ ] **System Monitor** — floating FPS counter and basic CPU/GPU telemetry
-- [ ] **Global Hotkey & Input Hooking** — reliable Rust-side keyboard hook for guaranteed overlay trigger even in administrative-level fullscreen games
-- [ ] **Context-aware metadata** — show the currently running game's version and "New Update Available" status directly in the overlay
-- [ ] **Interaction Layer** — toggle `setIgnoreCursorEvents` dynamically to allow interacting with the overlay while the game runs in the background
+  - [x] **Clock & Session Timer** — keep track of time and playtime milestones
+  - [x] **In-game Web Browser** — mini-WebView for guides, walkthroughs, or searching F95/DLsite mid-game
+  - [x] **Markdown Note Editor** — view and edit game notes/achievements without Alt-Tabbing
+  - [x] **System Monitor** — floating FPS counter and basic CPU/GPU telemetry
+- [x] **Global Hotkey & Input Hooking** — reliable Rust-side keyboard hook for guaranteed overlay trigger even in administrative-level fullscreen games
+- [x] **Context-aware metadata** — show the currently running game's version and "New Update Available" status directly in the overlay
+- [x] **Interaction Layer** — toggle `setIgnoreCursorEvents` dynamically to allow interacting with the overlay while the game runs in the background
 
 ---
 

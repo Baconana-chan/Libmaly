@@ -60,6 +60,10 @@
   --color-code-accent: #f88379;
 
   --season-overlay: transparent;
+  --theme-bg-image: none;
+  --theme-bg-overlay: transparent;
+  --theme-bg-opacity: 0;
+  --theme-bg-blur: 0px;
 }
 
 /* --- Global Custom UI Elements --- */
@@ -1022,6 +1026,39 @@ html, body, #root {
 html, body {
   background: var(--color-bg);
   color: var(--color-text);
+}
+
+body {
+  position: relative;
+}
+
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+body::before {
+  background-image: var(--theme-bg-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: var(--theme-bg-opacity);
+  filter: blur(var(--theme-bg-blur));
+  transform: scale(1.03);
+  z-index: -2;
+}
+
+body::after {
+  background: var(--theme-bg-overlay);
+  z-index: -1;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
 }
 
 /* DLsite rich overview: constrain inline character sprites / images */

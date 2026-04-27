@@ -44,6 +44,79 @@ fn hook_state() -> &'static Mutex<Option<HookState>> {
     HOOK_STATE.get_or_init(|| Mutex::new(None))
 }
 
+// ── Permanent overlay-toggle hook (Shift+Tab, always active) ──────────────
+
+/// Guard so `start_overlay_toggle_hook` is idempotent.
+static OVERLAY_TOGGLE_HOOK_STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// `AppHandle` shared with the permanent toggle hook callback.
+#[cfg(windows)]
+static TOGGLE_APP: std::sync::OnceLock<Mutex<Option<AppHandle>>> = std::sync::OnceLock::new();
+
+#[cfg(windows)]
+fn toggle_app() -> &'static Mutex<Option<AppHandle>> {
+    TOGGLE_APP.get_or_init(|| Mutex::new(None))
+}
+
+/// Low-level keyboard hook callback — handles **only** Shift+Tab → overlay toggle.
+#[cfg(windows)]
+unsafe extern "system" fn ll_toggle_proc(code: i32, wparam: usize, lparam: isize) -> isize {
+    use winapi::um::winuser::{CallNextHookEx, GetAsyncKeyState, KBDLLHOOKSTRUCT, WM_KEYDOWN};
+    if code >= 0 && wparam == WM_KEYDOWN as usize {
+        let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
+        if kb.vkCode == 0x09 {
+            // VK_TAB pressed while Shift is held → toggle overlay
+            let shift_down = GetAsyncKeyState(0x10 /* VK_SHIFT */) as u16 & 0x8000 != 0;
+            if shift_down {
+                if let Ok(guard) = toggle_app().try_lock() {
+                    if let Some(ref app) = *guard {
+                        let _ = app.emit_to("screenshot-overlay", "libmaly://overlay-toggle", ());
+                    }
+                }
+            }
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+}
+
+/// Spawns a permanent background thread that installs a `WH_KEYBOARD_LL` hook
+/// listening for Shift+Tab and emitting `libmaly://overlay-toggle` to the
+/// overlay window. Safe to call multiple times (no-op after first call).
+pub fn start_overlay_toggle_hook(app: AppHandle) {
+    if OVERLAY_TOGGLE_HOOK_STARTED.set(()).is_err() {
+        return; // already started
+    }
+    #[cfg(windows)]
+    {
+        *toggle_app().lock().unwrap() = Some(app);
+        let _ = std::thread::Builder::new()
+            .name("libmaly-overlay-toggle".to_string())
+            .spawn(|| unsafe {
+                use winapi::um::winuser::{
+                    GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx, MSG, WH_KEYBOARD_LL,
+                };
+                let hook = SetWindowsHookExW(
+                    WH_KEYBOARD_LL,
+                    Some(ll_toggle_proc),
+                    std::ptr::null_mut(),
+                    0,
+                );
+                let mut msg: MSG = std::mem::zeroed();
+                loop {
+                    let ret = GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0);
+                    if ret <= 0 {
+                        break;
+                    }
+                }
+                if !hook.is_null() {
+                    UnhookWindowsHookEx(hook);
+                }
+            });
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+}
+
 pub fn update_active_pid(pid: u32) {
     #[cfg(windows)]
     {
@@ -319,34 +392,31 @@ unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: usize, lparam: isi
     use winapi::um::winuser::{CallNextHookEx, KBDLLHOOKSTRUCT, WM_KEYDOWN};
     if code >= 0 && wparam == WM_KEYDOWN as usize {
         let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
-        if kb.vkCode == 0x7B {
-            if let Ok(guard) = hook_state().lock() {
-                if let Some(ref state) = *guard {
-                    if kb.vkCode == 0x7B {
-                        match capture_window_of(state.pid, &state.exe) {
-                            Ok(shot) => {
-                                let _ = state.app.emit(
-                                    "screenshot-taken",
-                                    ScreenshotTakenPayload {
-                                        game_exe: state.exe.clone(),
-                                        screenshot: shot,
-                                    },
-                                );
-                            }
-                            Err(e) => eprintln!("[screenshot] F12: {}", e),
+        if let Ok(guard) = hook_state().lock() {
+            if let Some(ref state) = *guard {
+                if kb.vkCode == 0x7B {
+                    // F12 → take screenshot
+                    match capture_window_of(state.pid, &state.exe) {
+                        Ok(shot) => {
+                            let _ = state.app.emit(
+                                "screenshot-taken",
+                                ScreenshotTakenPayload {
+                                    game_exe: state.exe.clone(),
+                                    screenshot: shot,
+                                },
+                            );
                         }
-                    } else if let Some(ref boss) = state.boss_key {
-                        if kb.vkCode == boss.vk_code {
-                            let action = boss.action.clone();
-                            let mute = boss.mute;
-                            let pid = state.pid;
-                            // Hide the Libmaly window via frontend event
-                            let _ = state.app.emit("boss-key-pressed", ());
-                            // Execute panic action in background to avoid blocking the hook thread
-                            std::thread::spawn(move || {
-                                win::exec_panic_action(pid, &action, mute);
-                            });
-                        }
+                        Err(e) => eprintln!("[screenshot] F12: {}", e),
+                    }
+                } else if let Some(ref boss) = state.boss_key {
+                    if kb.vkCode == boss.vk_code {
+                        let action = boss.action.clone();
+                        let mute = boss.mute;
+                        let pid = state.pid;
+                        let _ = state.app.emit("boss-key-pressed", ());
+                        std::thread::spawn(move || {
+                            win::exec_panic_action(pid, &action, mute);
+                        });
                     }
                 }
             }

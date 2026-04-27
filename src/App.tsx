@@ -20,6 +20,8 @@ import { AchievementTrackerModal } from "./components/modals/AchievementTrackerM
 import { MediaInstallPreviewModal } from "./components/modals/MediaInstallPreviewModal";
 import { ManageCollectionsModal } from "./components/modals/ManageCollectionsModal";
 import { NotesModal } from "./components/modals/NotesModal";
+import { GameMapsModal } from "./components/modals/GameMapsModal";
+import { GameGuidesModal } from "./components/modals/GameGuidesModal";
 import { NsfwOverlay } from "./components/common/NsfwOverlay";
 import { GameDetail } from "./components/game/GameDetail";
 import { AppUpdateModal } from "./components/modals/AppUpdateModal";
@@ -531,6 +533,8 @@ export default function App() {
   const [renamingCollectionName, setRenamingCollectionName] = useState("");
   const [showCustomizeModal, setShowCustomizeModal] = useState(false);
   const [showNotesModal, setShowNotesModal] = useState(false);
+  const [showMapsModal, setShowMapsModal] = useState(false);
+  const [showGuidesModal, setShowGuidesModal] = useState(false);
   const [showAchievementTrackerModal, setShowAchievementTrackerModal] = useState(false);
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [showFilters, setShowFilters] = useState(false);
@@ -801,12 +805,35 @@ export default function App() {
       Object.entries(appSettings.customThemeColors).forEach(([key, val]) => {
         if (val) root.style.setProperty(`--color-${key}`, val);
       });
+
+      const bgImageUrl = (appSettings.themeBackgroundImageUrl || "").trim();
+      if (bgImageUrl) {
+        root.style.setProperty("--theme-bg-image", `url("${bgImageUrl.replace(/"/g, "%22")}")`);
+      } else {
+        root.style.setProperty("--theme-bg-image", "none");
+      }
+      root.style.setProperty("--theme-bg-overlay", appSettings.themeBackgroundImageOverlay || "rgba(0,0,0,0.36)");
+      root.style.setProperty("--theme-bg-opacity", String(Math.max(0, Math.min(1, appSettings.themeBackgroundImageOpacity ?? 0.2))));
+      root.style.setProperty("--theme-bg-blur", `${Math.max(0, Math.min(32, appSettings.themeBackgroundImageBlurPx ?? 0))}px`);
     } else {
       // Clear custom properties when not in custom mode to avoid leakage
       const keys = ["bg", "bg-elev", "bg-deep", "bg-code", "bg-overlay", "panel", "panel-2", "panel-3", "panel-alt", "panel-deep", "panel-low", "border", "border-soft", "border-card", "border-strong", "border-subtle", "text", "text-soft", "text-muted", "text-dim"];
       keys.forEach(k => root.style.removeProperty(`--color-${k}`));
+      root.style.setProperty("--theme-bg-image", "none");
+      root.style.setProperty("--theme-bg-overlay", "transparent");
+      root.style.setProperty("--theme-bg-opacity", "0");
+      root.style.setProperty("--theme-bg-blur", "0px");
     }
-  }, [effectiveThemeMode, effectiveSeason, appSettings.accentColor, appSettings.customThemeColors]);
+  }, [
+    effectiveThemeMode,
+    effectiveSeason,
+    appSettings.accentColor,
+    appSettings.customThemeColors,
+    appSettings.themeBackgroundImageUrl,
+    appSettings.themeBackgroundImageOverlay,
+    appSettings.themeBackgroundImageOpacity,
+    appSettings.themeBackgroundImageBlurPx,
+  ]);
 
   // Sync i18n language with settings
   useEffect(() => {
@@ -824,6 +851,10 @@ export default function App() {
   useEffect(() => { metadataRef.current = metadata; }, [metadata]);
   const customizationsRef = useRef(customizations);
   useEffect(() => { customizationsRef.current = customizations; }, [customizations]);
+  const notesRef = useRef(notes);
+  useEffect(() => { notesRef.current = notes; }, [notes]);
+  const achievementsRef = useRef(achievements);
+  useEffect(() => { achievementsRef.current = achievements; }, [achievements]);
 
   const statsRef = useRef(stats);
   useEffect(() => { statsRef.current = stats; }, [stats]);
@@ -889,6 +920,8 @@ export default function App() {
   const [launchConfig, setLaunchConfig] = useState<LaunchConfig>(() => loadCache(SK_LAUNCH, DEFAULT_LAUNCH_CONFIG));
   const [, setRecentGames] = useState<RecentGame[]>(() => loadCache(SK_RECENT, []));
   const [availableGameUpdates, setAvailableGameUpdates] = useState<Record<string, string>>({});
+  const availableGameUpdatesRef = useRef(availableGameUpdates);
+  useEffect(() => { availableGameUpdatesRef.current = availableGameUpdates; }, [availableGameUpdates]);
   const [showWineSettings, setShowWineSettings] = useState(false);
   const [appUpdate, setAppUpdate] = useState<{ version: string; url: string; downloadUrl: string } | null>(null);
   const [showAppUpdateModal, setShowAppUpdateModal] = useState(false);
@@ -1127,16 +1160,16 @@ export default function App() {
     const overlayUrl = new URL("/overlay.html", window.location.origin).toString();
     const created = new WebviewWindow("screenshot-overlay", {
       url: overlayUrl,
-      title: "LIBMALY Screenshot Overlay",
-      width: 380,
-      height: 220,
+      title: "LIBMALY Overlay",
+      width: 1280,
+      height: 800,
       visible: false,
       decorations: false,
       transparent: true,
       shadow: false,
       alwaysOnTop: true,
       skipTaskbar: true,
-      resizable: false,
+      resizable: true,
       focus: false,
       focusable: false,
     });
@@ -1144,7 +1177,7 @@ export default function App() {
       await created.setAlwaysOnTop(true).catch(() => {});
       await created.setSkipTaskbar(true).catch(() => {});
       await created.setIgnoreCursorEvents(true).catch(() => {});
-      await created.hide().catch(() => {});
+      // The overlay component handles its own show() call after sizing itself to the monitor
     });
     return created;
   }, []);
@@ -1482,10 +1515,33 @@ export default function App() {
       if (appSettingsRef.current.trayTooltipEnabled) {
         invoke("set_tray_tooltip", { tooltip: "LIBMALY" }).catch(() => null);
       }
+      // Signal overlay that session has ended
+      emitTo("screenshot-overlay", "libmaly://overlay-session-end", {}).catch(() => {});
     });
-    const unlistenStarted = listen<string>("game-started", (ev) => {
-      setRunningGamePath(ev.payload);
+    const unlistenStarted = listen<string>("game-started", async (ev) => {
+      const path = ev.payload;
+      setRunningGamePath(path);
       sessionStartRef.current = Date.now();
+
+      // Push session data to the overlay window
+      try {
+        const cust = customizationsRef.current[path] ?? {};
+        const meta = metadataRef.current[path];
+        const game = gamesRef.current.find((g) => g.path === path);
+        const newVersion = availableGameUpdatesRef.current[path] ?? null;
+        await ensureScreenshotOverlayWindow();
+        await emitTo("screenshot-overlay", "libmaly://overlay-session-start", {
+          gamePath: path,
+          gameTitle: cust.displayName ?? meta?.title ?? game?.name ?? "Game",
+          coverUrl: cust.coverUrl ?? meta?.cover_url ?? null,
+          notes: notesRef.current[path] ?? null,
+          achievementItems: achievementsRef.current[path] ?? [],
+          startTime: Date.now(),
+          version: meta?.version ?? null,
+          hasUpdate: newVersion !== null,
+          newVersion,
+        });
+      } catch { /* ignore overlay errors */ }
     });
     const unlistenProfileSwitched = listen<LibraryProfileRegistry>("library-profile-switched", (ev) => {
       setProfileRegistry(ev.payload);
@@ -1508,6 +1564,16 @@ export default function App() {
     const unlistenShot = listen<{ game_exe: string; screenshot: Screenshot }>("screenshot-taken", (ev) => {
       const { game_exe, screenshot } = ev.payload;
       recordScreenshotCapture(game_exe, screenshot, { showToast: true });
+    });
+    const unlistenOverlayNote = listen<{ gamePath: string; notes: string }>("libmaly://overlay-note-save", (ev) => {
+      const { gamePath, notes: newNotes } = ev.payload;
+      setNotes((prev) => {
+        const next = { ...prev, [gamePath]: newNotes };
+        saveCache(SK_NOTES, next);
+        return next;
+      });
+      // Keep notesRef in sync so a subsequent session-start picks up the new text
+      notesRef.current = { ...notesRef.current, [gamePath]: newNotes };
     });
     const unlistenBoss = listen("boss-key-pressed", async () => {
       // 1. Un-focus and minimize the main app window
@@ -1582,6 +1648,7 @@ export default function App() {
       unlistenProfileSwitched.then((f) => f());
       unlistenExternalCli.then((f) => f());
       unlistenShot.then((f) => f());
+      unlistenOverlayNote.then((f) => f());
       unlistenBoss.then((f) => f());
       unlistenDeepLink.then((f) => f());
       unlistenRustLog.then((f) => f());
@@ -6258,11 +6325,17 @@ export default function App() {
               });
             }}
             onOpenNotes={() => setShowNotesModal(true)}
+            noteText={notes[selected.path] ?? ""}
+            onSaveNoteText={handleSaveNote}
             hasNotes={!!(notes[selected.path]?.trim())}
             onOpenAchievements={() => setShowAchievementTrackerModal(true)}
+            achievementItems={achievements[selected.path] ?? []}
+            onSaveAchievementItems={handleSaveAchievements}
             achievementSummary={achUi.summary}
             achievementHasOpenGoals={achUi.openGoals}
             onManageCollections={() => setShowManageCollections(true)}
+            onOpenMaps={() => setShowMapsModal(true)}
+            onOpenGuides={() => setShowGuidesModal(true)}
             appSettings={appSettings}
             revealedNsfw={revealedNsfw}
             onRevealNsfw={revealNsfwPath}
@@ -6482,6 +6555,42 @@ export default function App() {
             initialNote={notes[selected.path] ?? ""}
             onSave={handleSaveNote}
             onClose={() => setShowNotesModal(false)}
+          />
+        )
+      }
+      {
+        showMapsModal && selected && (
+          <GameMapsModal
+            displayTitle={customizations[selected.path]?.displayName ?? metadata[selected.path]?.title ?? selected.name}
+            mapLinks={customizations[selected.path]?.mapLinks ?? []}
+            extraProviders={appSettings.customMapProviders}
+            onSave={(links) => {
+              const nc = { ...(customizations[selected.path] || {}), mapLinks: links };
+              setCustomizations(prev => {
+                const n = { ...prev, [selected.path]: nc };
+                saveCache(SK_CUSTOM, n);
+                return n;
+              });
+            }}
+            onClose={() => setShowMapsModal(false)}
+          />
+        )
+      }
+      {
+        showGuidesModal && selected && (
+          <GameGuidesModal
+            displayTitle={customizations[selected.path]?.displayName ?? metadata[selected.path]?.title ?? selected.name}
+            guideLinks={customizations[selected.path]?.guideLinks ?? []}
+            extraProviders={appSettings.customGuideProviders}
+            onSave={(links) => {
+              const nc = { ...(customizations[selected.path] || {}), guideLinks: links };
+              setCustomizations(prev => {
+                const n = { ...prev, [selected.path]: nc };
+                saveCache(SK_CUSTOM, n);
+                return n;
+              });
+            }}
+            onClose={() => setShowGuidesModal(false)}
           />
         )
       }

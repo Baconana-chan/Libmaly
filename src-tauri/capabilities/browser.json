@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "browser",
+  "description": "Capability for the in-game browser overlay window",
+  "windows": ["overlay-browser"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-skip-taskbar",
+    "core:window:allow-close",
+    "core:window:allow-hide",
+    "core:window:allow-show"
+  ]
+}

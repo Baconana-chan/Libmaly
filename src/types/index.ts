@@ -551,6 +551,10 @@ export interface GameCustomization {
   emulatorProfileId?: string;
   /** Absolute path to the ROM file (used with emulatorProfileId) */
   romPath?: string;
+  /** Interactive map links attached to this game */
+  mapLinks?: GameMapLink[];
+  /** Guide / wiki / patch-notes / modding resource links attached to this game */
+  guideLinks?: GameGuideLink[];
 }
 
 export interface SearchResultItem {
@@ -559,6 +563,87 @@ export interface SearchResultItem {
   cover_url: string | null;
   source: string;
 }
+
+// ─── Interactive map types ────────────────────────────────────────────────────
+
+export type MapProviderCategory = "interactive" | "wiki" | "guide" | "custom";
+
+export interface MapProvider {
+  id: string;
+  name: string;
+  /** URL template — use {title} as a placeholder, e.g. https://mapgenie.io/{title}/maps */
+  urlTemplate: string;
+  category: MapProviderCategory;
+  /** Optional favicon/icon URL shown as a small image in the UI */
+  iconUrl?: string;
+}
+
+export interface GameMapLink {
+  id: string;
+  providerId: string;
+  /** Human-readable label shown in the UI */
+  label: string;
+  /** Fully resolved URL for this game */
+  url: string;
+  addedAt: number;
+}
+
+export const BUILTIN_MAP_PROVIDERS: MapProvider[] = [
+  { id: "mapgenie",      name: "MapGenie",      urlTemplate: "https://mapgenie.io/{title}/maps",                   category: "interactive" },
+  { id: "fextralife",    name: "Fextralife",    urlTemplate: "https://fextralife.com/?s={title}",                  category: "wiki"        },
+  { id: "wiki-gg",       name: "Wiki.gg",       urlTemplate: "https://{title}.wiki.gg",                            category: "wiki"        },
+  { id: "fandom",        name: "Fandom",        urlTemplate: "https://{title}.fandom.com/wiki",                    category: "wiki"        },
+  { id: "gamefaqs",      name: "GameFAQs",      urlTemplate: "https://gamefaqs.gamespot.com/search?game={title}",  category: "guide"       },
+  { id: "ign",           name: "IGN Wiki",      urlTemplate: "https://www.ign.com/wikis/{title}",                  category: "guide"       },
+  { id: "strategywiki",  name: "StrategyWiki",  urlTemplate: "https://strategywiki.org/wiki/{title}",              category: "guide"       },
+  { id: "custom",        name: "Custom URL",    urlTemplate: "",                                                    category: "custom"      },
+];
+
+// ─── Guide / wiki provider types ─────────────────────────────────────────────
+
+export type GuideCategory = "walkthrough" | "wiki" | "patchnotes" | "modding" | "community" | "official" | "custom";
+
+export interface GuideProvider {
+  id: string;
+  name: string;
+  /** URL template — use {title} as placeholder */
+  urlTemplate: string;
+  category: GuideCategory;
+  iconUrl?: string;
+}
+
+export interface GameGuideLink {
+  id: string;
+  providerId: string;
+  /** Human-readable label */
+  label: string;
+  /** Fully resolved URL */
+  url: string;
+  category: GuideCategory;
+  addedAt: number;
+}
+
+export const BUILTIN_GUIDE_PROVIDERS: GuideProvider[] = [
+  // Walkthrough
+  { id: "gamefaqs-wt",   name: "GameFAQs",           urlTemplate: "https://gamefaqs.gamespot.com/search?game={title}", category: "walkthrough" },
+  { id: "ign-guide",     name: "IGN Guide",           urlTemplate: "https://www.ign.com/wikis/{title}",                 category: "walkthrough" },
+  { id: "strategywiki",  name: "StrategyWiki",        urlTemplate: "https://strategywiki.org/wiki/{title}",             category: "walkthrough" },
+  // Wiki
+  { id: "pcgamingwiki",  name: "PCGamingWiki",        urlTemplate: "https://www.pcgamingwiki.com/wiki/{title}",          category: "wiki"        },
+  { id: "fandom-g",      name: "Fandom",              urlTemplate: "https://{title}.fandom.com/wiki/Main_Page",          category: "wiki"        },
+  { id: "fextralife-g",  name: "Fextralife",          urlTemplate: "https://{title}.wiki.fextralife.com/",               category: "wiki"        },
+  // Patch Notes
+  { id: "pcgwiki-patch", name: "PCGamingWiki Patches",urlTemplate: "https://www.pcgamingwiki.com/wiki/{title}#Patches",  category: "patchnotes"  },
+  // Modding
+  { id: "nexusmods",     name: "Nexus Mods",          urlTemplate: "https://www.nexusmods.com/search/?gsearch={title}",  category: "modding"     },
+  { id: "moddb",         name: "ModDB",               urlTemplate: "https://www.moddb.com/games/{title}/mods",           category: "modding"     },
+  { id: "gamebanana",    name: "GameBanana",          urlTemplate: "https://gamebanana.com/games/search?q={title}",      category: "modding"     },
+  // Community
+  { id: "reddit-sub",    name: "Reddit (subreddit)",  urlTemplate: "https://www.reddit.com/r/{title}",                  category: "community"   },
+  { id: "steam-discuss", name: "Steam Discussions",   urlTemplate: "https://store.steampowered.com/app/{title}/discussions/", category: "community" },
+  // Custom
+  { id: "custom",        name: "Custom URL",          urlTemplate: "",                                                   category: "custom"      },
+];
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
 
@@ -728,12 +813,24 @@ export interface AppSettings {
   bossKeyMuteSystem?: boolean;
   bossKeyFallbackUrl?: string;
   customThemeColors?: Record<string, string>;
+  themeBackgroundImageUrl?: string;
+  themeBackgroundImageOverlay?: string;
+  themeBackgroundImageOpacity?: number;
+  themeBackgroundImageBlurPx?: number;
+  themeMarketplaceRelayUrl?: string;
   language?: string;
   preferredMetadataSource?: "all" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku";
   preferredSearchEngine?: "duckduckgo" | "google" | "bing" | "brave";
+  gameDetailLayoutPreset: GameDetailLayoutPreset;
+  /** User-defined custom map providers (appended after built-ins) */
+  customMapProviders?: MapProvider[];
+  /** User-defined custom guide providers (appended after built-ins) */
+  customGuideProviders?: GuideProvider[];
 }
 
 // ─── Layout / preset types ────────────────────────────────────────────────────
+
+export type GameDetailLayoutPreset = "metadata-first" | "screenshots-first" | "notes-first";
 
 export type LayoutViewMode = "list" | "compact" | "grid";
 

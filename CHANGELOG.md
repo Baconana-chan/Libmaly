@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.9.0 - 2026-04-27
 
 ### ✨ Sidebar & Update Controls
 - **Global notes in sidebar** — added a dedicated global notes panel below the Surprise button, with persistent storage and a Settings toggle to show or hide the block.
@@ -18,11 +18,32 @@
 - **Session timeline explorer** — added a zoomable per-day/per-week timeline in Stats to inspect exactly when sessions happened and how long they lasted.
 - **Tag / developer breakdowns** — added over-time charts for top genres, tags, engines, developers, and collections to analyze playtime distribution trends.
 
+### 🎨 UI / UX
+- **Quick side panel** — added an optional in-view side panel on the game detail page with Notes, Tracker, and Media tabs so users can edit notes/checklists and access screenshot actions without leaving the current screen.
+- **Game detail layout presets** — added per-profile game-detail layout presets (`metadata-first`, `screenshots-first`, `notes-first`) to reorder the main detail-page sections based on user preference.
+- **Theme Marketplace / Gallery** — added a trusted-relay theme catalog browser in Settings for loading and installing community JSON themes.
+- **Custom theme background images** — custom themes can now define an optional background image with overlay, opacity, and blur controls (Discord-theme style wallpapers).
+- **Action bar decluttering** — consolidated the game detail action bar into a **Content ▾** dropdown (Notes, Tracker, Maps, Guides — highlighted when any content data exists) and a **More ▾** dropdown (Re-link, Update, Backup Saves, Cloud Save Zip, Fix Video Playback, F95 Login), reducing visible buttons to a manageable set while keeping all actions accessible.
+
+### �️ In-Game Overlay
+- **Real overlay window** — replaced the invisible screenshot ghost window with a full transparent full-screen overlay that stays on top of borderless-windowed games.
+- **Shift+Tab toggle** — Rust-side `WH_KEYBOARD_LL` hook detects Shift+Tab during active sessions and emits `libmaly://overlay-toggle`, sliding the panel open/closed without focus loss.
+- **Passive / active mode** — in passive mode the window is cursor-passthrough and invisible; Shift+Tab switches to active mode, enabling mouse interaction with the right-side panel.
+- **Session data panel** — on game launch, the overlay receives the game title, cover art, notes, achievement checklist, and session start time; a live session timer ticks every second.
+- **Context-aware metadata** — the overlay header shows the current game version badge; if an update is available it turns amber and shows the new version string.
+- **4-tab panel** — Notes (read-only), Goals (achievement checklist), Captures (session screenshot grid), Alerts (in-game notifications).
+- **System Monitor widget** — compact floating CPU/RAM/GPU widget visible in the bottom-left corner during any active session (passive mode); uses a Rust background thread polling `sysinfo` (cross-platform) for CPU% and RAM, and Windows PDH `GPU Engine(*engtype_3D)\Utilization Percentage` counter for GPU utilization. Also shown as a telemetry row in the overlay panel footer with mini bar indicators.
+- **Screenshot toasts** — F12 captures still show the thumbnail toast in passive mode without opening the panel.
+- **Markdown Note Editor** — the Notes tab is now fully editable in-overlay: toggle between a rendered Markdown preview and a raw textarea, auto-save on blur, and sync changes back to the main library without Alt-Tabbing. Supports headings, bold/italic/inline-code, and ordered/unordered lists.
+- **In-game Web Browser** — a new Browser tab in the overlay panel launches a floating `overlay-browser` WebviewWindow that stays on top of the game. Includes quick-link buttons for F95zone, DLsite, VNDB, Google, Wikipedia, and YouTube; a free-form URL/search input (auto-prefixes `https://`, falls back to Google search); and game-specific search shortcuts that pre-fill the current game's title. The browser window has an injected toolbar (Back, Forward, Refresh, URL bar, Close) with window-drag support — no OS title bar needed.
+
 ### 🛒 Launcher & Store Integrations
 - **RetroArch / emulator launcher integration** — added configurable emulator profiles (path, args template, optional core path, extensions), ROM-target import from the Add menu, per-game emulator/ROM overrides in Customise, and launch-time token expansion (`{rom}`, `{core}`, `{dir}`, `{name}`) so ROM entries launch through emulator profiles instead of being treated as raw executables.
 - **SteamGridDB artwork sync** — added SteamGridDB sync for alternate covers, heroes, logos, and icons to improve presentation of imported and non-store games.
 
 ### 🌐 Sources & Extensibility
+- **Interactive game maps integration** — added per-game map links with a dedicated modal for attaching interactive map providers (Map Genie–style services, community sources, custom URLs), grouped by category, accessible from the game detail page and quick side panel.
+- **Guide / wiki provider slots** — added per-game guide/resource links with configurable external providers (walkthroughs, wikis, patch notes, modding resources, community links) covering 13 built-in providers (GameFAQs, IGN, StrategyWiki, PCGamingWiki, Fandom, Nexus Mods, ModDB, GameBanana, Reddit, Steam Discussions, and more).
 - **Metadata post-processing rules** — added user-configurable post-processing for merged metadata: reorder global source priority, set per-field source preferences (e.g. prefer VNDB for titles), and define text cleanup rules (regex replace, trim affixes, strip brackets, case transforms, exclude-by-pattern on tags/genres) applied after multi-source merging.
 
 ### 🛠️ Technical

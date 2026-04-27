@@ -49,6 +49,7 @@ interface BackgroundJobSummary {
 }
 
 type RatingScale = "10" | "10_decimal" | "100" | "5_star" | "3_smiley";
+type GameDetailLayoutPreset = "metadata-first" | "screenshots-first" | "notes-first";
 type ThemeMode = "dark" | "light" | "oled" | "mint-apple" | "hanami" | "dawn" | "sunset" | "crimson-moon" | "sepia" | "cotton-candy" | "ocean-deep"
   | "citrus-sherbert" | "retro-raincloud" | "sunrise" | "lofi-vibes" | "desert-khaki"
   | "chroma-glow" | "forest" | "midnight-blurple" | "mars" | "dusk" | "retro-storm" | "neon-nights" | "strawberry-lemonade" | "aurora" | "blurple-twilight"
@@ -102,8 +103,14 @@ interface AppSettingsLike {
   bossKeyMuteSystem?: boolean;
   bossKeyFallbackUrl?: string;
   customThemeColors?: Record<string, string>;
+  themeBackgroundImageUrl?: string;
+  themeBackgroundImageOverlay?: string;
+  themeBackgroundImageOpacity?: number;
+  themeBackgroundImageBlurPx?: number;
+  themeMarketplaceRelayUrl?: string;
   language?: string;
   preferredSearchEngine?: "duckduckgo" | "google" | "bing" | "brave";
+  gameDetailLayoutPreset: GameDetailLayoutPreset;
 }
 
 interface DiscordSdkSnapshotLike {
@@ -239,6 +246,30 @@ interface ReliabilityScenarioReport {
   scenarios: ReliabilityScenarioResult[];
 }
 
+interface ThemeMarketplaceEntry {
+  id: string;
+  name: string;
+  author?: string;
+  description?: string;
+  previewImage?: string;
+  tags?: string[];
+  accentColor?: string;
+  customThemeColors?: Record<string, string>;
+  backgroundImageUrl?: string;
+  backgroundOverlay?: string;
+  backgroundOpacity?: number;
+  backgroundBlurPx?: number;
+}
+
+const TRUSTED_THEME_RELAY_HOSTS = new Set([
+  "raw.githubusercontent.com",
+  "gist.githubusercontent.com",
+  "cdn.jsdelivr.net",
+  "themes.libmaly.dev",
+  "localhost",
+  "127.0.0.1",
+]);
+
 const GLOBAL_STORAGE_KEYS = new Set(["libmaly_last_seen_version"]);
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
@@ -304,6 +335,48 @@ function normalizeHexColor(input: string, fallback: string) {
   const x = (input || "").trim();
   const hex = x.startsWith("#") ? x : `#${x}`;
   return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex.toLowerCase() : fallback;
+}
+
+function isTrustedThemeRelayUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+    return TRUSTED_THEME_RELAY_HOSTS.has(parsed.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function parseThemeMarketplaceCatalog(raw: unknown): ThemeMarketplaceEntry[] {
+  const rows = Array.isArray(raw)
+    ? raw
+    : (raw && typeof raw === "object" && Array.isArray((raw as { themes?: unknown[] }).themes)
+      ? (raw as { themes: unknown[] }).themes
+      : []);
+
+  const entries: ThemeMarketplaceEntry[] = [];
+  for (const item of rows) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const id = String(row.id || row.slug || "").trim();
+    const name = String(row.name || "").trim();
+    if (!id || !name) continue;
+    entries.push({
+      id,
+      name,
+      author: typeof row.author === "string" ? row.author : undefined,
+      description: typeof row.description === "string" ? row.description : undefined,
+      previewImage: typeof row.previewImage === "string" ? row.previewImage : undefined,
+      tags: Array.isArray(row.tags) ? row.tags.filter((x): x is string => typeof x === "string") : undefined,
+      accentColor: typeof row.accentColor === "string" ? row.accentColor : undefined,
+      customThemeColors: row.customThemeColors && typeof row.customThemeColors === "object" ? row.customThemeColors as Record<string, string> : undefined,
+      backgroundImageUrl: typeof row.backgroundImageUrl === "string" ? row.backgroundImageUrl : undefined,
+      backgroundOverlay: typeof row.backgroundOverlay === "string" ? row.backgroundOverlay : undefined,
+      backgroundOpacity: typeof row.backgroundOpacity === "number" ? row.backgroundOpacity : undefined,
+      backgroundBlurPx: typeof row.backgroundBlurPx === "number" ? row.backgroundBlurPx : undefined,
+    });
+  }
+  return entries;
 }
 
 function MigrationWizardModal({
@@ -694,6 +767,20 @@ function SettingsModal({
   const [vaultSummary, setVaultSummary] = useState<VaultSummary | null>(null);
   const [layoutPresetName, setLayoutPresetName] = useState("");
   const [layoutPresetStatus, setLayoutPresetStatus] = useState<string | null>(null);
+  const [themeMarketplaceItems, setThemeMarketplaceItems] = useState<ThemeMarketplaceEntry[]>([]);
+  const [themeMarketplaceLoading, setThemeMarketplaceLoading] = useState(false);
+  const [themeMarketplaceStatus, setThemeMarketplaceStatus] = useState<string | null>(null);
+  const [themeMarketplaceFilter, setThemeMarketplaceFilter] = useState("");
+  const filteredThemeMarketplaceItems = useMemo(() => {
+    const q = themeMarketplaceFilter.trim().toLowerCase();
+    if (!q) return themeMarketplaceItems;
+    return themeMarketplaceItems.filter((item) => (
+      item.name.toLowerCase().includes(q)
+      || item.author?.toLowerCase().includes(q)
+      || item.description?.toLowerCase().includes(q)
+      || item.tags?.some((tag) => tag.toLowerCase().includes(q))
+    ));
+  }, [themeMarketplaceFilter, themeMarketplaceItems]);
 
   // Data consistency test state
   const [testResults, setTestResults] = useState<Record<string, ConsistencyTestResult>>({});
@@ -753,6 +840,12 @@ function SettingsModal({
     setProfileDraft(makeEmptyProfileDraft());
   }, [selectedProfileId, selectedProfile, appSettings.accentColor]);
 
+  useEffect(() => {
+    if (tab !== "general") return;
+    if (themeMarketplaceItems.length > 0 || themeMarketplaceLoading) return;
+    void loadThemeMarketplace();
+  }, [tab]);
+
   const handleImportLanguage = async () => {
     const path = await open({
       multiple: false,
@@ -782,6 +875,57 @@ function SettingsModal({
     } finally {
       setLangImporting(false);
     }
+  };
+
+  const loadThemeMarketplace = async (relayUrl?: string) => {
+    const url = (relayUrl ?? appSettings.themeMarketplaceRelayUrl ?? defaultSettings.themeMarketplaceRelayUrl ?? "").trim();
+    if (!url) {
+      setThemeMarketplaceStatus("Set a relay URL first.");
+      return;
+    }
+    if (!isTrustedThemeRelayUrl(url)) {
+      setThemeMarketplaceStatus("Relay URL is not trusted. Allowed hosts: raw.githubusercontent.com, gist.githubusercontent.com, cdn.jsdelivr.net, themes.libmaly.dev, localhost.");
+      return;
+    }
+
+    setThemeMarketplaceLoading(true);
+    setThemeMarketplaceStatus(null);
+    try {
+      const response = await fetch(url, { method: "GET" });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const json = await response.json();
+      const entries = parseThemeMarketplaceCatalog(json);
+      setThemeMarketplaceItems(entries);
+      setThemeMarketplaceStatus(entries.length > 0
+        ? `Loaded ${entries.length} theme${entries.length === 1 ? "" : "s"}.`
+        : "Relay is reachable, but no themes were found in the catalog.");
+    } catch (error) {
+      setThemeMarketplaceItems([]);
+      setThemeMarketplaceStatus(`Could not load theme marketplace: ${String(error)}`);
+    } finally {
+      setThemeMarketplaceLoading(false);
+    }
+  };
+
+  const installMarketplaceTheme = (entry: ThemeMarketplaceEntry) => {
+    const nextCustomColors = {
+      ...(appSettings.customThemeColors || {}),
+      ...(entry.customThemeColors || {}),
+    };
+    const nextAccent = normalizeHexColor(entry.accentColor || appSettings.accentColor || defaultSettings.accentColor, defaultSettings.accentColor);
+    onSaveSettings({
+      ...appSettings,
+      themeMode: "custom",
+      accentColor: nextAccent,
+      customThemeColors: nextCustomColors,
+      themeBackgroundImageUrl: entry.backgroundImageUrl ?? appSettings.themeBackgroundImageUrl ?? "",
+      themeBackgroundImageOverlay: entry.backgroundOverlay ?? appSettings.themeBackgroundImageOverlay ?? defaultSettings.themeBackgroundImageOverlay,
+      themeBackgroundImageOpacity: entry.backgroundOpacity ?? appSettings.themeBackgroundImageOpacity ?? defaultSettings.themeBackgroundImageOpacity,
+      themeBackgroundImageBlurPx: entry.backgroundBlurPx ?? appSettings.themeBackgroundImageBlurPx ?? defaultSettings.themeBackgroundImageBlurPx,
+    });
+    setThemeMarketplaceStatus(`Installed '${entry.name}'.`);
   };
 
   const handleRemoveCustomLanguage = (code: string) => {
@@ -2147,6 +2291,19 @@ function SettingsModal({
                       </select>
                     </label>
                     <label className="text-sm block" style={{ color: "var(--color-text-muted)" }}>
+                      Game detail layout preset
+                      <select
+                        value={appSettings.gameDetailLayoutPreset || "metadata-first"}
+                        onChange={(e) => onSaveSettings({ ...appSettings, gameDetailLayoutPreset: e.currentTarget.value as GameDetailLayoutPreset })}
+                        className="mt-1 w-full px-2 py-2 rounded text-xs outline-none"
+                        style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                      >
+                        <option value="metadata-first">Metadata first</option>
+                        <option value="screenshots-first">Screenshots first</option>
+                        <option value="notes-first">Notes first</option>
+                      </select>
+                    </label>
+                    <label className="text-sm block" style={{ color: "var(--color-text-muted)" }}>
                       {t('settings.system.auto_screenshot')}
                       <div className="flex items-center gap-2 mt-1">
                         <input type="number" min="0" className="w-20 px-2 py-2 bg-transparent border rounded outline-none text-center"
@@ -2309,6 +2466,82 @@ function SettingsModal({
                           />
                         </div>
                       </label>
+                      <div className="rounded-lg p-3 space-y-2" style={{ background: "var(--color-bg-overlay)", border: "1px solid var(--color-border-soft)" }}>
+                        <div className="text-xs font-semibold" style={{ color: "var(--color-text)" }}>Theme Marketplace / Gallery</div>
+                        <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>
+                          Browse and install community JSON themes from a trusted relay.
+                        </p>
+                        <label className="text-[11px] block" style={{ color: "var(--color-text-muted)" }}>
+                          Trusted relay URL
+                          <div className="mt-1 flex gap-2">
+                            <input
+                              type="text"
+                              value={appSettings.themeMarketplaceRelayUrl || defaultSettings.themeMarketplaceRelayUrl || ""}
+                              onInput={(e) => onSaveSettings({ ...appSettings, themeMarketplaceRelayUrl: (e.target as HTMLInputElement).value })}
+                              className="flex-1 px-2 py-1.5 rounded text-xs outline-none font-mono"
+                              style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => { void loadThemeMarketplace(); }}
+                              disabled={themeMarketplaceLoading}
+                              className="px-3 py-1.5 rounded text-xs disabled:opacity-50"
+                              style={{ background: "var(--color-panel-3)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                            >
+                              {themeMarketplaceLoading ? "Loading..." : "Refresh"}
+                            </button>
+                          </div>
+                        </label>
+
+                        <input
+                          type="text"
+                          placeholder="Filter themes by name/tag/author"
+                          value={themeMarketplaceFilter}
+                          onInput={(e) => setThemeMarketplaceFilter((e.target as HTMLInputElement).value)}
+                          className="w-full px-2 py-1.5 rounded text-xs outline-none"
+                          style={{ background: "var(--color-panel-2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                        />
+
+                        {themeMarketplaceStatus && (
+                          <p className="text-[11px]" style={{ color: themeMarketplaceStatus.startsWith("Could not") || themeMarketplaceStatus.includes("not trusted") ? "var(--color-danger)" : "var(--color-text-dim)" }}>
+                            {themeMarketplaceStatus}
+                          </p>
+                        )}
+
+                        <div className="max-h-64 overflow-y-auto space-y-2 pr-1" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}>
+                          {filteredThemeMarketplaceItems.length === 0 && !themeMarketplaceLoading && (
+                            <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>No themes to show.</p>
+                          )}
+                          {filteredThemeMarketplaceItems.map((entry) => (
+                            <div key={entry.id} className="rounded p-2" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border-soft)" }}>
+                              <div className="flex gap-2">
+                                {entry.previewImage ? (
+                                  <img src={entry.previewImage} alt={entry.name} className="w-20 h-12 rounded object-cover shrink-0" style={{ border: "1px solid var(--color-border-subtle)" }} />
+                                ) : (
+                                  <div className="w-20 h-12 rounded shrink-0 flex items-center justify-center text-[9px]" style={{ background: "var(--color-bg)", color: "var(--color-text-dim)", border: "1px solid var(--color-border-subtle)" }}>
+                                    No preview
+                                  </div>
+                                )}
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-xs font-semibold truncate" style={{ color: "var(--color-text)" }}>{entry.name}</div>
+                                  <div className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>{entry.author || "Community"}</div>
+                                  {entry.description && (
+                                    <p className="text-[10px] mt-1 line-clamp-2" style={{ color: "var(--color-text-muted)" }}>{entry.description}</p>
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => installMarketplaceTheme(entry)}
+                                  className="px-2 py-1 rounded text-[10px] font-semibold shrink-0"
+                                  style={{ background: "var(--color-accent-dark)", color: "var(--color-white)" }}
+                                >
+                                  Install
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                     {appSettings.themeMode === "custom" && (
                       <div className="mt-2 p-3 rounded-lg space-y-4" style={{ background: "var(--color-panel-alt)", border: "1px dashed var(--color-border-strong)" }}>
@@ -2319,6 +2552,55 @@ function SettingsModal({
                           </p>
                         </div>
                         <div className="space-y-4">
+                          <div>
+                            <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>Background image</div>
+                            <div className="space-y-2">
+                              <input
+                                type="text"
+                                placeholder="https://.../wallpaper.jpg"
+                                className="w-full bg-transparent border rounded px-2 py-1 text-[11px] outline-none font-mono"
+                                style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                                value={appSettings.themeBackgroundImageUrl || ""}
+                                onInput={e => onSaveSettings({ ...appSettings, themeBackgroundImageUrl: (e.target as HTMLInputElement).value })}
+                              />
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                <label className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                                  Overlay
+                                  <input
+                                    type="text"
+                                    className="mt-1 w-full bg-transparent border rounded px-2 py-1 text-[10px] outline-none font-mono"
+                                    style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+                                    value={appSettings.themeBackgroundImageOverlay || defaultSettings.themeBackgroundImageOverlay || "rgba(0,0,0,0.36)"}
+                                    onInput={e => onSaveSettings({ ...appSettings, themeBackgroundImageOverlay: (e.target as HTMLInputElement).value })}
+                                  />
+                                </label>
+                                <label className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                                  Opacity ({(appSettings.themeBackgroundImageOpacity ?? defaultSettings.themeBackgroundImageOpacity ?? 0.2).toFixed(2)})
+                                  <input
+                                    type="range"
+                                    min="0"
+                                    max="1"
+                                    step="0.01"
+                                    className="mt-1 w-full"
+                                    value={appSettings.themeBackgroundImageOpacity ?? defaultSettings.themeBackgroundImageOpacity ?? 0.2}
+                                    onInput={e => onSaveSettings({ ...appSettings, themeBackgroundImageOpacity: parseFloat((e.target as HTMLInputElement).value) || 0 })}
+                                  />
+                                </label>
+                                <label className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                                  Blur px ({Math.round(appSettings.themeBackgroundImageBlurPx ?? defaultSettings.themeBackgroundImageBlurPx ?? 0)})
+                                  <input
+                                    type="range"
+                                    min="0"
+                                    max="20"
+                                    step="1"
+                                    className="mt-1 w-full"
+                                    value={appSettings.themeBackgroundImageBlurPx ?? defaultSettings.themeBackgroundImageBlurPx ?? 0}
+                                    onInput={e => onSaveSettings({ ...appSettings, themeBackgroundImageBlurPx: parseInt((e.target as HTMLInputElement).value, 10) || 0 })}
+                                  />
+                                </label>
+                              </div>
+                            </div>
+                          </div>
                           <div>
                             <div className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--color-text-dim)" }}>{t('settings.custom_theme.backgrounds')}</div>
                             <div className="grid grid-cols-2 gap-3">

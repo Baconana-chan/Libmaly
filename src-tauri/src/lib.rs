@@ -6061,7 +6061,7 @@ fn get_mugen_large_address_aware(game_path: String) -> Result<bool, String> {
     #[cfg(not(windows))]
     {
         let _ = game_path;
-        return Err("LAA patching is only supported on Windows".to_string());
+        Err("LAA patching is only supported on Windows".to_string())
     }
     #[cfg(windows)]
     {
@@ -6078,7 +6078,7 @@ fn set_mugen_large_address_aware(game_path: String, enabled: bool) -> Result<boo
     #[cfg(not(windows))]
     {
         let _ = (game_path, enabled);
-        return Err("LAA patching is only supported on Windows".to_string());
+        Err("LAA patching is only supported on Windows".to_string())
     }
     #[cfg(windows)]
     {
@@ -6101,6 +6101,7 @@ fn set_mugen_large_address_aware(game_path: String, enabled: bool) -> Result<boo
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
+#[cfg_attr(not(windows), allow(unused_variables))]
 fn launch_game(
     app: AppHandle,
     path: String,

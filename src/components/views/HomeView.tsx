@@ -1,5 +1,11 @@
-import { useMemo } from "preact/hooks";
+import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
 import { useTranslation } from "react-i18next";
+import {
+  type FriendActivityEntry,
+  invokeFriendsGetNowPlaying,
+  onPeersUpdated,
+  formatSessionDuration,
+} from "../../lib/friendActivity";
 
 interface GameLike {
   name: string;
@@ -79,6 +85,84 @@ function PlayChart({ sessions, gamePath, days = 7, t }: { sessions: SessionEntry
         );
       })}
     </div>
+  );
+}
+
+function FriendsPlayingWidget() {
+  const { t } = useTranslation();
+  const [nowPlaying, setNowPlaying] = useState<FriendActivityEntry[]>([]);
+
+  const refresh = useCallback(async () => {
+    try {
+      const entries = await invokeFriendsGetNowPlaying();
+      setNowPlaying(entries);
+    } catch {
+      // Pulse may not be running — silently skip
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const unsub = onPeersUpdated(refresh);
+    const interval = setInterval(refresh, 30_000);
+    return () => {
+      unsub.then((f) => f());
+      clearInterval(interval);
+    };
+  }, [refresh]);
+
+  if (nowPlaying.length === 0) return null;
+
+  return (
+    <section className="mt-8">
+      <h2 className="text-xs uppercase tracking-widest mb-4" style={{ color: "var(--color-text-muted)" }}>
+        {t('game.home.friends_playing', 'Friends Playing Now')}
+      </h2>
+      <div className="flex flex-wrap gap-3">
+        {nowPlaying.map((f) => (
+          <div
+            key={f.peerId}
+            className="flex items-center gap-3 rounded-xl px-4 py-3"
+            style={{
+              background: "var(--color-bg-elev)",
+              border: "1px solid var(--color-border-soft)",
+              minWidth: 220,
+              maxWidth: 300,
+              flex: "1 1 220px",
+            }}
+          >
+            {/* Avatar */}
+            <div
+              style={{
+                width: 36, height: 36, borderRadius: "50%", flexShrink: 0,
+                overflow: "hidden", background: "var(--color-panel-low)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 15, color: "var(--color-text-muted)",
+              }}
+            >
+              {f.avatarUrl
+                ? <img src={f.avatarUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                : f.displayName.slice(0, 1).toUpperCase()}
+            </div>
+
+            {/* Info */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p className="text-sm font-semibold truncate" style={{ color: "var(--color-text)" }}>
+                {f.displayName}
+              </p>
+              <p className="text-xs truncate" style={{ color: "var(--color-accent)" }}>
+                🎮 {f.gameTitle}
+              </p>
+              {f.sessionStart != null && (
+                <p className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                  {formatSessionDuration(f.sessionStart)}
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -292,6 +376,8 @@ export function HomeView({
           </div>
         </section>
       )}
+
+      <FriendsPlayingWidget />
     </div>
   );
 }

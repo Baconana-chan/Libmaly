@@ -46,6 +46,11 @@ function ScreenshotOverlayApp() {
   const [showHistory, setShowHistory] = useState(false);
   const timeoutIdsRef = useRef<Record<string, number>>({});
 
+  // API server overlay widgets
+  const [apiWidgets, setApiWidgets] = useState<
+    { id: string; html: string; position?: string; width?: number; height?: number }[]
+  >([]);
+
   const win = useMemo(() => getCurrentWindow(), []);
 
   useEffect(() => {
@@ -135,8 +140,22 @@ function ScreenshotOverlayApp() {
     unlistenPromise = listen<OverlayScreenshotPayload>("libmaly://screenshot-overlay-show", (event) => {
       void showToast(event.payload);
     });
+    const unlistenWidgetPush = listen<{ id: string; html: string; position?: string; width?: number; height?: number }>(
+      "api-overlay-widget-push",
+      (ev) => {
+        setApiWidgets((prev) => {
+          const filtered = prev.filter((w) => w.id !== ev.payload.id);
+          return [...filtered, ev.payload];
+        });
+      }
+    );
+    const unlistenWidgetRemove = listen<string>("api-overlay-widget-remove", (ev) => {
+      setApiWidgets((prev) => prev.filter((w) => w.id !== ev.payload));
+    });
     return () => {
       void unlistenPromise?.then((unlisten) => unlisten());
+      void unlistenWidgetPush.then((f) => f());
+      void unlistenWidgetRemove.then((f) => f());
     };
   }, []);
 
@@ -229,6 +248,39 @@ function ScreenshotOverlayApp() {
           </div>
         ))}
       </div>
+
+      {/* API overlay widgets */}
+      {apiWidgets.map((widget) => {
+        const pos = widget.position ?? "bottom-right";
+        const posStyle: preact.JSX.CSSProperties = {};
+        if (pos.includes("top")) posStyle.top = 16; else posStyle.bottom = 16;
+        if (pos.includes("left")) posStyle.left = 16; else posStyle.right = 16;
+        return (
+          <div
+            key={widget.id}
+            style={{
+              position: "fixed",
+              ...posStyle,
+              width: widget.width ?? 300,
+              height: widget.height ?? "auto",
+              background: "rgba(8,10,14,0.9)",
+              border: "1px solid rgba(125,170,214,0.22)",
+              borderRadius: 12,
+              padding: 10,
+              pointerEvents: "auto",
+              color: "#fff",
+              fontSize: 12,
+              backdropFilter: "blur(10px)",
+              zIndex: 9999,
+            }}
+            // Using dangerouslySetInnerHTML is intentional: API users supply HTML snippets
+            // for their widgets. This is an advanced feature; only local API clients
+            // (secured by bearer token) can inject widgets.
+            // eslint-disable-next-line react/no-danger
+            dangerouslySetInnerHTML={{ __html: widget.html }}
+          />
+        );
+      })}
     </div>
   );
 }

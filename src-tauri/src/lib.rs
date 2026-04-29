@@ -74,6 +74,51 @@ use itch::{
 };
 
 mod screenshot;
+mod replay;
+mod plugin_manager;
+mod api_server;
+mod pulse;
+mod social_providers;
+mod trending;
+mod social_identity;
+mod friend_activity;
+use social_identity::{
+    identity_get_profile, identity_get_fingerprint, identity_save_profile,
+    identity_generate_keys, identity_has_keys,
+    identity_export_bundle, identity_import_bundle, identity_delete,
+};
+use friend_activity::{
+    friends_list, friends_add, friends_remove, friends_update,
+    friends_get_activity, friends_get_now_playing,
+};
+use social_providers::{
+    social_get_unified_peers, social_get_provider_configs, social_save_provider_config,
+    social_get_provider_statuses, social_link_identities, social_unlink_identities,
+    social_get_identity_links, social_get_link_suggestions,
+    social_steam_start, social_steam_stop, social_get_activity_feed,
+};
+use plugin_manager::{
+    find_plugin_for_url, fetch_metadata_via_plugin,
+    plugin_list, plugin_install_from_zip, plugin_install_inline,
+    plugin_set_enabled, plugin_delete, plugin_get_script,
+    plugin_get_panel_path, plugin_match_url, plugin_fetch_metadata,
+};
+use api_server::{
+    api_server_get_config, api_server_save_config, api_server_status,
+    api_server_regenerate_token, api_server_get_token,
+    api_server_notify_library_updated, api_server_broadcast_game_event,
+};
+use pulse::
+{
+    pulse_get_config, pulse_save_config, pulse_get_peers,
+    pulse_start_service, pulse_stop_service,
+    pulse_get_peer_id, pulse_set_cover,
+    pulse_probe_relay, pulse_get_relay_caps, pulse_get_active_relay_caps,
+};
+use trending::{
+    trending_get_config, trending_save_config,
+    trending_fetch, trending_contribute, trending_contribution_cooldown_secs,
+};
 use screenshot::{
     delete_screenshot_file, export_screenshots_zip, get_screenshot_data_url, get_screenshots,
     open_screenshots_folder, overwrite_screenshot_png, save_screenshot_tags,
@@ -83,6 +128,26 @@ mod data_paths;
 mod discord;
 mod save_transfer;
 mod sync;
+mod p2p_chat;
+use p2p_chat::{
+    chat_get_config, chat_save_config,
+    chat_get_my_x25519_pub,
+    chat_get_contacts, chat_save_contact, chat_remove_contact,
+    chat_get_conversations, chat_get_messages,
+    chat_send_message, chat_fetch_remote,
+    chat_mark_read, chat_delete_conversation,
+};
+mod decentralized_share;
+use decentralized_share::{
+    dshare_get_config, dshare_save_config,
+    dshare_get_nostr_pubkey, dshare_preview_content, dshare_publish,
+};
+mod eos;
+use eos::{
+    eos_get_config, eos_save_config, eos_get_client_secret_set,
+    eos_initialize, eos_shutdown, eos_get_status,
+    eos_login, eos_logout, eos_query_ownership, eos_get_achievements,
+};
 use data_paths::{app_data_root, crash_report_path, is_portable_mode};
 use discord::{
     discord_clear_presence, discord_get_snapshot, discord_initialize,
@@ -253,6 +318,14 @@ async fn resolve_metadata_source(url: String) -> Result<Option<ResolvedMetadataS
             is_custom: true,
         }));
     }
+    // Check JS plugins last.
+    if let Some(plugin) = find_plugin_for_url(&url) {
+        return Ok(Some(ResolvedMetadataSource {
+            source: format!("plugin:{}", plugin.id),
+            source_label: plugin.name,
+            is_custom: true,
+        }));
+    }
     Ok(None)
 }
 
@@ -267,7 +340,11 @@ async fn fetch_metadata_for_url(url: String) -> Result<metadata::GameMetadata, S
     if let Some(template) = find_matching_template(&url, Some(false))? {
         return fetch_custom_metadata(&url, &template).await;
     }
-    Err("No built-in or custom metadata source matched this URL".to_string())
+    // Fallback to JS plugins.
+    if let Some(plugin) = find_plugin_for_url(&url) {
+        return fetch_metadata_via_plugin(&plugin, &url).await;
+    }
+    Err("No built-in, custom, or plugin metadata source matched this URL".to_string())
 }
 
 #[tauri::command]
@@ -279,6 +356,10 @@ async fn fetch_metadata_by_source(
         let template = find_template_by_source(&source)?
             .ok_or_else(|| format!("Custom metadata source '{}' is unavailable", source))?;
         return fetch_custom_metadata(&url, &template).await;
+    }
+    if source.starts_with("plugin:") {
+        let plugin_id = source.trim_start_matches("plugin:").to_string();
+        return plugin_fetch_metadata(plugin_id, url).await;
     }
     fetch_builtin_metadata_by_source(&source, &url).await
 }
@@ -3157,6 +3238,60 @@ async fn close_overlay_browser(app: AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
+
+// ── Instant Replay ─────────────────────────────────────────────────────────
+
+/// Encode the current replay buffer and save a clip.
+/// `format` should be `"gif"` or `"mp4"` (ffmpeg required for MP4).
+#[tauri::command]
+async fn save_instant_replay(
+    game_exe: String,
+    format: String,
+) -> Result<replay::ReplayClip, String> {
+    tokio::task::spawn_blocking(move || replay::save_replay(&game_exe, &format))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// List all saved replay clips for a game.
+#[tauri::command]
+fn get_replay_clips(game_exe: String) -> Vec<replay::ReplayClip> {
+    replay::get_clips(&game_exe)
+}
+
+/// Delete a replay clip file.
+#[tauri::command]
+fn delete_replay_clip(path: String) -> Result<(), String> {
+    let p = std::path::PathBuf::from(path);
+    if p.exists() {
+        std::fs::remove_file(p).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Analyze the current replay buffer for visually interesting moments.
+#[tauri::command]
+fn analyze_replay_highlights(min_score: f32) -> Vec<replay::HighlightCandidate> {
+    replay::analyze_highlights(min_score)
+}
+
+/// Encode a clip from the buffer around a specific timestamp.
+#[tauri::command]
+async fn save_highlight_clip(
+    game_exe: String,
+    around_ms: u64,
+    before_ms: u64,
+    after_ms: u64,
+    format: String,
+) -> Result<replay::ReplayClip, String> {
+    tokio::task::spawn_blocking(move || {
+        replay::save_highlight_clip(&game_exe, around_ms, before_ms, after_ms, &format)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
 fn get_platform() -> &'static str {
@@ -6206,6 +6341,11 @@ fn launch_game(
                 }
 
                 let _ = app.emit("game-started", &path_clone);
+                api_server::broadcast_event("game-started", serde_json::json!({ "path": &path_clone }));
+                pulse::on_game_started(&path_clone, None);
+
+                // Start the instant-replay ring-buffer capture loop.
+                replay::start_capture(root_pid, path_clone.clone());
 
                 let (tx, rx) = std::sync::mpsc::channel::<u32>();
                 let exe_hk = path_clone.clone();
@@ -6257,6 +6397,7 @@ fn launch_game(
                             related_pids: related_pids.clone(),
                         });
                         screenshot::update_active_pid(tracked_pid);
+                        replay::update_pid(tracked_pid);
                         discord::set_game_window_pid(tracked_pid as i32);
                         last_tracked_pid = tracked_pid;
                         last_related = related_pids;
@@ -6266,6 +6407,7 @@ fn launch_game(
                 }
 
                 screenshot::stop_hotkey_thread(hotkey_thread_id);
+                replay::stop_capture();
                 discord::set_game_window_pid(std::process::id() as i32);
 
                 {
@@ -6296,7 +6438,7 @@ fn launch_game(
                 let _ = app.emit(
                     "game-finished",
                     GameEndedPayload {
-                        path: path_clone,
+                        path: path_clone.clone(),
                         duration_secs: duration,
                         lifecycle: Some(ProcessLifecycleDiagnostic {
                             root_pid,
@@ -6309,6 +6451,11 @@ fn launch_game(
                         }),
                     },
                 );
+                api_server::broadcast_event("game-finished", serde_json::json!({
+                    "path": &path_clone,
+                    "durationSecs": duration,
+                }));
+                pulse::on_game_stopped();
             }
             Err(e) => {
                 push_rust_log(Some(&app), "error", format!("Failed to launch game: {}", e));
@@ -9306,12 +9453,133 @@ pub fn run() {
             get_system_telemetry,
             open_overlay_browser,
             close_overlay_browser,
+            save_instant_replay,
+            get_replay_clips,
+            delete_replay_clip,
+            analyze_replay_highlights,
+            save_highlight_clip,
+            plugin_list,
+            plugin_install_from_zip,
+            plugin_install_inline,
+            plugin_set_enabled,
+            plugin_delete,
+            plugin_get_script,
+            plugin_get_panel_path,
+            plugin_match_url,
+            plugin_fetch_metadata,
+            api_server_get_config,
+            api_server_save_config,
+            api_server_status,
+            api_server_regenerate_token,
+            api_server_get_token,
+            api_server_notify_library_updated,
+            api_server_broadcast_game_event,
+            pulse_get_config,
+            pulse_save_config,
+            pulse_get_peers,
+            pulse_start_service,
+            pulse_stop_service,
+            pulse_get_peer_id,
+            pulse_set_cover,
+            pulse_probe_relay,
+            pulse_get_relay_caps,
+            pulse_get_active_relay_caps,
+            social_get_unified_peers,
+            social_get_provider_configs,
+            social_save_provider_config,
+            social_get_provider_statuses,
+            social_link_identities,
+            social_unlink_identities,
+            social_get_identity_links,
+            social_get_link_suggestions,
+            social_steam_start,
+            social_steam_stop,
+            social_get_activity_feed,
+            trending_get_config,
+            trending_save_config,
+            trending_fetch,
+            trending_contribute,
+            trending_contribution_cooldown_secs,
+            identity_get_profile,
+            identity_get_fingerprint,
+            identity_save_profile,
+            identity_generate_keys,
+            identity_has_keys,
+            identity_export_bundle,
+            identity_import_bundle,
+            identity_delete,
+            friends_list,
+            friends_add,
+            friends_remove,
+            friends_update,
+            friends_get_activity,
+            friends_get_now_playing,
+            chat_get_config,
+            chat_save_config,
+            chat_get_my_x25519_pub,
+            chat_get_contacts,
+            chat_save_contact,
+            chat_remove_contact,
+            chat_get_conversations,
+            chat_get_messages,
+            chat_send_message,
+            chat_fetch_remote,
+            chat_mark_read,
+            chat_delete_conversation,
+            dshare_get_config,
+            dshare_save_config,
+            dshare_get_nostr_pubkey,
+            dshare_preview_content,
+            dshare_publish,
+            eos_get_config,
+            eos_save_config,
+            eos_get_client_secret_set,
+            eos_initialize,
+            eos_shutdown,
+            eos_get_status,
+            eos_login,
+            eos_logout,
+            eos_query_ownership,
+            eos_get_achievements,
         ])
         .setup(|app| {
             push_rust_log(Some(app.handle()), "info", "LIBMALY started");
 
             // Start system performance monitor (background thread, runs for the app lifetime)
             sysmonitor::start_monitor();
+
+            // Start REST/WebSocket API server if enabled in config.
+            {
+                let api_config = api_server::load_config();
+                if api_config.enabled {
+                    let app_arc = std::sync::Arc::new(app.handle().clone());
+                    if let Err(e) = api_server::start(app_arc, &api_config) {
+                        push_rust_log(Some(app.handle()), "warn",
+                            format!("API server failed to start: {}", e));
+                    } else {
+                        push_rust_log(Some(app.handle()), "info",
+                            format!("API server listening on port {}", api_config.port));
+                    }
+                }
+            }
+
+            // Initialise the concurrent social provider registry.
+            {
+                social_providers::init(app.handle().clone());
+            }
+
+            // Start Pulse P2P activity service if enabled.
+            {
+                let pulse_cfg = pulse::load_config();
+                if pulse_cfg.enabled {
+                    if let Err(e) = pulse::start(app.handle().clone(), &pulse_cfg) {
+                        push_rust_log(Some(app.handle()), "warn",
+                            format!("Pulse failed to start: {}", e));
+                    } else {
+                        push_rust_log(Some(app.handle()), "info", "Pulse P2P service started");
+                    }
+                }
+            }
 
             // Start permanent Shift+Tab overlay-toggle keyboard hook (Windows only).
             // Runs for the app lifetime — independent of whether a game is running.

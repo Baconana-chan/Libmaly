@@ -186,6 +186,15 @@ libmaly/
 - Portable mode: state, logs, screenshots, cookies, snapshots, and backups are stored next to the executable when `portable.mode` is present.
 - Cloud sync and auto-backup are opt-in; the app remains usable offline without a required account.
 
+## Third-Party Integration
+
+Libmaly exposes an optional local **REST + WebSocket API** so fan-made tools, dashboards, and scripts can read the library, control game launches, inject overlay widgets, and subscribe to real-time events.
+
+- **Enable:** Settings → 🌐 API → toggle on, copy the bearer token
+- **SDK:** [`sdk/libmaly-sdk.ts`](sdk/libmaly-sdk.ts) — TypeScript client for Node.js ≥ 22 and browsers
+- **Examples:** [`sdk/examples/`](sdk/examples/) — 6 annotated scripts + a zero-install HTML dashboard
+- **Full documentation:** [sdk/DOCS.md](sdk/DOCS.md)
+
 ## Roadmap
 
 See [TODO.md](TODO.md) for the active backlog and [ROADMAP_ORDERED.md](ROADMAP_ORDERED.md) for the dependency-ordered roadmap.

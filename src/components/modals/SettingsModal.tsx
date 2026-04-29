@@ -5,9 +5,13 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import SyncConflictModal from "./SyncConflictModal";
+import { PluginsTab } from "./PluginsModal";
+import { ApiServerTab } from "./ApiServerModal";
+import { PulseTab } from "./PulseModal";
+import { SocialProvidersTab } from "./SocialProvidersModal";
 import { addCustomLanguage, loadCustomLanguages, removeCustomLanguage } from "../../i18n";
 import { SK_COLLECTIONS, SK_GAMES, SK_META, SK_NOTES } from "../../lib/constants";
-import type { MetadataPostProcessingConfig, MetadataCleanupField, MetadataCleanupRuleType, MetadataCleanupRule, EmulatorProfile } from "../../types";
+import type { MetadataPostProcessingConfig, MetadataCleanupField, MetadataCleanupRuleType, MetadataCleanupRule, EmulatorProfile, SessionEntry } from "../../types";
 import {
   syncConfigure,
   syncGetConfig,
@@ -550,6 +554,7 @@ function SettingsModal({
   defaultSettings,
   onF95Login, onF95Logout, onDLsiteLogin, onDLsiteLogout, onFakkuLogin, onFakkuLogout, onRemoveFolder,
   onRescanAll, onWineSettings, onSteamImport, onSteamLibraryImport, onEpicImport, onLutrisImport, onPlayniteImport, onGogImport, onProtocolStoreImport, onExoticImport, onItchImport, onAppUpdate, onOpenWhatsNew, onSaveSettings, onOpenMigrationWizard, onClose,
+  importedSources, importSourceLabels, onRemoveBySource,
   viewMode, sidebarWidth, layoutPresets, activeLayoutPresetId, onViewModeChange, onSidebarWidthChange, onApplyLayoutPreset, onSaveLayoutPreset, onUpdateLayoutPreset, onDeleteLayoutPreset,
   onRunIntegrityCheck, onOpenRestoreSnapshots, onExportCSV, onExportHTML, onExportCloudState, onImportCloudState, onBatchMetadataRefresh, batchRefreshStatus, integrityCheckStatus,
   backgroundJobs, syncStatusText, isIntegrityCheckBusy, isBatchMetadataRefreshBusy, onAutoHealPaths, autoHealPathsStatus, isAutoHealPathsBusy,
@@ -560,6 +565,7 @@ function SettingsModal({
   , libraryProfiles, activeLibraryProfileId, onSwitchLibraryProfile, onSaveLibraryProfile, onDeleteLibraryProfile
   , metadataRules, onSaveMetadataRules
   , emulatorProfiles, onSaveEmulatorProfiles
+  , sessionLog = []
 }: {
   games: Game[];
   ghostGames: Record<string, boolean>;
@@ -574,6 +580,9 @@ function SettingsModal({
   onFakkuLogin: () => void; onFakkuLogout: () => void;
   onRemoveFolder: (p: string) => void;
   onRescanAll: () => void; onWineSettings: () => void; onSteamImport: () => void; onSteamLibraryImport: () => void; onEpicImport: () => void; onLutrisImport: () => void; onPlayniteImport: () => void; onGogImport: () => void; onProtocolStoreImport: () => void; onExoticImport: () => void; onItchImport: () => void;
+  importedSources: Record<string, number>;
+  importSourceLabels: Record<string, string>;
+  onRemoveBySource: (source: string) => void;
   onAppUpdate: () => void; onOpenWhatsNew: () => void; onSaveSettings: (s: AppSettingsLike) => void; onOpenMigrationWizard: () => void; onClose: () => void;
   viewMode: LayoutViewMode;
   sidebarWidth: number;
@@ -618,9 +627,10 @@ function SettingsModal({
   onSaveMetadataRules: (cfg: MetadataPostProcessingConfig) => void;
   emulatorProfiles: EmulatorProfile[];
   onSaveEmulatorProfiles: (profiles: EmulatorProfile[]) => void;
+  sessionLog?: SessionEntry[];
 }) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "sync" | "sources" | "customcss" | "consistency" | "vault" | "wine" | "metarules" | "emulators">("general");
+  const [tab, setTab] = useState<"general" | "scanner" | "import" | "rss" | "ghost" | "sync" | "sources" | "customcss" | "consistency" | "vault" | "wine" | "metarules" | "emulators" | "plugins" | "api" | "pulse" | "social">("general");
   const [customLangs, setCustomLangs] = useState<Record<string, { name: string; translation: Record<string, unknown> }>>({});
   const [langImporting, setLangImporting] = useState(false);
 
@@ -1581,6 +1591,10 @@ function SettingsModal({
     { id: "vault" as const, label: "🔐 Vault" },
     { id: "emulators" as const, label: t('settings.tabs.emulators') },
     { id: "metarules" as const, label: t('settings.tabs.metarules') },
+    { id: "plugins" as const, label: "🧩 Plugins" },
+    { id: "api" as const, label: "🌐 API" },
+    { id: "pulse" as const, label: "� Pulse" },
+    { id: "social" as const, label: "👥 Social" },
     ...(platform !== "windows" ? [{ id: "wine" as const, label: t('settings.tabs.wine') }] : []),
   ];
   const jobTone = (status: BackgroundJobStatus) => {
@@ -1783,6 +1797,10 @@ function SettingsModal({
     vault: "Secure secrets, sessions, and API credentials.",
     emulators: "Manage emulator profiles used to launch ROM targets.",
     metarules: "Customize source priority, per-field source overrides, and post-merge text cleanup rules.",
+    plugins: "Install and manage JS metadata-source and UI-panel plugins.",
+    api: "Local HTTP/WebSocket API for third-party integrations.",
+    pulse: "Peer-to-peer friend activity — see what friends are playing on your local network.",
+    social: "Manage multiple social identity providers (Pulse, Discord, Steam) without sources overriding each other.",
     wine: "Wine and Proton runtime configuration.",
   };
 
@@ -3435,6 +3453,40 @@ function SettingsModal({
                   </button>
                 </div>
               </div>
+
+              {/* ── Remove by source ── */}
+              {Object.keys(importedSources).length > 0 && (
+                <div className="pt-3 border-t" style={{ borderColor: "var(--color-border-soft)" }}>
+                  <h3 className="text-[10px] uppercase tracking-widest mb-1" style={{ color: "var(--color-text-dim)" }}>Remove Imported Games by Source</h3>
+                  <p className="text-xs leading-relaxed mb-3" style={{ color: "var(--color-text-muted)" }}>
+                    Remove all games that were imported from a particular store or launcher.
+                    Game files on disk are <strong>not</strong> deleted — only the library entries and their metadata.
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    {Object.entries(importedSources).sort(([a], [b]) => a.localeCompare(b)).map(([source, count]) => (
+                      <div key={source} className="flex items-center justify-between px-3 py-2 rounded" style={{ background: "var(--color-panel-3)", border: "1px solid var(--color-border)" }}>
+                        <div>
+                          <span className="text-xs font-medium" style={{ color: "var(--color-text)" }}>
+                            {importSourceLabels[source] ?? source}
+                          </span>
+                          <span className="text-[10px] ml-2" style={{ color: "var(--color-text-muted)" }}>
+                            {count} game{count !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => onRemoveBySource(source)}
+                          className="px-3 py-1 rounded text-[11px] font-semibold"
+                          style={{ background: "rgba(192,57,43,0.15)", color: "var(--color-danger)", border: "1px solid rgba(192,57,43,0.35)" }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(192,57,43,0.28)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(192,57,43,0.15)")}
+                        >
+                          Remove all
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </section>
           )}
 
@@ -4489,6 +4541,12 @@ function SettingsModal({
               onSaveMetadataRules={onSaveMetadataRules}
             />
           )}
+
+          {tab === "plugins" && <PluginsTab />}
+
+          {tab === "api" && <ApiServerTab />}
+          {tab === "pulse" && <PulseTab sessions={sessionLog} games={games} />}
+          {tab === "social" && <SocialProvidersTab />}
         </div>
       </div>
       </div>

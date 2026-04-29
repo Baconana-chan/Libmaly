@@ -2,7 +2,7 @@
 // All shared interfaces, type aliases, and tightly-coupled runtime constants
 // extracted from App.tsx to keep the main module lean.
 
-import type { GameAchievementsByPath } from "../lib/gameAchievements";
+import type { GameAchievementsByPath } from "../core/gameAchievements";
 
 // ─── Core game types ──────────────────────────────────────────────────────────
 
@@ -555,6 +555,8 @@ export interface GameCustomization {
   mapLinks?: GameMapLink[];
   /** Guide / wiki / patch-notes / modding resource links attached to this game */
   guideLinks?: GameGuideLink[];
+  /** Which external source this game was imported from (e.g. "steam", "gog-galaxy", "epic-games", "itch", "lutris", "playnite", "ea-app", "ubisoft-connect", "rockstar", "battle-net", "gamejolt") */
+  importSource?: string;
 }
 
 export interface SearchResultItem {

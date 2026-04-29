@@ -32,12 +32,13 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
     "cookies",
     "json",
+    "multipart",
 ] }
 reqwest_cookie_store = "0.8"
 scraper = "0.22"
 tokio = { version = "1", features = ["full"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-notification = "2.3.3"
 urlencoding = "2.1.3"
@@ -55,6 +56,14 @@ keyring = { version = "3", default-features = false, features = ["apple-native",
 regex = "1"
 boa_engine = "0.20"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.5", features = ["cors"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+secp256k1 = { version = "0.29", features = ["rand-std"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [

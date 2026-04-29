@@ -32,3 +32,9 @@ third_party/discord_social_sdk/lib/release/*.aar
 third_party/discord_social_sdk/lib/release/*.dbg
 third_party/discord_social_sdk/lib/release/*.lib
 third_party/discord_social_sdk/lib/release/*.xcframework/
+
+# EOS SDK: keep only the runtime DLLs and C headers; exclude large/unneeded extras.
+third_party/EOS-SDK/Samples/
+third_party/EOS-SDK/ThirdPartyNotices/
+third_party/EOS-SDK/SDK/Lib/
+third_party/EOS-SDK/SDK/Tools/

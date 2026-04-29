@@ -54,7 +54,11 @@ struct Discord_UserHandle {
 unsafe impl Send for Discord_UserHandle {}
 
 #[repr(C)]
-struct Discord_RelationshipHandle;
+struct Discord_RelationshipHandle {
+    opaque: *mut c_void,
+}
+
+unsafe impl Send for Discord_RelationshipHandle {}
 
 #[repr(C)]
 struct Discord_RelationshipHandleSpan {
@@ -259,6 +263,19 @@ struct DiscordApi {
     ),
     user_handle_id: unsafe extern "C" fn(*mut Discord_UserHandle) -> u64,
     user_handle_status: unsafe extern "C" fn(*mut Discord_UserHandle) -> Discord_StatusType,
+    // Relationship handle → user extraction
+    relationship_handle_user:
+        unsafe extern "C" fn(*mut Discord_RelationshipHandle, *mut Discord_UserHandle) -> bool,
+    relationship_handle_drop: unsafe extern "C" fn(*mut Discord_RelationshipHandle),
+    // User handle → current game activity
+    user_handle_game_activity:
+        unsafe extern "C" fn(*mut Discord_UserHandle, *mut Discord_Activity) -> bool,
+    // Activity getters (read-side, distinct from the set_* used for rich presence)
+    activity_get_name: unsafe extern "C" fn(*mut Discord_Activity, *mut Discord_String),
+    activity_get_timestamps:
+        unsafe extern "C" fn(*mut Discord_Activity, *mut Discord_ActivityTimestamps),
+    activity_timestamps_get_start: unsafe extern "C" fn(*mut Discord_ActivityTimestamps) -> u64,
+    activity_timestamps_drop_alias: unsafe extern "C" fn(*mut Discord_ActivityTimestamps),
 }
 
 struct DiscordRuntime {
@@ -477,6 +494,16 @@ unsafe extern "C" fn discord_status_changed_callback(
         }
     }
     dirty_flag().store(true, Ordering::Relaxed);
+    // Mirror connection state into the social providers registry
+    let social_status = match status {
+        Discord_Client_Status::Ready => "active",
+        Discord_Client_Status::Connected
+        | Discord_Client_Status::Connecting
+        | Discord_Client_Status::Reconnecting
+        | Discord_Client_Status::HttpWait => "connecting",
+        _ => "disconnected",
+    };
+    crate::social_providers::set_provider_status(crate::social_providers::PROVIDER_DISCORD, social_status);
     drop(snapshot);
     if let Some(next_status) = status_log {
         push_discord_log("info", format!("client status -> {}", next_status));
@@ -605,6 +632,13 @@ fn load_api(lib: &Library) -> Result<DiscordApi, String> {
         user_handle_avatar_url: load_symbol(lib, b"Discord_UserHandle_AvatarUrl\0")?,
         user_handle_id: load_symbol(lib, b"Discord_UserHandle_Id\0")?,
         user_handle_status: load_symbol(lib, b"Discord_UserHandle_Status\0")?,
+        relationship_handle_user: load_symbol(lib, b"Discord_RelationshipHandle_User\0")?,
+        relationship_handle_drop: load_symbol(lib, b"Discord_RelationshipHandle_Drop\0")?,
+        user_handle_game_activity: load_symbol(lib, b"Discord_UserHandle_GameActivity\0")?,
+        activity_get_name: load_symbol(lib, b"Discord_Activity_Name\0")?,
+        activity_get_timestamps: load_symbol(lib, b"Discord_Activity_Timestamps\0")?,
+        activity_timestamps_get_start: load_symbol(lib, b"Discord_ActivityTimestamps_Start\0")?,
+        activity_timestamps_drop_alias: load_symbol(lib, b"Discord_ActivityTimestamps_Drop\0")?,
     })
 }
 
@@ -795,7 +829,99 @@ fn refresh_snapshot_from_runtime(runtime: &DiscordRuntime) {
             offline: offline.size,
             total: playing.size + elsewhere.size + offline.size,
         };
+
+        // ── Bridge into the unified social feed ───────────────────────────
+        // Iterate "OnlinePlayingGame" and "OnlineElsewhere" spans to build
+        // SocialPeerRecords for the social registry.
+        let now = crate::social_providers::now_secs_pub();
+        let mut social_records: Vec<crate::social_providers::SocialPeerRecord> = Vec::new();
+
+        for span in [&playing, &elsewhere] {
+            for i in 0..span.size {
+                let rel_ptr = unsafe { span.ptr.add(i) };
+                let mut user = Discord_UserHandle { opaque: null_mut() };
+                if !unsafe { (api.relationship_handle_user)(rel_ptr, &mut user) } {
+                    continue;
+                }
+
+                let user_id = unsafe { (api.user_handle_id)(&mut user) }.to_string();
+
+                let mut dname = Discord_String { ptr: null_mut(), size: 0 };
+                unsafe { (api.user_handle_display_name)(&mut user, &mut dname) };
+                let display_name = discord_string_to_rust(dname);
+                if display_name.is_empty() {
+                    unsafe { (api.user_handle_drop)(&mut user) };
+                    continue;
+                }
+
+                let mut avatar_url_str = Discord_String { ptr: null_mut(), size: 0 };
+                unsafe {
+                    (api.user_handle_avatar_url)(
+                        &mut user,
+                        Discord_UserHandle_AvatarType::Png,
+                        Discord_UserHandle_AvatarType::Png,
+                        &mut avatar_url_str,
+                    );
+                }
+                let avatar_url = {
+                    let v = discord_string_to_rust(avatar_url_str);
+                    if v.is_empty() { None } else { Some(v) }
+                };
+
+                let status_type = unsafe { (api.user_handle_status)(&mut user) };
+                let online = !matches!(status_type, Discord_StatusType::Offline | Discord_StatusType::Blocked);
+
+                // Try to get current game activity
+                let activity = {
+                    let mut act = Discord_Activity { opaque: null_mut() };
+                    unsafe { (api.activity_init)(&mut act) };
+                    let has_activity = unsafe { (api.user_handle_game_activity)(&mut user, &mut act) };
+                    let result = if has_activity {
+                        let mut name_str = Discord_String { ptr: null_mut(), size: 0 };
+                        unsafe { (api.activity_get_name)(&mut act, &mut name_str) };
+                        let title = discord_string_to_rust(name_str);
+
+                        let mut timestamps = Discord_ActivityTimestamps { opaque: null_mut() };
+                        unsafe { (api.activity_timestamps_init)(&mut timestamps) };
+                        unsafe { (api.activity_get_timestamps)(&mut act, &mut timestamps) };
+                        let start_ms = unsafe { (api.activity_timestamps_get_start)(&mut timestamps) };
+                        unsafe { (api.activity_timestamps_drop_alias)(&mut timestamps) };
+
+                        if title.is_empty() {
+                            None
+                        } else {
+                            Some(crate::social_providers::SocialActivity {
+                                title,
+                                cover_url: None,
+                                session_start: if start_ms > 0 { Some(start_ms / 1000) } else { None },
+                                status_text: Some("Playing via Discord".to_owned()),
+                            })
+                        }
+                    } else {
+                        None
+                    };
+                    unsafe { (api.activity_drop)(&mut act) };
+                    result
+                };
+
+                social_records.push(crate::social_providers::SocialPeerRecord {
+                    provider_id:      crate::social_providers::PROVIDER_DISCORD.to_owned(),
+                    provider_peer_id: user_id,
+                    display_name,
+                    avatar_url,
+                    activity,
+                    last_seen: now,
+                    online,
+                });
+
+                unsafe { (api.user_handle_drop)(&mut user) };
+                unsafe { (api.relationship_handle_drop)(rel_ptr) };
+            }
+        }
+
+        crate::social_providers::submit_peers(crate::social_providers::PROVIDER_DISCORD, social_records);
     } else {
+        crate::social_providers::submit_peers(crate::social_providers::PROVIDER_DISCORD, vec![]);
         snapshot.current_user = None;
         snapshot.relationship_counts = DiscordRelationshipCounts::default();
     }
@@ -967,6 +1093,9 @@ pub fn discord_shutdown() -> Result<(), String> {
         }
     }
     *snapshot_slot().lock().unwrap() = DiscordSdkSnapshot::default();
+    // Clear Discord peers from the social registry
+    crate::social_providers::submit_peers(crate::social_providers::PROVIDER_DISCORD, vec![]);
+    crate::social_providers::set_provider_status(crate::social_providers::PROVIDER_DISCORD, "disconnected");
     push_discord_log("info", "Discord Social SDK shut down");
     Ok(())
 }

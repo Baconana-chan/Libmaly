@@ -45,6 +45,9 @@ import { ZipInstallModal } from "./components/modals/ZipInstallModal";
 import { CrashReportModal, IntegrityCheckModal, LogViewerModal, RecoveryModeModal, SnapshotRestoreModal } from "./components/modals/DiagnosticsModals";
 import { MigrationWizardModal, SettingsModal } from "./components/modals/SettingsModal";
 import { ScreenshotAnnotateModal } from "./components/modals/ScreenshotAnnotateModal";
+import { P2PChatModal } from "./components/modals/P2PChatModal";
+import { DecentralizedShareModal, type DShareInitialData } from "./components/modals/DecentralizedShareModal";
+import { EpicStoreModal } from "./components/modals/EpicStoreModal";
 import { FeedView } from "./components/views/FeedView";
 import { HomeView } from "./components/views/HomeView";
 import { StatsView } from "./components/views/StatsView";
@@ -102,6 +105,8 @@ import {
   ownershipPrimaryRank, achievementTrackerUiState,
 } from "./lib/game";
 import { readProfileStorageSnapshot, buildSnapshotEntries } from "./lib/profileStorage";
+import { type PeerInfo, onPeersUpdated, invokeSetPulseCover } from "./lib/pulse";
+import { PulseSidebarSection } from "./components/modals/PulseModal";
 import type {
   Game, DirMtime, GameStats, SessionMood, SessionEntry,
   SteamOwnedGame,
@@ -211,6 +216,30 @@ export default function App() {
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
   }, [isKioskMode]);
+
+  // Open P2P Chat from Social tab "Open Chat" button.
+  useEffect(() => {
+    const handler = () => setShowP2PChat(true);
+    window.addEventListener("libmaly:open-p2p-chat", handler);
+    return () => window.removeEventListener("libmaly:open-p2p-chat", handler);
+  }, []);
+
+  // Open Decentralized Share modal.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      setDshareInitial((e as CustomEvent).detail ?? {});
+      setShowDShare(true);
+    };
+    window.addEventListener("libmaly:open-dshare", handler);
+    return () => window.removeEventListener("libmaly:open-dshare", handler);
+  }, []);
+
+  // Open Epic Games Store modal (close Settings first so it doesn't stack underneath).
+  useEffect(() => {
+    const handler = () => { setShowSettings(false); setShowEpicStore(true); };
+    window.addEventListener("libmaly:open-epic-store", handler);
+    return () => window.removeEventListener("libmaly:open-epic-store", handler);
+  }, []);
 
   const handleToggleKiosk = async () => {
     const w = getCurrentWindow();
@@ -532,6 +561,10 @@ export default function App() {
   const [renamingCollectionId, setRenamingCollectionId] = useState<string | null>(null);
   const [renamingCollectionName, setRenamingCollectionName] = useState("");
   const [showCustomizeModal, setShowCustomizeModal] = useState(false);
+  const [showP2PChat, setShowP2PChat] = useState(false);
+  const [showDShare, setShowDShare] = useState(false);
+  const [dshareInitial, setDshareInitial] = useState<DShareInitialData>({});
+  const [showEpicStore, setShowEpicStore] = useState(false);
   const [showNotesModal, setShowNotesModal] = useState(false);
   const [showMapsModal, setShowMapsModal] = useState(false);
   const [showGuidesModal, setShowGuidesModal] = useState(false);
@@ -914,6 +947,7 @@ export default function App() {
   }, []);
 
   const [runningGamePath, setRunningGamePath] = useState<string | null>(null);
+  const [pulsePeers, setPulsePeers] = useState<PeerInfo[]>([]);
   const runningGamePathRef = useRef<string | null>(null);
   useEffect(() => { runningGamePathRef.current = runningGamePath; }, [runningGamePath]);
   const [platform, setPlatform] = useState<string>("windows");
@@ -1542,6 +1576,10 @@ export default function App() {
           newVersion,
         });
       } catch { /* ignore overlay errors */ }
+      // Notify Pulse of game cover once metadata is available
+      const cust2 = customizationsRef.current[path] ?? {};
+      const meta2 = metadataRef.current[path];
+      invokeSetPulseCover(cust2.coverUrl ?? meta2?.cover_url ?? null).catch(() => {});
     });
     const unlistenProfileSwitched = listen<LibraryProfileRegistry>("library-profile-switched", (ev) => {
       setProfileRegistry(ev.payload);
@@ -1641,8 +1679,52 @@ export default function App() {
       }
     });
 
+    // ── API server event forwarding ───────────────────────────────────────────
+    // The Rust API server emits these events when remote clients issue commands.
+
+    const unlistenApiLaunch = listen<string>("api-launch-game", (ev) => {
+      const path = ev.payload;
+      const game = gamesRef.current.find((g) => g.path === path);
+      if (game) launchGame(game.path);
+    });
+
+    const unlistenApiKill = listen("api-kill-game", () => {
+      if (runningGamePathRef.current) {
+        invoke("kill_game").catch(console.error);
+      }
+    });
+
+    const unlistenApiNotify = listen<{ title: string; body: string; icon?: string }>("api-push-notification", (ev) => {
+      const { title, body, icon } = ev.payload;
+      setInAppToasts((prev) =>
+        [
+          {
+            id: `api-notify-${Date.now()}`,
+            type: "info" as const,
+            title,
+            message: body,
+            icon: icon ?? "🔔",
+          },
+          ...prev,
+        ].slice(0, 5)
+      );
+    });
+
+    const unlistenApiVolume = listen<number>("api-set-volume", (ev) => {
+      const level = Math.max(0, Math.min(100, ev.payload));
+      invoke("set_master_volume", { level }).catch(() => {
+        // Silently ignore — volume control may not be available on all platforms.
+      });
+    });
+
+    const unlistenPulse = onPeersUpdated(setPulsePeers);
+
     return () => {
       disposed = true;
+      unlistenApiLaunch.then((f) => f());
+      unlistenApiKill.then((f) => f());
+      unlistenApiNotify.then((f) => f());
+      unlistenApiVolume.then((f) => f());
       unlistenFinished.then((f) => f());
       unlistenStarted.then((f) => f());
       unlistenProfileSwitched.then((f) => f());
@@ -1653,6 +1735,7 @@ export default function App() {
       unlistenDeepLink.then((f) => f());
       unlistenRustLog.then((f) => f());
       unlistenDiscordJoin.then((f) => f());
+      unlistenPulse.then((f) => f());
     };
   }, [handleIncomingDeepLink, reloadActiveProfile]);
 
@@ -2117,6 +2200,7 @@ export default function App() {
           displayName: prevCustom.displayName ?? entry.name ?? (entry.exe ? deriveGameName(entry.exe) : entry.name),
           steamAppId: appId,
           launchViaSteam: true,
+          importSource: prevCustom.importSource ?? "steam",
         };
         if (oldPath) delete next[oldPath];
       }
@@ -2188,6 +2272,7 @@ export default function App() {
           storeGameId: prevCustom.storeGameId ?? appName,
           epicAppName: appName,
           launchViaLegendary: prevCustom.launchViaLegendary ?? true,
+          importSource: prevCustom.importSource ?? "epic-games",
         };
         if (oldPath) delete next[oldPath];
       }
@@ -2245,6 +2330,7 @@ export default function App() {
       displayName: previousCustom.displayName ?? result.title ?? primary.name,
       itchCaveId: result.caveId,
       itchGameId: String(result.gameId),
+      importSource: previousCustom.importSource ?? "itch",
       pinnedExes: candidates.slice(1, 8).map((candidate) => ({ name: candidate.name, path: candidate.path })),
     };
     if (previousPath && previousPath !== primary.path) {
@@ -2296,6 +2382,7 @@ export default function App() {
             runnerPath: prevCustom.runnerOverride?.runnerPath ?? "",
             prefixPath: e.prefix ?? prevCustom.runnerOverride?.prefixPath ?? "",
           },
+          importSource: prevCustom.importSource ?? "lutris",
         };
       }
       saveCache(SK_CUSTOM, next);
@@ -2339,6 +2426,7 @@ export default function App() {
           storeGameId: prevCustom.storeGameId ?? (shouldAttachStoreLaunch ? e.game_id : undefined),
           storeLaunchUri: prevCustom.storeLaunchUri ?? (shouldAttachStoreLaunch ? e.store_uri ?? undefined : undefined),
           launchViaStore: shouldAttachStoreLaunch ? (prevCustom.launchViaStore ?? true) : prevCustom.launchViaStore,
+          importSource: prevCustom.importSource ?? e.source,
         };
       }
       saveCache(SK_CUSTOM, next);
@@ -2368,6 +2456,59 @@ export default function App() {
     });
   };
 
+  // ── Remove-by-source ────────────────────────────────────────────────────────
+
+  /** Derive which external source a game was imported from. */
+  const detectGameImportSource = (game: Game, c?: GameCustomization): string | null => {
+    if (c?.importSource) return c.importSource;
+    if (c?.steamAppId || isSteamPlaceholderPath(game.path)) return "steam";
+    if (c?.epicAppName || isEpicPlaceholderPath(game.path)) return "epic-games";
+    if (c?.itchCaveId || c?.itchGameId) return "itch";
+    if (c?.storeProvider) return c.storeProvider;
+    return null;
+  };
+
+  const IMPORT_SOURCE_LABELS: Record<string, string> = {
+    steam: "Steam",
+    "epic-games": "Epic Games Store",
+    "gog-galaxy": "GOG Galaxy",
+    itch: "itch.io",
+    lutris: "Lutris",
+    playnite: "Playnite",
+    "ea-app": "EA App",
+    "ubisoft-connect": "Ubisoft Connect",
+    rockstar: "Rockstar Launcher",
+    "battle-net": "Battle.net",
+    gamejolt: "GameJolt",
+  };
+
+  /** Record<sourceKey, gameCount> — derived from current games + customizations. */
+  const importedSources = useMemo<Record<string, number>>(() => {
+    const counts: Record<string, number> = {};
+    for (const game of games) {
+      const src = detectGameImportSource(game, customizations[game.path]);
+      if (src) counts[src] = (counts[src] ?? 0) + 1;
+    }
+    return counts;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [games, customizations]);
+
+  const handleRemoveBySource = (source: string) => {
+    const label = IMPORT_SOURCE_LABELS[source] ?? source;
+    const targets = games.filter((g) => detectGameImportSource(g, customizations[g.path]) === source);
+    if (targets.length === 0) return;
+    if (!window.confirm(
+      `Remove all ${targets.length} game(s) imported from ${label}?\n\n` +
+      `This will remove them from your library and delete all saved stats, metadata, and customizations. ` +
+      `The actual game files on disk will NOT be deleted.`
+    )) return;
+    const pathSet = new Set(targets.map((g) => g.path));
+    setGames((prev) => { const next = prev.filter((g) => !pathSet.has(g.path)); saveCache(SK_GAMES, next); return next; });
+    setMetadata((prev) => { const next = { ...prev }; pathSet.forEach((p) => delete next[p]); saveCache(SK_META, next); return next; });
+    setStats((prev) => { const next = { ...prev }; pathSet.forEach((p) => delete next[p]); saveCache(SK_STATS, next); return next; });
+    setCustomizations((prev) => { const next = { ...prev }; pathSet.forEach((p) => delete next[p]); saveCache(SK_CUSTOM, next); return next; });
+    if (selected && pathSet.has(selected.path)) setSelected(null);
+  };
 
   // ── Persist helpers ─────────────────────────────────────────────────────────
   const applySingleScanResult = (
@@ -6076,6 +6217,13 @@ export default function App() {
               )}
             </div>
           </div>
+          {/* Pulse: friends online */}
+          {pulsePeers.length > 0 && (
+            <div style={{ borderTop: "1px solid var(--color-bg-deep)", paddingTop: 6, marginTop: 4 }}>
+              <div style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--color-text-muted)", padding: "4px 12px 2px" }}>Friends</div>
+              <PulseSidebarSection peers={pulsePeers} />
+            </div>
+          )}
         </aside>
       )
       }
@@ -6420,6 +6568,9 @@ export default function App() {
             onProtocolStoreImport={() => setShowProtocolStoreImport(true)}
             onExoticImport={() => setShowExoticImport(true)}
             onItchImport={() => setShowItchImport(true)}
+            importedSources={importedSources}
+            importSourceLabels={IMPORT_SOURCE_LABELS}
+            onRemoveBySource={handleRemoveBySource}
             onAppUpdate={() => setShowAppUpdateModal(true)}
             onOpenWhatsNew={() => setShowWhatsNewModal(true)}
             appSettings={appSettings}
@@ -6484,6 +6635,7 @@ export default function App() {
               setEmulatorProfiles(profiles);
               saveCache(SK_EMULATOR_PROFILES, profiles);
             }}
+            sessionLog={sessionLog}
           />
         )
       }
@@ -6652,6 +6804,24 @@ export default function App() {
       {
         showWhatsNewModal && (
           <WhatsNewModal onClose={() => setShowWhatsNewModal(false)} />
+        )
+      }
+      {
+        showP2PChat && (
+          <P2PChatModal onClose={() => setShowP2PChat(false)} />
+        )
+      }
+      {
+        showDShare && (
+          <DecentralizedShareModal
+            initialData={dshareInitial}
+            onClose={() => setShowDShare(false)}
+          />
+        )
+      }
+      {
+        showEpicStore && (
+          <EpicStoreModal onClose={() => setShowEpicStore(false)} />
         )
       }
       {

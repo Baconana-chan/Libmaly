@@ -43,6 +43,21 @@ interface AchievementItem {
   done: boolean;
 }
 
+interface ReplayClip {
+  path: string;
+  filename: string;
+  timestamp: number;
+  format: string;
+  duration_secs: number;
+  frame_count: number;
+}
+
+interface HighlightCandidate {
+  timestamp_ms: number;
+  score: number;         // 0..1
+  reason: string;       // "scene change" | "rapid motion" | "motion spike"
+}
+
 interface SessionData {
   gamePath: string;
   gameTitle: string;
@@ -163,6 +178,15 @@ function GameOverlayApp() {
   const [toasts, setToasts] = useState<ScreenshotToast[]>([]);
   const [history, setHistory] = useState<ScreenshotPayload[]>([]);
   const toastTimers = useRef<Record<string, number>>({});
+
+  // Instant replay
+  const [replayClips, setReplayClips] = useState<ReplayClip[]>([]);
+  const [replaySaving, setReplaySaving] = useState(false);
+
+  // Auto-highlight detection
+  const [highlights, setHighlights] = useState<HighlightCandidate[]>([]);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [savingHighlight, setSavingHighlight] = useState<number | null>(null); // timestamp_ms being saved
 
   // Session tick (re-render once per second to update timer)
   const [tick, setTick] = useState(0);
@@ -331,6 +355,13 @@ function GameOverlayApp() {
     cleanups.push(
       listen<ScreenshotPayload>("libmaly://screenshot-overlay-show", (ev) => {
         showScreenshotToast(ev.payload);
+      })
+    );
+
+    // Instant replay saved (from F9 hotkey or overlay button)
+    cleanups.push(
+      listen<{ game_exe: string; clip: ReplayClip }>("replay-saved", (ev) => {
+        setReplayClips((prev) => [ev.payload.clip, ...prev].slice(0, 20));
       })
     );
 
@@ -585,33 +616,190 @@ function GameOverlayApp() {
 
               {/* Screenshots */}
               {activeTab === "screenshots" && (
-                history.length > 0 ? (
-                  <div className="grid grid-cols-2 gap-2">
-                    {history.map((item, i) => (
-                      <div
-                        key={item.screenshot.path + i}
-                        className="rounded-lg overflow-hidden"
+                <div className="flex flex-col gap-4">
+                  {/* Screenshot grid */}
+                  {history.length > 0 ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      {history.map((item, i) => (
+                        <div
+                          key={item.screenshot.path + i}
+                          className="rounded-lg overflow-hidden"
+                          style={{
+                            aspectRatio: "16/9",
+                            background: "rgba(255,255,255,0.04)",
+                            border: `1px solid ${BORDER}`,
+                          }}
+                        >
+                          <img
+                            src={convertFileSrc(item.screenshot.path)}
+                            alt={item.screenshot.filename}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <EmptyState
+                      icon={<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>}
+                      text="No screenshots this session."
+                      hint="Press F12 to capture."
+                    />
+                  )}
+
+                  {/* ─ Instant Replay ─ */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: TEXT_DIM }}>Instant Replay</p>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => {
+                            if (!session || replaySaving) return;
+                            setReplaySaving(true);
+                            invoke<ReplayClip>("save_instant_replay", { gameExe: session.gamePath, format: "gif" })
+                              .then((clip) => setReplayClips((prev) => [clip, ...prev].slice(0, 20)))
+                              .catch(console.error)
+                              .finally(() => setReplaySaving(false));
+                          }}
+                          disabled={replaySaving || !session}
+                          className="px-2.5 py-1 rounded text-[10px] font-semibold transition-colors"
+                          style={{
+                            background: session && !replaySaving ? "rgba(125,170,214,0.12)" : "rgba(255,255,255,0.04)",
+                            border: `1px solid ${session && !replaySaving ? "rgba(125,170,214,0.25)" : BORDER}`,
+                            color: session && !replaySaving ? ACCENT : TEXT_DIM,
+                          }}
+                        >
+                          {replaySaving ? "Saving…" : "Save GIF"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (!session || replaySaving) return;
+                            setReplaySaving(true);
+                            invoke<ReplayClip>("save_instant_replay", { gameExe: session.gamePath, format: "mp4" })
+                              .then((clip) => setReplayClips((prev) => [clip, ...prev].slice(0, 20)))
+                              .catch(console.error)
+                              .finally(() => setReplaySaving(false));
+                          }}
+                          disabled={replaySaving || !session}
+                          className="px-2.5 py-1 rounded text-[10px] font-semibold transition-colors"
+                          style={{
+                            background: "rgba(255,255,255,0.04)",
+                            border: `1px solid ${BORDER}`,
+                            color: session && !replaySaving ? TEXT_MUTED : TEXT_DIM,
+                          }}
+                        >
+                          MP4
+                        </button>
+                      </div>
+                    </div>
+
+                    {replayClips.length > 0 ? (
+                      <div className="space-y-1">
+                        {replayClips.slice(0, 8).map((clip) => (
+                          <div
+                            key={clip.path}
+                            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md"
+                            style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${BORDER}` }}
+                          >
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: ACCENT, flexShrink: 0 }}>
+                              <polygon points="5 3 19 12 5 21 5 3" />
+                            </svg>
+                            <span className="flex-1 truncate text-[10px]" style={{ color: TEXT_MUTED }}>{clip.filename}</span>
+                            <span
+                              className="text-[9px] px-1.5 py-0.5 rounded font-medium"
+                              style={{ background: "rgba(125,170,214,0.1)", color: ACCENT }}
+                            >
+                              {clip.format.toUpperCase()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-center py-2" style={{ color: TEXT_DIM }}>
+                        No clips yet · press F9 or click Save GIF
+                      </p>
+                    )}
+                  </div>
+
+                  {/* ─ Auto-Highlights ─ */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: TEXT_DIM }}>Auto-Highlights</p>
+                      <button
+                        onClick={() => {
+                          if (analyzing) return;
+                          setAnalyzing(true);
+                          invoke<HighlightCandidate[]>("analyze_replay_highlights", { minScore: 0.08 })
+                            .then((h) => setHighlights(h))
+                            .catch(console.error)
+                            .finally(() => setAnalyzing(false));
+                        }}
+                        disabled={analyzing}
+                        className="px-2.5 py-1 rounded text-[10px] font-semibold transition-colors"
                         style={{
-                          aspectRatio: "16/9",
-                          background: "rgba(255,255,255,0.04)",
-                          border: `1px solid ${BORDER}`,
+                          background: analyzing ? "rgba(255,255,255,0.04)" : "rgba(125,170,214,0.10)",
+                          border: `1px solid ${analyzing ? BORDER : "rgba(125,170,214,0.22)"}`,
+                          color: analyzing ? TEXT_DIM : ACCENT,
                         }}
                       >
-                        <img
-                          src={convertFileSrc(item.screenshot.path)}
-                          alt={item.screenshot.filename}
-                          className="w-full h-full object-cover"
-                        />
+                        {analyzing ? "Analyzing…" : "Analyze Buffer"}
+                      </button>
+                    </div>
+
+                    {highlights.length > 0 ? (
+                      <div className="space-y-1.5">
+                        {highlights.map((h) => {
+                          const pct = Math.round(h.score * 100);
+                          const isSaving = savingHighlight === h.timestamp_ms;
+                          return (
+                            <div
+                              key={h.timestamp_ms}
+                              className="flex items-center gap-2 px-2.5 py-2 rounded-md"
+                              style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${BORDER}` }}
+                            >
+                              {/* Score bar */}
+                              <div className="relative w-6 shrink-0" style={{ height: 28 }}>
+                                <div className="absolute inset-x-0 bottom-0 rounded-sm" style={{ height: `${pct}%`, background: pct >= 45 ? "rgba(255,130,70,0.55)" : "rgba(125,170,214,0.35)" }} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-[10px] font-medium truncate" style={{ color: TEXT_MUTED }}>{h.reason}</div>
+                                <div className="text-[9px] tabular-nums" style={{ color: TEXT_DIM }}>{pct}% · {new Date(h.timestamp_ms).toLocaleTimeString()}</div>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  if (!session || isSaving) return;
+                                  setSavingHighlight(h.timestamp_ms);
+                                  invoke<ReplayClip>("save_highlight_clip", {
+                                    gameExe: session.gamePath,
+                                    aroundMs: h.timestamp_ms,
+                                    beforeMs: 5000,
+                                    afterMs: 5000,
+                                    format: "gif",
+                                  })
+                                    .then((clip) => setReplayClips((prev) => [clip, ...prev].slice(0, 20)))
+                                    .catch(console.error)
+                                    .finally(() => setSavingHighlight(null));
+                                }}
+                                disabled={!session || isSaving}
+                                className="shrink-0 px-2 py-1 rounded text-[9px] font-semibold transition-colors"
+                                style={{
+                                  background: isSaving ? "rgba(255,255,255,0.04)" : "rgba(125,170,214,0.10)",
+                                  border: `1px solid ${isSaving ? BORDER : "rgba(125,170,214,0.2)"}`,
+                                  color: isSaving ? TEXT_DIM : ACCENT,
+                                }}
+                              >
+                                {isSaving ? "…" : "±5s"}
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
+                    ) : (
+                      <p className="text-[10px] text-center py-2" style={{ color: TEXT_DIM }}>
+                        {analyzing ? "Scanning frames…" : highlights.length === 0 && !analyzing ? "Click \u201cAnalyze Buffer\u201d to find interesting moments" : "No highlights detected"}
+                      </p>
+                    )}
                   </div>
-                ) : (
-                  <EmptyState
-                    icon={<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>}
-                    text="No screenshots this session."
-                    hint="Press F12 to capture."
-                  />
-                )
+                </div>
               )}
 
               {/* Notifications */}

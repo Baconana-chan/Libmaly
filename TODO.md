@@ -3,51 +3,37 @@
 Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the desktop roadmap stays focused on the current Tauri app.
 
 - [ ] **Release on itch.io** — create landing page, configure game categories, and set up Butler for automated build pushes.
-- [ ] **Release on Epic Games Store** — fulfill self-service publishing requirements and integrate basic EGS SDK features.
+- [x] **Release on Epic Games Store** — fulfill self-service publishing requirements and integrate basic EGS SDK features.
 - [ ] **Release on WinGet / Scoop** — publish portable/installer manifests so Windows users can install and update Libmaly from package managers.
 
 ---
 
 ## 🎨 UI / UX
 
-- [x] **Theme Marketplace/Gallery** — browse and install community-made JSON themes from a trusted relay
-- [x] **Game detail layout presets** — switch between metadata-first, screenshots-first, and notes-first page layouts per profile
-- [x] **Quick side panel** — optional secondary panel for notes / achievements / media without fully leaving the current view
+
 ---
 
 ## 📊 Stats & Tracking
 
-- [x] **Session timeline explorer** — zoomable per-day/per-week timeline to inspect exactly when and how long each session happened
-- [x] **Tag / developer breakdowns** — charts for most-played genres, tags, engines, developers, and collections over time
+
 
 ---
 
-## 📸 Screenshots 
+## 📸 Screenshots
 
-- [ ] **Instant Replay (Short Clips)** — capture the last 15–30 seconds of gameplay as a GIF or MP4 (experimental Rust-side buffer)
-- [ ] **Auto-highlight detection** — optionally detect scene changes / rapid motion and suggest “best moment” screenshots from replay buffers
+
 
 ---
 
 ## 🌐 Sources & Extensibility
 
-- [x] **Interactive game maps integration** — attach maps from an external provider (for example Map Genie–style services or community map sources) directly on the game page / overlay when a game is supported
-- [x] **Guide / wiki provider slots** — configurable external links/providers for walkthroughs, maps, patch notes, and modding resources per game
-- [x] **Metadata post-processing rules** — user-defined cleanup/merge rules for titles, tags, developers, and source priority after multi-source fetches
+
 
 ---
 
 ## 🕹️ Universal In-Game Overlay
 
-- [x] **Full-screen Dashboard (Shift+Tab)** — immersive UI that pauses in-game input and provides a centralized navigation hub
-- [ ] **Overlay Workspace & Widgets** — drag-and-drop widget layout:
-  - [x] **Clock & Session Timer** — keep track of time and playtime milestones
-  - [x] **In-game Web Browser** — mini-WebView for guides, walkthroughs, or searching F95/DLsite mid-game
-  - [x] **Markdown Note Editor** — view and edit game notes/achievements without Alt-Tabbing
-  - [x] **System Monitor** — floating FPS counter and basic CPU/GPU telemetry
-- [x] **Global Hotkey & Input Hooking** — reliable Rust-side keyboard hook for guaranteed overlay trigger even in administrative-level fullscreen games
-- [x] **Context-aware metadata** — show the currently running game's version and "New Update Available" status directly in the overlay
-- [x] **Interaction Layer** — toggle `setIgnoreCursorEvents` dynamically to allow interacting with the overlay while the game runs in the background
+
 
 ---
 
@@ -80,21 +66,13 @@ Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the
 
 ## 🛒 Launcher & Store Integrations
 
-- [x] **RetroArch / emulator launcher integration** — import ROM launch targets and launch through configured emulator profiles without treating them as plain `.exe` entries
-- [x] **SteamGridDB / artwork sync** — fetch alternate covers, heroes, logos, and icons to improve library presentation for imported/non-store games
+
 
 ---
 
 ## 🛠️ Technical
 
-- [ ] **Plugin system** — allow JS/WASM plugins to add metadata sources or UI panels
-- [x] **Desktop UI modularisation** — split the current monolithic App/page orchestration into feature modules so desktop UI can grow without App.tsx remaining the main bottleneck
-- [ ] **Shared frontend core extraction** — move reusable non-UI logic into shared modules so future desktop/mobile/web surfaces can reuse data logic without sharing layouts
-- [ ] **REST/WebSocket API Mode** — open API for third-party developers:
-  - [ ] **Remote Control** — launch games, control volume, and monitor status from external apps
-  - [ ] **State Access** — read library metadata, stats, and notes for external dashboards/sidecar apps
-  - [ ] **Extension hooks** — allow external scripts to "push" notifications or widgets into the Libmaly overlay
-- [ ] **SDK / Reference implementation** — provide a boilerplate for third-party developers to build fan-made tools on top of Libmaly
+
 
 
 ### Internal Interfaces / Types (planned)
@@ -108,18 +86,7 @@ Automated dry-run checks now live in Settings -> Consistency Tests. Run them on 
 
 ## 📡 Social & Connectivity (Local-first)
 
-- [ ] **Peer-to-Peer Activity "Pulse"** — local-network broadcast + optional encrypted relay to see what friends are playing without a central server
-- [ ] **Agnostic Social Backend** — user-configurable relay URL system:
-  - [ ] Support official **Libmaly Cloud** relay
-  - [ ] Support fan-made/self-hosted relay implementations without feature-gating
-- [ ] **Concurrent Social Providers** — architecture to link multiple social identities (e.g. Libmaly-Relay + Discord + Steam) without sources "extinguishing" or overriding each other
-- [ ] **Relay Feature Negotiation** — auto-detect relay capabilities and dynamically adjust UI (e.g. hide 'Chat' if the relay doesn't support it)
-- [ ] **Anonymized Global Trending** — optional opt-in to fetch/publish aggregate local-only stats ("Most played this week globally") without personal identity tracking
-- [ ] **Portable Social Identity** — export/import social profile keys (Display Name, Avatar, PGP/ED25519 keys) to stay independent of any specific relay or server
-- [ ] **Encrypted P2P Chat** — basic secure messaging for coordinating multiplayer or sharing game notes
-- [ ] **Decentralized sharing (Nostr/ActivityPub)** — publish reviews, ratings, and screenshots to decentralized social feeds directly from the UI
-- [ ] **Multi-protocol social linking** — bridge activity from Discord, Steam, and Libmaly-Relay into a single unified local feed
-- [ ] **Friend activity** — optional peer-to-peer "what are friends playing" via a relay server
+
 
 
 ---
@@ -179,6 +146,9 @@ Automated dry-run checks now live in Settings -> Consistency Tests. Run them on 
 - [x] **Achievement tracker** — manual per-game checklist for routes, endings, or goals; auto-save; Ctrl+K search matches checklist text
 
 ### UI / UX
+- [x] **Theme Marketplace/Gallery** — browse and install community-made JSON themes from a trusted relay
+- [x] **Game detail layout presets** — switch between metadata-first, screenshots-first, and notes-first page layouts per profile
+- [x] **Quick side panel** — optional secondary panel for notes / achievements / media without fully leaving the current view
 - [x] **Sidebar width** — resizable via drag handle
 - [x] **Grid view** — toggle between list and cover-art grid (Steam-style)
 - [x] **Compact list mode** — denser rows with tiny thumbnail for large libraries
@@ -198,6 +168,8 @@ Automated dry-run checks now live in Settings -> Consistency Tests. Run them on 
 - [x] **Session mood stickers** — quick mood tag after each session (`hype` / `chill` / `chaos`) shown in play history
 
 ### Stats & Tracking
+- [x] **Session timeline explorer** — zoomable per-day/per-week timeline to inspect exactly when and how long each session happened
+- [x] **Tag / developer breakdowns** — charts for most-played genres, tags, engines, developers, and collections over time
 - [x] **Play history log** — timestamped session log per game shown as a timeline (max 50 entries)
 - [x] **Milestones** — 1h / 5h / 10h / 25h / 50h / 100h badges with progress bar to next milestone
 - [x] **Weekly chart** — 7-day SVG bar chart per game and library-wide in HomeView
@@ -234,6 +206,8 @@ Automated dry-run checks now live in Settings -> Consistency Tests. Run them on 
 - [x] **Settings fallback button** — topbar fallback keeps settings reachable when the sidebar settings button is hidden
 
 ### Screenshots (Windows)
+- [x] **Instant Replay (Short Clips)** — capture the last 15–30 seconds of gameplay as a GIF or MP4 (experimental Rust-side buffer)
+- [x] **Auto-highlight detection** — optionally detect scene changes / rapid motion and suggest "best moment" screenshots from replay buffers
 - [x] **F12 global hotkey** — capture foreground window while any game is running
 - [x] **Screenshot gallery** — per-game gallery with thumbnails in the detail panel
 - [x] **Screenshot deletion** — remove individual screenshots from the gallery
@@ -286,6 +260,14 @@ Automated dry-run checks now live in Settings -> Consistency Tests. Run them on 
 - [x] **Steam launch bridge / playtime sync** — optionally launch imported Steam titles through Steam and pull updated playtime back into LIBMALY with best-effort session tracking
 
 ### Technical
+- [x] **Plugin system** — allow JS/WASM plugins to add metadata sources or UI panels
+- [x] **Shared frontend core extraction** — move reusable non-UI logic into shared modules so future desktop/mobile/web surfaces can reuse data logic without sharing layouts
+- [x] **REST/WebSocket API Mode** — open API for third-party developers:
+  - [x] **Remote Control** — launch games, control volume, and monitor status from external apps
+  - [x] **State Access** — read library metadata, stats, and notes for external dashboards/sidecar apps
+  - [x] **Extension hooks** — allow external scripts to "push" notifications or widgets into the Libmaly overlay
+- [x] **SDK / Reference implementation** — provide a boilerplate for third-party developers to build fan-made tools on top of Libmaly
+- [x] **Desktop UI modularisation** — split the current monolithic App/page orchestration into feature modules so desktop UI can grow without App.tsx remaining the main bottleneck
 - [x] **Log viewer** — in-app console showing recent Rust-side errors/warnings for debugging
 - [x] **Crash reporter** — catch panics and offer to copy a report to clipboard
 - [x] **Tray icon on macOS** — verify/fix `NSStatusItem` behaviour once macOS build is stable
@@ -329,3 +311,37 @@ Automated dry-run checks now live in Settings -> Consistency Tests. Run them on 
 
 ### Background Jobs
 - [x] **Queue with retry/backoff** — unified metadata/update/sync queue with retry, exponential backoff, and concurrency limits
+
+### Launcher & Store Integrations
+- [x] **RetroArch / emulator launcher integration** — import ROM launch targets and launch through configured emulator profiles without treating them as plain `.exe` entries
+- [x] **SteamGridDB / artwork sync** — fetch alternate covers, heroes, logos, and icons to improve library presentation for imported/non-store games
+
+### Universal In-Game Overlay
+- [x] **Full-screen Dashboard (Shift+Tab)** — immersive UI that pauses in-game input and provides a centralized navigation hub
+- [ ] **Overlay Workspace & Widgets** — drag-and-drop widget layout:
+  - [x] **Clock & Session Timer** — keep track of time and playtime milestones
+  - [x] **In-game Web Browser** — mini-WebView for guides, walkthroughs, or searching F95/DLsite mid-game
+  - [x] **Markdown Note Editor** — view and edit game notes/achievements without Alt-Tabbing
+  - [x] **System Monitor** — floating FPS counter and basic CPU/GPU telemetry
+- [x] **Global Hotkey & Input Hooking** — reliable Rust-side keyboard hook for guaranteed overlay trigger even in administrative-level fullscreen games
+- [x] **Context-aware metadata** — show the currently running game's version and "New Update Available" status directly in the overlay
+- [x] **Interaction Layer** — toggle `setIgnoreCursorEvents` dynamically to allow interacting with the overlay while the game runs in the background
+
+### Sources & Extensibility
+- [x] **Interactive game maps integration** — attach maps from an external provider (for example Map Genie–style services or community map sources) directly on the game page / overlay when a game is supported
+- [x] **Guide / wiki provider slots** — configurable external links/providers for walkthroughs, maps, patch notes, and modding resources per game
+- [x] **Metadata post-processing rules** — user-defined cleanup/merge rules for titles, tags, developers, and source priority after multi-source fetches
+
+### Social & Connectivity
+- [x] **Peer-to-Peer Activity "Pulse"** — local-network broadcast + optional encrypted relay to see what friends are playing without a central server
+- [x] **Agnostic Social Backend** — user-configurable relay URL system:
+  - [x] Support official **Libmaly Cloud** relay
+  - [x] Support fan-made/self-hosted relay implementations without feature-gating
+- [x] **Concurrent Social Providers** — architecture to link multiple social identities (e.g. Libmaly-Relay + Discord + Steam) without sources "extinguishing" or overriding each other
+- [x] **Relay Feature Negotiation** — auto-detect relay capabilities and dynamically adjust UI (e.g. hide 'Chat' if the relay doesn't support it)
+- [x] **Anonymized Global Trending** — optional opt-in to fetch/publish aggregate local-only stats ("Most played this week globally") without personal identity tracking
+- [x] **Portable Social Identity** — export/import social profile keys (Display Name, Avatar, PGP/ED25519 keys) to stay independent of any specific relay or server
+- [x] **Encrypted P2P Chat** — basic secure messaging for coordinating multiplayer or sharing game notes
+- [x] **Decentralized sharing (Nostr/ActivityPub)** — publish reviews, ratings, and screenshots to decentralized social feeds directly from the UI
+- [x] **Multi-protocol social linking** — bridge activity from Discord, Steam, and Libmaly-Relay into a single unified local feed
+- [x] **Friend activity** — optional peer-to-peer "what are friends playing" via a relay server

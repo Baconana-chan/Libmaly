@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Libmaly Dashboard</title>
+  <style>
+    :root {
+      --bg:       #0d1117;
+      --bg2:      #161b22;
+      --bg3:      #1f2937;
+      --border:   rgba(100, 160, 220, 0.18);
+      --accent:   #37a5d8;
+      --success:  #5ba85b;
+      --danger:   #d85555;
+      --warn:     #d8a835;
+      --text:     #d0e4f5;
+      --muted:    #7a93aa;
+      --dim:      #4a5f6e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    /* ── Layout ────────────────────────────────────────────────────────── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 20px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 15px; font-weight: 700; color: var(--accent); }
+    .badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 2px 8px; border-radius: 99px; font-size: 11px;
+      font-weight: 600; letter-spacing: 0.04em;
+    }
+    .badge.green  { background: rgba(91,168,91,.18);  color: var(--success); }
+    .badge.red    { background: rgba(216,85,85,.18);  color: var(--danger);  }
+    .badge.amber  { background: rgba(216,168,53,.18); color: var(--warn);    }
+    .badge.blue   { background: rgba(55,165,216,.18); color: var(--accent);  }
+    .spacer { flex: 1; }
+
+    main {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      grid-template-rows: 1fr;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ───────────────────────────────────────────────────────── */
+    aside {
+      background: var(--bg2);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Connect panel ─────────────────────────────────────────────────── */
+    #connect-panel {
+      padding: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    #connect-panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-bottom: 10px; }
+    .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+    .field label { font-size: 11px; color: var(--muted); }
+    .field input {
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 5px; color: var(--text);
+      padding: 6px 8px; font-size: 12px; outline: none; width: 100%;
+      font-family: monospace;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .row { display: flex; gap: 8px; }
+    .row .field { flex: 1; }
+    button {
+      padding: 6px 14px; border-radius: 5px; border: 1px solid var(--border);
+      background: var(--bg3); color: var(--text); cursor: pointer;
+      font-size: 12px; transition: background .15s;
+    }
+    button:hover { background: var(--bg); }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.primary:hover { filter: brightness(1.1); }
+    button.danger { color: var(--danger); border-color: var(--danger); }
+    button.danger:hover { background: rgba(216,85,85,.12); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ── Status panel ──────────────────────────────────────────────────── */
+    #status-panel {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    #status-panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-bottom: 10px; }
+    .stat-row { display: flex; justify-content: space-between; padding: 3px 0; }
+    .stat-label { color: var(--muted); }
+    .stat-value { font-weight: 600; text-align: right; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bar-wrap { background: var(--bg3); border-radius: 4px; height: 5px; width: 100%; margin-top: 3px; overflow: hidden; }
+    .bar { height: 100%; border-radius: 4px; transition: width .5s; }
+    .bar.cpu { background: var(--accent); }
+    .bar.ram { background: var(--success); }
+
+    /* ── Game controls ─────────────────────────────────────────────────── */
+    #game-controls {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    #game-controls h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-bottom: 4px; }
+    #game-controls .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* ── Notify ────────────────────────────────────────────────────────── */
+    #notify-panel {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    #notify-panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-bottom: 8px; }
+
+    /* ── Main content ──────────────────────────────────────────────────── */
+    .main-content {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      background: var(--bg2);
+    }
+    .tab {
+      padding: 10px 20px; cursor: pointer;
+      border-bottom: 2px solid transparent;
+      font-size: 12px; font-weight: 600;
+      color: var(--muted); transition: color .15s;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* ── Library list ──────────────────────────────────────────────────── */
+    #library-view {
+      flex: 1; overflow-y: auto; padding: 8px 0;
+      display: none;
+    }
+    #library-view.active { display: block; }
+    .game-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 8px 16px; cursor: pointer;
+      border-bottom: 1px solid var(--border);
+      transition: background .1s;
+    }
+    .game-item:hover { background: var(--bg2); }
+    .game-item:last-child { border-bottom: none; }
+    .game-cover {
+      width: 40px; height: 28px; border-radius: 3px;
+      background: var(--bg3); object-fit: cover;
+      flex-shrink: 0;
+    }
+    .game-info { flex: 1; min-width: 0; }
+    .game-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .game-sub { color: var(--muted); font-size: 11px; }
+    .game-actions { display: flex; gap: 6px; }
+
+    /* ── Event log ─────────────────────────────────────────────────────── */
+    #events-view {
+      flex: 1; overflow-y: auto; padding: 10px;
+      font-family: monospace; font-size: 11px;
+      display: none;
+    }
+    #events-view.active { display: block; }
+    .event-entry { padding: 3px 6px; border-radius: 4px; margin-bottom: 3px; display: flex; gap: 8px; }
+    .event-time { color: var(--dim); flex-shrink: 0; }
+    .event-type { color: var(--accent); min-width: 120px; flex-shrink: 0; }
+    .event-body { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .event-entry.game-started   { background: rgba(91,168,91,.08); }
+    .event-entry.game-finished  { background: rgba(216,168,53,.06); }
+    .event-entry.notification   { background: rgba(55,165,216,.06); }
+  </style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>🎮 Libmaly Dashboard</h1>
+    <span id="ws-badge" class="badge red">Disconnected</span>
+    <span id="version-badge" class="badge blue" style="display:none"></span>
+    <div class="spacer"></div>
+  </header>
+
+  <main>
+    <!-- Sidebar -->
+    <aside>
+      <!-- Connection -->
+      <div id="connect-panel">
+        <h2>Connection</h2>
+        <div class="row">
+          <div class="field">
+            <label>Host</label>
+            <input id="host-input" value="127.0.0.1" />
+          </div>
+          <div class="field" style="max-width:80px">
+            <label>Port</label>
+            <input id="port-input" value="39510" />
+          </div>
+        </div>
+        <div class="field">
+          <label>Bearer Token</label>
+          <input id="token-input" type="password" placeholder="Paste from Settings → 🌐 API" />
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="primary" id="connect-btn">Connect</button>
+          <button id="disconnect-btn" class="danger" disabled>Disconnect</button>
+        </div>
+      </div>
+
+      <!-- Live status -->
+      <div id="status-panel">
+        <h2>Status</h2>
+        <div class="stat-row">
+          <span class="stat-label">Active game</span>
+          <span class="stat-value" id="active-game">—</span>
+        </div>
+        <div class="stat-row" style="margin-top:6px">
+          <span class="stat-label">CPU</span>
+          <span class="stat-value" id="cpu-val">—</span>
+        </div>
+        <div class="bar-wrap"><div class="bar cpu" id="cpu-bar" style="width:0%"></div></div>
+        <div class="stat-row" style="margin-top:5px">
+          <span class="stat-label">RAM</span>
+          <span class="stat-value" id="ram-val">—</span>
+        </div>
+        <div class="bar-wrap"><div class="bar ram" id="ram-bar" style="width:0%"></div></div>
+      </div>
+
+      <!-- Game controls -->
+      <div id="game-controls">
+        <h2>Controls</h2>
+        <div class="btn-row">
+          <button id="kill-btn" class="danger" disabled>⏹ Kill Game</button>
+          <button id="refresh-btn">↻ Refresh Library</button>
+        </div>
+        <div style="font-size:11px; color:var(--muted); margin-top:2px">
+          To launch a game, click ▶ next to it in the Library tab.
+        </div>
+      </div>
+
+      <!-- Push notification -->
+      <div id="notify-panel">
+        <h2>Push Notification</h2>
+        <div class="field">
+          <label>Title</label>
+          <input id="notif-title" value="Hello from Dashboard" />
+        </div>
+        <div class="field">
+          <label>Body</label>
+          <input id="notif-body" value="Your fan-made tool works!" />
+        </div>
+        <button id="notify-btn" disabled>🔔 Send</button>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <div class="main-content">
+      <div class="tabs">
+        <div class="tab active" data-tab="library-view">Library</div>
+        <div class="tab" data-tab="events-view">Live Events</div>
+      </div>
+
+      <div id="library-view" class="active">
+        <div id="library-list" style="height:100%">
+          <div style="padding:20px; color:var(--muted)">Connect to load library.</div>
+        </div>
+      </div>
+
+      <div id="events-view">
+        <div id="event-log"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ── Inline SDK (no build step required) ────────────────────────────────────
+class LibmalyClient {
+  constructor({ host = "127.0.0.1", port = 39510, token, autoReconnect = true, reconnectDelayMs = 3000 }) {
+    this.baseUrl = `http://${host}:${port}`;
+    this.wsUrl   = `ws://${host}:${port}/ws`;
+    this.token   = token;
+    this.headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
+    this.autoReconnect = autoReconnect;
+    this.reconnectDelayMs = reconnectDelayMs;
+    this.listeners = new Map();
+    this.ws = null;
+    this.closed = false;
+    this._reconnectTimer = null;
+  }
+  async _req(method, path, body) {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method, headers: this.headers,
+      body: body != null ? JSON.stringify(body) : undefined,
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${JSON.stringify(json)}`);
+    return json;
+  }
+  getStatus()        { return this._req("GET",    "/api/status"); }
+  getLibrary()       { return this._req("GET",    "/api/library"); }
+  getGame(path)      { return this._req("GET",    `/api/library/game?path=${encodeURIComponent(path)}`); }
+  launch(path)       { return this._req("POST",   "/api/launch",  { path }); }
+  kill()             { return this._req("POST",   "/api/kill"); }
+  getMetadata(path)  { return this._req("GET",    `/api/metadata?path=${encodeURIComponent(path)}`); }
+  getStats(path)     { return this._req("GET",    `/api/stats?path=${encodeURIComponent(path)}`); }
+  getNotes(path)     { return this._req("GET",    `/api/notes?path=${encodeURIComponent(path)}`); }
+  notify(opts)       { return this._req("POST",   "/api/notify",  opts); }
+  pushWidget(id, html, opts) { return this._req("POST", "/api/overlay/widget", { id, html, ...opts }); }
+  removeWidget(id)   { return this._req("DELETE", `/api/overlay/widget/${encodeURIComponent(id)}`); }
+  connect() {
+    this.closed = false;
+    this._openWs();
+  }
+  disconnect() {
+    this.closed = true;
+    clearTimeout(this._reconnectTimer);
+    this.ws?.close();
+    this.ws = null;
+  }
+  on(event, handler) {
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+    this.listeners.get(event).add(handler);
+    return this;
+  }
+  off(event, handler) { this.listeners.get(event)?.delete(handler); return this; }
+  _emit(event, payload) {
+    this.listeners.get(event)?.forEach(h => h(payload));
+    if (event !== "*") this.listeners.get("*")?.forEach(h => h({ type: event, payload }));
+  }
+  _openWs() {
+    if (this.closed) return;
+    try {
+      const ws = new WebSocket(`${this.wsUrl}?token=${encodeURIComponent(this.token)}`);
+      this.ws = ws;
+      ws.onmessage = e => {
+        try {
+          const { type, payload } = JSON.parse(e.data);
+          this._emit(type, payload);
+        } catch {}
+      };
+      ws.onclose = () => {
+        this.ws = null;
+        if (!this.closed && this.autoReconnect) {
+          this._reconnectTimer = setTimeout(() => this._openWs(), this.reconnectDelayMs);
+        }
+        this._emit("_disconnected", {});
+      };
+      ws.onopen = () => this._emit("_connected", {});
+    } catch {
+      if (!this.closed && this.autoReconnect) {
+        this._reconnectTimer = setTimeout(() => this._openWs(), this.reconnectDelayMs);
+      }
+    }
+  }
+  static formatDuration(s) {
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+    return [h && `${h}h`, m && `${m}m`, (!h && !m || sec) && `${sec}s`].filter(Boolean).join(" ");
+  }
+}
+
+// ── UI ──────────────────────────────────────────────────────────────────────
+let client = null;
+const $ = id => document.getElementById(id);
+
+function setBadge(el, cls, text) {
+  el.className = `badge ${cls}`;
+  el.textContent = text;
+}
+
+function logEvent(type, payload) {
+  const log = $("event-log");
+  const now = new Date().toLocaleTimeString();
+  const div = document.createElement("div");
+  div.className = `event-entry ${type}`;
+  div.innerHTML = `
+    <span class="event-time">${now}</span>
+    <span class="event-type">${type}</span>
+    <span class="event-body">${JSON.stringify(payload)}</span>
+  `;
+  log.prepend(div);
+  // keep last 200 entries
+  while (log.children.length > 200) log.lastChild.remove();
+}
+
+function renderLibrary(games) {
+  const list = $("library-list");
+  if (!games.length) {
+    list.innerHTML = '<div style="padding:20px;color:var(--muted)">Library is empty.</div>';
+    return;
+  }
+  const sorted = [...games].sort((a, b) =>
+    (b.stats?.totalSecs ?? 0) - (a.stats?.totalSecs ?? 0)
+  );
+  list.innerHTML = sorted.map(g => {
+    const cover = g.meta?.coverUrl
+      ? `<img class="game-cover" src="${g.meta.coverUrl}" />`
+      : `<div class="game-cover" style="display:flex;align-items:center;justify-content:center;font-size:18px">🎮</div>`;
+    const name = g.name ?? g.path.split(/[/\\]/).pop();
+    const playtime = LibmalyClient.formatDuration(g.stats?.totalSecs ?? 0);
+    const sessions = g.stats?.sessionCount ?? 0;
+    return `
+      <div class="game-item" data-path="${escapeAttr(g.path)}">
+        ${cover}
+        <div class="game-info">
+          <div class="game-name">${escapeHtml(name)}</div>
+          <div class="game-sub">${playtime} · ${sessions} sessions</div>
+        </div>
+        <div class="game-actions">
+          <button onclick="event.stopPropagation(); launchGame(${JSON.stringify(g.path)})">▶</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function escapeAttr(s) {
+  return String(s).replace(/"/g,"&quot;");
+}
+
+async function launchGame(path) {
+  if (!client) return;
+  try {
+    await client.launch(path);
+    logEvent("launch-requested", { path });
+  } catch (e) {
+    alert(`Launch failed: ${e.message}`);
+  }
+}
+
+async function loadLibrary() {
+  if (!client) return;
+  try {
+    const { games } = await client.getLibrary();
+    renderLibrary(games);
+  } catch (e) {
+    $("library-list").innerHTML = `<div style="padding:20px;color:var(--danger)">Failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function loadStatus() {
+  if (!client) return;
+  try {
+    const s = await client.getStatus();
+    $("active-game").textContent = s.activeGame?.exe?.split(/[/\\]/).pop() ?? "—";
+    $("cpu-val").textContent = `${s.telemetry.cpuUsage.toFixed(1)} %`;
+    $("ram-val").textContent = `${s.telemetry.ramUsedMb} / ${s.telemetry.ramTotalMb} MB`;
+    $("cpu-bar").style.width = `${Math.min(100, s.telemetry.cpuUsage)}%`;
+    $("ram-bar").style.width = `${Math.min(100, s.telemetry.ramUsedMb / s.telemetry.ramTotalMb * 100)}%`;
+    $("version-badge").textContent = `v${s.version}`;
+    $("version-badge").style.display = "";
+    $("kill-btn").disabled = !s.activeGame;
+  } catch {}
+}
+
+function connectClient() {
+  const host  = $("host-input").value.trim()  || "127.0.0.1";
+  const port  = parseInt($("port-input").value) || 39510;
+  const token = $("token-input").value.trim();
+  if (!token) { alert("Enter a bearer token first."); return; }
+
+  if (client) { client.disconnect(); client = null; }
+
+  client = new LibmalyClient({ host, port, token });
+
+  client.on("_connected", () => {
+    setBadge($("ws-badge"), "green", "Connected");
+    $("connect-btn").disabled = true;
+    $("disconnect-btn").disabled = false;
+    $("notify-btn").disabled = false;
+    loadStatus();
+    loadLibrary();
+  });
+
+  client.on("_disconnected", () => {
+    setBadge($("ws-badge"), "amber", "Reconnecting…");
+    $("kill-btn").disabled = true;
+  });
+
+  client.on("connected",       p  => { logEvent("connected", p); });
+  client.on("game-started",    p  => { logEvent("game-started", p); loadStatus(); });
+  client.on("game-finished",   p  => { logEvent("game-finished", p); loadStatus(); });
+  client.on("telemetry",       tel => {
+    $("active-game").textContent = tel.activeGame?.exe?.split(/[/\\]/).pop() ?? "—";
+    $("cpu-val").textContent = `${tel.cpuUsage.toFixed(1)} %`;
+    $("ram-val").textContent = `${tel.ramUsedMb} / ${tel.ramTotalMb} MB`;
+    $("cpu-bar").style.width = `${Math.min(100, tel.cpuUsage)}%`;
+    $("ram-bar").style.width = `${Math.min(100, tel.ramUsedMb / tel.ramTotalMb * 100)}%`;
+    $("kill-btn").disabled = !tel.activeGame;
+    logEvent("telemetry", { cpu: `${tel.cpuUsage.toFixed(1)}%`, ram: `${tel.ramUsedMb}MB` });
+  });
+  client.on("library-updated", p => { logEvent("library-updated", p); loadLibrary(); });
+  client.on("notification",    p => { logEvent("notification", p); });
+  client.on("overlay-widget-push",   p => logEvent("overlay-widget-push", p));
+  client.on("overlay-widget-remove", p => logEvent("overlay-widget-remove", p));
+
+  setBadge($("ws-badge"), "amber", "Connecting…");
+  client.connect();
+}
+
+// ── Button wiring ───────────────────────────────────────────────────────────
+$("connect-btn").addEventListener("click", connectClient);
+
+$("disconnect-btn").addEventListener("click", () => {
+  if (!client) return;
+  client.disconnect();
+  client = null;
+  setBadge($("ws-badge"), "red", "Disconnected");
+  $("connect-btn").disabled = false;
+  $("disconnect-btn").disabled = true;
+  $("notify-btn").disabled = true;
+  $("kill-btn").disabled = true;
+  $("version-badge").style.display = "none";
+});
+
+$("kill-btn").addEventListener("click", async () => {
+  if (!client) return;
+  if (!confirm("Kill the running game?")) return;
+  await client.kill().catch(e => alert(e.message));
+});
+
+$("refresh-btn").addEventListener("click", loadLibrary);
+
+$("notify-btn").addEventListener("click", async () => {
+  if (!client) return;
+  const title = $("notif-title").value.trim();
+  const body  = $("notif-body").value.trim();
+  if (!title) return;
+  await client.notify({ title, body, icon: "💬" }).catch(e => alert(e.message));
+});
+
+// ── Tabs ────────────────────────────────────────────────────────────────────
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    tab.classList.add("active");
+    const id = tab.dataset.tab;
+    document.querySelectorAll("#library-view, #events-view").forEach(v => v.classList.remove("active"));
+    document.getElementById(id).classList.add("active");
+  });
+});
+</script>
+</body>
+</html>

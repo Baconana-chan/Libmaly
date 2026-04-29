@@ -1,0 +1,47 @@
+{
+  "name": "libmaly-sdk",
+  "version": "1.0.0",
+  "description": "TypeScript/JavaScript SDK for building fan-made tools on top of Libmaly",
+  "type": "module",
+  "main": "./dist/libmaly-sdk.cjs",
+  "module": "./dist/libmaly-sdk.js",
+  "types": "./dist/libmaly-sdk.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/libmaly-sdk.js",
+      "require": "./dist/libmaly-sdk.cjs",
+      "types": "./dist/libmaly-sdk.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "libmaly-sdk.ts"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "example:status": "npx ts-node --esm examples/01-status.ts",
+    "example:library": "npx ts-node --esm examples/02-library.ts",
+    "example:launch": "npx ts-node --esm examples/03-launch.ts",
+    "example:notify": "npx ts-node --esm examples/04-notify.ts",
+    "example:widget": "npx ts-node --esm examples/05-widget.ts",
+    "example:events": "npx ts-node --esm examples/06-events.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  },
+  "peerDependencies": {
+    "ws": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ws": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "libmaly",
+    "game-launcher",
+    "sdk",
+    "api"
+  ],
+  "license": "MIT"
+}

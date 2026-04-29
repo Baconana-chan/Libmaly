@@ -1,5 +1,75 @@
 # Changelog
 
+## Unreleased
+
+### 🔌 Plugin System
+- **JS metadata-source plugins** — third-party scripts can now act as full metadata sources by exporting a `fetchMetadata(url, html)` function; Libmaly pre-fetches the page and passes the HTML body to the function, which is evaluated via `boa_engine`, then maps the returned object to `GameMetadata`.
+- **UI panel plugins** — plugins can bundle an `index.html` that is rendered in an `<iframe>` inside Settings → Plugins; panels can communicate with the host window via `postMessage`.
+- **Install from ZIP** — plugins are distributed as standard ZIP archives containing `manifest.json` and the declared entrypoint; install via file picker.
+- **Inline install** — metadata-source plugins can also be installed directly from a JS string (useful for scripting and testing).
+- **Enable / disable / uninstall** — per-plugin toggle and permanent delete with full file cleanup.
+- **Automatic source integration** — plugins are checked last in `resolve_metadata_source` / `fetch_metadata_for_url`; matched sources appear in the metadata source selector with a `plugin:` prefix.
+- **Manifest schema** — `id`, `name`, `version`, `author`, `description`, `kind` (`metadata-source` | `ui-panel`), `urlPatterns` (regex list), `panelTitle`, `panelIcon`, `entrypoint`.
+
+### 🏗️ Shared Frontend Core Extraction
+- **`src/core/` barrel module** — platform-agnostic data and logic modules (`constants`, `game`, `helpers`, `layout`, `mediaPlaybackKnowledge`, `scanner`, `shaderCache`, `winetricksSupport`, `syncTypes`, `metadataUtils`, `gameAchievements`) extracted from `src/lib/` into a shared barrel importable by any future surface (mobile, web) without pulling in Tauri or layout code.
+- **`src/lib/` narrowed** — now contains only Tauri-specific invoke wrappers and platform-specific adapters.
+
+### 🌐 REST / WebSocket API Server
+- **Local API server** — an optional HTTP + WebSocket server (axum 0.7, tower-http CORS) binds to `127.0.0.1:<port>` (default `39510`); loopback-only, not reachable from outside the machine.
+- **Bearer token auth** — token is generated on first use and stored in the OS credential vault; visible and regeneratable in Settings → 🌐 API.
+- **REST — Remote Control** — `GET /api/status`, `GET /api/library`, `GET /api/library/game?path=…`, `POST /api/launch`, `POST /api/kill`, `GET|POST /api/volume`.
+- **REST — State Access** — `GET /api/metadata?path=…`, `GET /api/stats?path=…`, `GET /api/notes?path=…`.
+- **REST — Extension Hooks** — `POST /api/notify` (push overlay notification), `POST /api/overlay/widget` (inject HTML widget), `DELETE /api/overlay/widget/:id`.
+- **WebSocket** — `WS /ws` with query-param token auth; broadcasts `connected`, `game-started`, `game-finished`, `telemetry`, `library-updated`, `notification`, `overlay-widget-push`, `overlay-widget-remove`, `volume-requested` events.
+- **Frontend event bridge** — `App.tsx` handles `api-launch-game`, `api-kill-game`, `api-push-notification`, `api-set-volume` Tauri events forwarded from the API server; `screenshotOverlay.tsx` handles `api-overlay-widget-push` / `api-overlay-widget-remove`.
+- **Settings tab** — new **🌐 API** tab in Settings with enable toggle, port field, CORS origins field, apply & restart button, status badge, token show/hide/copy/regenerate, and an inline endpoint reference.
+- **CORS** — configurable per-origin allowlist (default `http://localhost:*`), supports wildcard `*` for open access.
+
+### 📦 SDK / Third-Party Developer Toolkit
+- **`sdk/libmaly-sdk.ts`** — full TypeScript SDK client for Node.js ≥ 22 and modern browsers; optional `ws` npm package for older Node; zero mandatory dependencies.
+- **REST wrappers** — typed methods for every API endpoint with `LibmalyApiError` on HTTP errors.
+- **WebSocket client** — `connect()` / `disconnect()` / `on(event, handler)` / `off()` / `removeAllListeners()`, auto-reconnect with configurable delay, wildcard `"*"` handler for all events.
+- **Examples** — 6 annotated Node.js scripts: status report, library table, fuzzy-launch, overlay notification, live session timer widget, event logger.
+- **HTML dashboard** — zero-install single-file `sdk/examples/dashboard.html` — open in any browser, paste token, connect; shows live CPU/RAM bars, library with ▶ launch buttons, live event log, notification sender.
+- **Developer documentation** — full API reference, WebSocket event catalogue, integration patterns (Discord Rich Presence, achievement tracker, CSV export, Discord webhook, CPU alert widget), error handling guide, and security notes in `sdk/DOCS.md`.
+- **README** — added *Third-Party Integration* section linking to SDK, examples, and documentation.
+
+### 📹 Instant Replay
+- **Circular ring-buffer capture** — a Rust background thread (`libmaly-replay`) captures frames at ~5 FPS while a game is running, scaled to ≤ 640 × 360 px before storage, holding the last 150 frames (≈ 30 s).
+- **GIF export** — always available via pure-Rust `image` crate; `gif` feature added to the existing `image` dependency.
+- **MP4 export** — optional; invokes `ffmpeg` on PATH and falls back to GIF if unavailable.
+- **F9 hotkey** — the existing Windows low-level keyboard hook now also intercepts F9 to immediately save a GIF replay to disk during an active session and emits a `replay-saved` event.
+- **Tauri commands** — `save_instant_replay`, `get_replay_clips`, `delete_replay_clip`, `analyze_replay_highlights`, `save_highlight_clip`.
+- **Auto-highlight detection** — `analyze_replay_highlights` samples every 16th pixel across consecutive frames to compute a mean-absolute-RGB difference score; peaks above a configurable threshold (default ≈ 0.08) are returned as up to 10 `HighlightCandidate` entries with a normalized score and human-readable reason (`"scene change"`, `"rapid motion"`, `"motion spike"`).
+- **Save highlight clip** — `save_highlight_clip` encodes a clip from a specific buffer window defined by a centre timestamp plus configurable before/after margins.
+- **Clip storage** — clips are saved to a `replays/` subfolder alongside per-game screenshots.
+- **Session lifecycle** — capture automatically starts (and clears the previous-session buffer) on `launch_game`, tracks PID changes through child-process switches, and stops cleanly on game exit; the buffer is preserved after stop so a replay can still be saved immediately after the session ends.
+- **Overlay integration** — the Captures tab in the in-game overlay shows a Save Replay button (GIF/MP4), existing clips, an Analyze Highlights button with scored candidate list, and per-candidate Save Clip actions.
+
+### 📡 Social & Connectivity
+- **Peer-to-Peer Activity "Pulse"** — local-network UDP broadcast plus optional encrypted relay so friends can see what you are playing without a central server; sessions are visible library-wide with live elapsed times.
+- **Agnostic Social Backend** — user-configurable relay URL accepting any compliant implementation; official Libmaly Cloud relay and fan-made/self-hosted relays work identically without feature-gating.
+- **Concurrent Social Providers** — multi-provider architecture merges Libmaly-Relay, Discord, and Steam peers into one feed without sources overriding each other; each peer carries full source badges and can be cross-linked manually.
+- **Relay Feature Negotiation** — on connect the app queries `/features` and adapts the UI dynamically (e.g. hides the Chat entry if the relay does not advertise that capability).
+- **Anonymized Global Trending** — optional opt-in aggregates local play-counts into anonymous weekly stats (`"Most played this week globally"`) sent to and fetched from the relay with no personal identity attached.
+- **Portable Social Identity** — ED25519 keypair generated locally; display name, handle, tagline, avatar, and banner stored in `social_identity.json`; full export/import as an encrypted file so identity is portable across installs and relay-independent.
+- **Multi-protocol social linking** — friend records can be linked across providers (Libmaly fingerprint ↔ Discord user ID ↔ Steam ID) with auto-suggested pairings; linked peers appear as a single entry in the unified feed.
+- **Friend activity** — friends list with per-peer relay activity polling; shows currently playing game, session duration, and last-seen timestamp; stored locally in `friends.json`.
+- **Encrypted P2P Chat** — X25519 ECDH key agreement (vault-backed private key) → SHA-256 KDF → ChaCha20-Poly1305 AEAD encryption; ED25519 signature over each message for authentication; relay-mediated inbox (`/pulse/{room}/chat/send` + `.../inbox/{fp}?since=…`); conversations stored per-fingerprint on disk; auto-poll every 30 s; full UI with conversation list, unread badges, send status, and contact management.
+- **Decentralized sharing (Nostr/ActivityPub)** — publishes game reviews, ratings, and screenshots to decentralized social feeds: Nostr (secp256k1 keypair, BIP340 Schnorr signatures, NIP-01 `kind:1` notes, configurable WebSocket relays) and Mastodon/ActivityPub (Bearer token, optional screenshot attachment via `POST /api/v2/media`, configurable visibility); private keys stored in OS keychain; live post preview before publishing; per-relay result reporting.
+
+### 🎮 Epic Games Store (EOS SDK)
+- **Dynamic EOS SDK loading** — loads `EOSSDK-Win64-Shipping.dll` (Windows) / `libEOSSDK-Linux-Shipping.so` (Linux) / `libEOSSDK-Mac-Shipping.dylib` (macOS) at runtime via `libloading`; DLL is never statically linked.
+- **Platform initialization** — `EOS_Initialize` + `EOS_Platform_Create` on first use with user-supplied Product ID, Sandbox ID, Deployment ID, and Client ID; background 100 ms tick thread drives async callbacks.
+- **Epic Account authentication** — supports Persistent Auth (silent re-login from stored token), Account Portal (Epic-hosted browser login), and Exchange Code flows via `EOS_Auth_Login`.
+- **Secure credential storage** — Client Secret stored in the OS keychain via `vault::set_secret`; never written to disk in plaintext.
+- **Ownership check** — `eos_query_ownership` calls `EOS_Ecom_QueryOwnership` to batch-verify up to 400 EGS Catalog Item IDs at once; results reported as `owned: true/false` per ID.
+- **Achievement definitions** — `eos_get_achievements` queries `EOS_Achievements_QueryDefinitions` then iterates `EOS_Achievements_CopyAchievementDefinitionV2ByIndex` to return display names, descriptions, icon URLs, and hidden flags for all achievements.
+- **Settings modal** — dedicated **Epic Games Store** modal (Account / Ownership / Achievements / Settings tabs) accessible from Social Providers; settings saved to `eos_config.json`.
+- **Social Providers card** — new EGS card in the Social Providers modal launches the modal via `libmaly:open-epic-store` custom event.
+- **`.gitignore` hygiene** — `third_party/EOS-SDK/Samples/`, `SDK/Lib/`, `SDK/Tools/`, `ThirdPartyNotices/` excluded; runtime DLLs and C headers kept.
+
 ## 1.9.0 - 2026-04-27
 
 ### ✨ Sidebar & Update Controls

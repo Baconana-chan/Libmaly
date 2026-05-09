@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.10.0 - 2026-05-10
 
 ### 🔌 Plugin System
 - **JS metadata-source plugins** — third-party scripts can now act as full metadata sources by exporting a `fetchMetadata(url, html)` function; Libmaly pre-fetches the page and passes the HTML body to the function, which is evaluated via `boa_engine`, then maps the returned object to `GameMetadata`.

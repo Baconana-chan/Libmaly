@@ -143,6 +143,7 @@ export function isFakkuUrl(url: string) { return /fakku\.net/i.test(url); }
 export function isIGDBUrl(url: string) { return /igdb\.com/i.test(url); }
 export function isRAWGUrl(url: string) { return /rawg\.io/i.test(url); }
 export function isMobyGamesUrl(url: string) { return /mobygames\.com/i.test(url); }
+export function isItchioUrl(url: string) { return /itch\.io/i.test(url); }
 
 export function detectMetadataSourceFromUrl(url: string): string | null {
   if (isF95Url(url)) return "f95";
@@ -154,6 +155,7 @@ export function detectMetadataSourceFromUrl(url: string): string | null {
   if (isIGDBUrl(url)) return "igdb";
   if (isRAWGUrl(url)) return "rawg";
   if (isMobyGamesUrl(url)) return "mobygames";
+  if (isItchioUrl(url)) return "itchio";
   return null;
 }
 
@@ -167,6 +169,7 @@ export function metadataFetchCommand(source: string) {
   if (source === "igdb") return "fetch_igdb_metadata";
   if (source === "rawg") return "fetch_rawg_metadata";
   if (source === "mobygames") return "fetch_mobygames_metadata";
+  if (source === "itchio") return "fetch_itchio_metadata";
   return null;
 }
 
@@ -180,6 +183,7 @@ export function metadataSourceLabel(source?: string) {
   if (source === "igdb") return "IGDB";
   if (source === "rawg") return "RAWG";
   if (source === "mobygames") return "MobyGames";
+  if (source === "itchio") return "itch.io";
   if (source?.startsWith("custom:")) return source.slice("custom:".length).replace(/[-_]+/g, " ").trim() || "Custom Source";
   return "Unknown";
 }

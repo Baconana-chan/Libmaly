@@ -143,7 +143,7 @@ pub fn http() -> Client {
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct GameMetadata {
-    pub source: String, // "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku"
+    pub source: String, // "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku" | "itchio"
     pub source_label: Option<String>,
     pub source_url: String,
     pub title: Option<String>,
@@ -1865,6 +1865,9 @@ fn source_from_url(url: &str) -> Option<(&'static str, &'static str)> {
     if host.contains("fakku.net") {
         return Some(("fakku", "FAKKU"));
     }
+    if host.contains("itch.io") {
+        return Some(("itchio", "itch.io"));
+    }
     None
 }
 
@@ -2068,6 +2071,142 @@ pub async fn fetch_johren_metadata(url: String) -> Result<GameMetadata, String> 
 #[tauri::command]
 pub async fn fetch_fakku_metadata(url: String) -> Result<GameMetadata, String> {
     fetch_store_metadata(url).await
+}
+
+// ── itch.io ────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn fetch_itchio_metadata(url: String) -> Result<GameMetadata, String> {
+    let normalized_url = canonicalize_store_url(&url);
+    let result = async {
+        let resp = reqwest::Client::new()
+            .get(&normalized_url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .send()
+            .await
+            .map_err(|e| format!("itch.io request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("itch.io HTTP {}", resp.status()));
+        }
+
+        let body = resp.text().await.map_err(|e| e.to_string())?;
+        let doc = Html::parse_document(&body);
+
+        // ── Title ────────────────────────────────────────────────────────
+        let title = extract_meta(&doc, "og:title")
+            .or_else(|| text_first(&doc, &["h1.game_title", "h1"]));
+
+        // ── Cover ────────────────────────────────────────────────────────
+        let cover_url = extract_meta(&doc, "og:image")
+            .map(|x| absolutize_url(&normalized_url, &x));
+
+        // ── Screenshots ──────────────────────────────────────────────────
+        let mut screenshots = Vec::<String>::new();
+        let mut seen = HashSet::<String>::new();
+        for selector in [
+            ".screenshot_list img",
+            ".game_media img",
+            ".screenshot img",
+            ".game_screenshots img",
+        ] {
+            let s = sel(selector);
+            for img in doc.select(&s) {
+                let raw = img
+                    .value()
+                    .attr("data-src")
+                    .or_else(|| img.value().attr("src"))
+                    .unwrap_or("")
+                    .trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                let abs = absolutize_url(&normalized_url, raw);
+                if seen.insert(abs.clone()) {
+                    screenshots.push(abs);
+                    if screenshots.len() >= 8 {
+                        break;
+                    }
+                }
+            }
+            if screenshots.len() >= 8 {
+                break;
+            }
+        }
+        if let Some(cover) = &cover_url {
+            screenshots.retain(|s| s != cover);
+        }
+
+        // ── Overview ───────────────────────────────────────────────────
+        let overview = extract_meta(&doc, "og:description")
+            .or_else(|| text_first(&doc, &[".game_description", ".formatted_description", ".game_text"]));
+
+        // ── Developer ────────────────────────────────────────────────────
+        let developer = text_first(&doc, &[".game_author a", ".developer_link", ".user_name", "[data-actor_name]"]);
+
+        // ── Tags ─────────────────────────────────────────────────────────
+        let mut tags = Vec::<String>::new();
+        let tag_sel = sel(".game_tags a, .tags a");
+        for el in doc.select(&tag_sel) {
+            let txt = el.text().collect::<String>().trim().to_string();
+            if txt.len() < 2 {
+                continue;
+            }
+            if !tags.iter().any(|x| x.eq_ignore_ascii_case(&txt)) {
+                tags.push(txt);
+            }
+            if tags.len() >= 24 {
+                break;
+            }
+        }
+
+        // ── Price ────────────────────────────────────────────────────────
+        let price = text_first(&doc, &[".buy_row .price", ".price_tag", ".game_price", ".buy_price"]);
+
+        // ── Release date ─────────────────────────────────────────────────
+        let release_date = text_first(&doc, &[".published_at", ".release_date", "time[datetime]"]);
+
+        // ── Engine (sometimes present in details) ────────────────────────
+        let engine = text_first(&doc, &[".game_engine", ".engine_tag"]);
+
+        Ok(GameMetadata {
+            source: "itchio".into(),
+            source_label: Some("itch.io".into()),
+            source_url: normalized_url.clone(),
+            title,
+            version: None,
+            developer,
+            publisher: None,
+            genres: Vec::new(),
+            overview,
+            overview_html: None,
+            cover_url,
+            screenshots,
+            tags,
+            relations: Vec::new(),
+            engine,
+            os: None,
+            language: None,
+            censored: None,
+            release_date,
+            last_updated: None,
+            rating: None,
+            price,
+            circle: None,
+            series: None,
+            author: None,
+            illustration: None,
+            voice_actor: None,
+            music: None,
+            age_rating: None,
+            product_format: None,
+            file_format: None,
+            file_size: None,
+        })
+    }
+    .await;
+    finalize_scrape_result("itchio", "itch.io", &normalized_url, result)
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -2726,6 +2865,22 @@ pub async fn search_suggest_links(
             }
             if push_result(item) {
                 fakku_count += 1;
+            }
+        }
+    }
+
+    // itch.io suggestions via search engine site search.
+    let mut itchio_count = 0usize;
+    for q in &queries {
+        if itchio_count >= 3 {
+            break;
+        }
+        for item in fetch_ddg_site_suggestions(q, "itch.io", "itch.io", 3, &search_engine).await {
+            if itchio_count >= 3 {
+                break;
+            }
+            if push_result(item) {
+                itchio_count += 1;
             }
         }
     }

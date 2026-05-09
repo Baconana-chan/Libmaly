@@ -4711,7 +4711,7 @@ function EmulatorProfilesTab({
 
 // ─── Metadata Rules Tab ───────────────────────────────────────────────────────
 
-const ALL_SOURCES = ["f95", "dlsite", "vndb", "mangagamer", "johren", "fakku", "igdb", "rawg", "mobygames"];
+const ALL_SOURCES = ["f95", "dlsite", "vndb", "mangagamer", "johren", "fakku", "itchio", "igdb", "rawg", "mobygames"];
 const METADATA_CLEANUP_FIELDS: MetadataCleanupField[] = [
   "*", "title", "developer", "publisher", "overview", "engine", "version", "release_date", "circle", "tags", "genres",
 ];

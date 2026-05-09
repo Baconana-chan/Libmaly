@@ -32,7 +32,7 @@ export function LinkPageModal({
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [selectedSource, setSelectedSource] = useState<"all" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku">(appSettings.preferredMetadataSource || "all");
+  const [selectedSource, setSelectedSource] = useState<"all" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku" | "itchio">(appSettings.preferredMetadataSource || "all");
   const [selectedSearchEngine, setSelectedSearchEngine] = useState<"duckduckgo" | "google" | "bing" | "brave">(appSettings.preferredSearchEngine || "duckduckgo");
 
   const src = detectMetadataSourceFromUrl(url);
@@ -97,6 +97,7 @@ export function LinkPageModal({
             <option value="mangagamer">MangaGamer</option>
             <option value="johren">Johren</option>
             <option value="fakku">FAKKU</option>
+            <option value="itchio">itch.io</option>
           </select>
           <span className="text-xs ml-auto" style={{ color: "var(--color-text-muted)" }}>Search engine:</span>
           <select
@@ -112,7 +113,7 @@ export function LinkPageModal({
           </select>
         </div>
         <div className="flex gap-2 mb-4">
-          {(["f95", "dlsite", "vndb", "mangagamer", "johren", "fakku"] as const).map((s) => (
+          {(["f95", "dlsite", "vndb", "mangagamer", "johren", "fakku", "itchio"] as const).map((s) => (
             <span key={s} className="px-2 py-0.5 rounded text-xs font-semibold"
               style={{
                 background: src === s
@@ -126,7 +127,9 @@ export function LinkPageModal({
                           ? "#7c5cff"
                           : s === "johren"
                             ? "#5a6bff"
-                            : "#da4c96")
+                            : s === "itchio"
+                              ? "#fa5c5c"
+                              : "#da4c96")
                   : "var(--color-border-soft)",
                 color: src === s ? (s === "f95" ? "var(--color-black-strong)" : "var(--color-white)") : "var(--color-text-muted)",
               }}>

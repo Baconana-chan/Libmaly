@@ -225,6 +225,7 @@ export const METADATA_SOURCE_PRIORITY = [
   "mangagamer",
   "johren",
   "fakku",
+  "itchio",
   "igdb",
   "rawg",
   "mobygames",
@@ -821,7 +822,7 @@ export interface AppSettings {
   themeBackgroundImageBlurPx?: number;
   themeMarketplaceRelayUrl?: string;
   language?: string;
-  preferredMetadataSource?: "all" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku";
+  preferredMetadataSource?: "all" | "f95" | "dlsite" | "vndb" | "mangagamer" | "johren" | "fakku" | "itchio";
   preferredSearchEngine?: "duckduckgo" | "google" | "bing" | "brave";
   gameDetailLayoutPreset: GameDetailLayoutPreset;
   /** User-defined custom map providers (appended after built-ins) */

@@ -293,7 +293,7 @@ export function mergeMetadataSnapshots(
     fetchedAt,
     title: pick("title", ["f95", "dlsite", "vndb"]),
     version: pick("version", ["f95", "dlsite", "mangagamer", "johren", "fakku", "vndb"]),
-    developer: pick("developer", ["dlsite", "f95", "mangagamer", "johren", "fakku", "vndb"]),
+    developer: pick("developer", ["dlsite", "f95", "mangagamer", "johren", "fakku", "itchio", "vndb"]),
     publisher: pick("publisher", ["dlsite", "vndb", "igdb", "rawg", "mobygames"]),
     genres: arr("genres", ["vndb", "igdb", "rawg", "mobygames"]),
     overview: pick("overview", ["dlsite", "f95", "fakku", "mangagamer", "johren", "vndb"]),

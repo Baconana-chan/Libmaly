@@ -2,37 +2,61 @@
 
 Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the desktop roadmap stays focused on the current Tauri app.
 
+- [ ] **Prepare 1.10.0 release notes** — collapse the current `Unreleased` changelog into a dated 1.10.0 entry, verify README feature claims, and update app/package versions together.
 - [ ] **Release on itch.io** — create landing page, configure game categories, and set up Butler for automated build pushes.
 - [x] **Release on Epic Games Store** — fulfill self-service publishing requirements and integrate basic EGS SDK features.
 - [ ] **Release on WinGet / Scoop** — publish portable/installer manifests so Windows users can install and update Libmaly from package managers.
+- [ ] **Release checklist automation** — script version bump, changelog/public changelog sync, Tauri bundle validation, checksums, and draft GitHub release creation.
 
 ---
 
 ## 🎨 UI / UX
 
+- [ ] **Command palette actions** — expand Ctrl+K beyond search so users can run sync, import, screenshot, backup, metadata refresh, plugin, API, and overlay actions from one place.
+- [ ] **Per-profile dashboard layouts** — allow Home / Stats / Feed widgets to be reordered, hidden, and saved separately per profile.
+- [ ] **Accessibility pass** — keyboard focus audit, screen-reader labels, reduced-motion mode, and contrast checks across built-in and imported themes.
+- [ ] **Theme safety validator** — warn when imported/community themes produce unreadable contrast, missing variables, or broken spacing.
+- [ ] **Settings search** — fuzzy-search settings, integrations, vault entries, plugin panels, and maintenance actions from one compact field.
 
 ---
 
 ## 📊 Stats & Tracking
 
+- [ ] **Goal-based play tracking** — weekly/monthly playtime or completion goals per collection, tag, developer, source, or individual game.
+- [ ] **Backlog planning view** — estimate remaining backlog by status, rating, ownership source, playtime, and completion goals.
+- [ ] **Cross-profile stats comparison** — compare playtime, completion, ratings, and source breakdowns across profiles without merging their libraries.
+- [ ] **Importable external activity** — optional import of play sessions from Steam/GOG/Playnite exports as historical sessions rather than only aggregate playtime.
 
 
 ---
 
 ## 📸 Screenshots
 
+- [ ] **OCR for screenshots** — extract visible text from captures so dialogue, UI errors, version labels, and notes can be searched later.
+- [ ] **Smart screenshot albums** — auto-group captures by game, session, tag, replay clip, detected scene similarity, or update/version boundary.
+- [ ] **Cloud screenshot sync rules** — choose which captures/replays are backed up, compressed, skipped, or kept local-only.
+- [ ] **Replay trimming UI** — simple timeline handles for cutting instant replay clips before export.
 
 
 ---
 
 ## 🌐 Sources & Extensibility
 
+- [ ] **Plugin permissions model** — declare network, filesystem, iframe, local API, and overlay permissions in plugin manifests before install.
+- [ ] **Plugin update channel** — check installed plugins for updates, show plugin changelogs, and allow rollback to previous versions.
+- [ ] **Plugin sandbox diagnostics** — surface JS/WASM/plugin iframe errors in the existing diagnostics/log viewer with per-plugin filtering.
+- [ ] **Plugin developer templates** — ship minimal metadata-source and UI-panel examples that match the current manifest schema and SDK.
+- [ ] **Metadata provider test harness** — run a custom source/plugin against saved HTML fixtures and show parsed fields before enabling it.
 
 
 ---
 
 ## 🕹️ Universal In-Game Overlay
 
+- [ ] **Drag-and-drop overlay workspace** — make overlay widgets movable/resizable with per-game and per-profile layout persistence.
+- [ ] **Overlay widget marketplace bridge** — install trusted overlay widgets from plugin packages and expose their declared permissions.
+- [ ] **Overlay safe-mode fallback** — disable third-party widgets and browser panels when the overlay crashes or a game blocks injection/hotkeys.
+- [ ] **Overlay performance budget** — show per-widget CPU/RAM/frame cost and throttle noisy widgets during active gameplay.
 
 
 ---
@@ -66,26 +90,49 @@ Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the
 
 ## 🛒 Launcher & Store Integrations
 
+- [ ] **GOG/Epic/Steam install-state reconciliation** — periodically detect when external launchers install/uninstall games and upgrade or mark placeholders automatically.
+- [ ] **Per-provider import schedules** — background refresh rules for Steam, Epic, itch.io, emulator folders, custom stores, and protocol-based launchers.
+- [ ] **Store entitlement diagnostics** — explain failed imports/ownership checks with provider-specific auth, rate-limit, permission, and SDK/runtime hints.
+- [ ] **GOG Galaxy cloud-library import** — fetch owned/uninstalled GOG titles through the user account flow, matching the Steam/Epic placeholder model.
+- [ ] **Emulator metadata presets** — per-system artwork, core, save-path, and launch-argument defaults for imported ROM libraries.
 
 
 ---
 
 ## 🛠️ Technical
 
+- [ ] **API permission scopes** — split local API bearer access into read-only, launch-control, overlay, sync, plugin, and admin scopes.
+- [ ] **Automated README / TODO / changelog consistency check** — detect roadmap items marked completed in changelog but still listed as planned, and README claims that drift from implementation status.
+- [ ] **State schema documentation generator** — export current profile/state/plugin/API schemas for SDK authors and plugin developers.
+- [ ] **End-to-end smoke test harness** — scripted launch/import/sync/overlay/API checks for release candidates across Windows/Linux/macOS.
+- [ ] **Frontend bundle analysis gate** — track large modules after SDK/plugin/API growth and fail release builds only when size regressions exceed a configured threshold.
 
 
 
 ### Internal Interfaces / Types (planned)
 
-
+- [ ] **Scoped API token model** — token id, profile scope, permission list, expiry, last-used timestamp, and revocation status.
+- [ ] **Plugin permission manifest schema** — normalized capability list for network, filesystem, iframe, overlay, API, and secret access.
+- [ ] **Overlay widget layout schema** — per-profile/per-game widget positions, sizes, z-order, permissions, and safe-mode state.
+- [ ] **Release manifest schema** — version, changelog URL, platform artifacts, checksums, minimum OS/runtime requirements, and migration notes.
 
 ### Reliability Test Scenarios (planned)
 Automated dry-run checks now live in Settings -> Consistency Tests. Run them on each target OS before shipping a release candidate.
+
+- [ ] **Plugin install / rollback / crash isolation** — verify broken plugins cannot corrupt metadata state, block app startup, or strand files after uninstall.
+- [ ] **Local API auth regression** — verify invalid/expired/scoped tokens cannot launch games, inject overlay widgets, or read private notes beyond their scope.
+- [ ] **Overlay recovery** — verify overlay/browser/widget crashes recover without killing the active game or leaving input hooks stuck.
+- [ ] **Release upgrade rehearsal** — install previous stable build, populate sample data, upgrade to release candidate, and verify migrations, changelog modal, snapshots, and settings.
 
 ---
 
 ## 📡 Social & Connectivity (Local-first)
 
+- [ ] **Presence privacy presets** — per-game/profile rules for what friends, relays, Discord, Steam, or decentralized feeds can see.
+- [ ] **Friend invite/export flow** — QR/file/text invite for exchanging relay identity keys and provider links safely.
+- [ ] **Shared notes or guide snippets** — opt-in encrypted sharing of per-game notes/checklists with selected friends.
+- [ ] **Relay moderation and blocklist tools** — local block/mute controls, relay trust labels, and import/export of blocked identities.
+- [ ] **Social data portability audit** — verify friends, keys, relays, chats, and public posts can be exported/imported without binding users to one relay.
 
 
 

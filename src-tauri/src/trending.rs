@@ -43,7 +43,7 @@ const MAX_CONTRIBUTION_ENTRIES: usize = 50;
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /// Persisted trending configuration.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TrendingConfig {
     /// Whether the user has opted in. Default: false.
@@ -54,15 +54,6 @@ pub struct TrendingConfig {
     /// Used to enforce the 24-h rate limit.
     #[serde(default)]
     pub last_contributed_at_secs: Option<u64>,
-}
-
-impl Default for TrendingConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            last_contributed_at_secs: None,
-        }
-    }
 }
 
 // ── Wire types ────────────────────────────────────────────────────────────────
@@ -149,7 +140,10 @@ fn random_uuid() -> String {
     std::thread::current().id().hash(&mut h);
     let a = h.finish();
 
-    std::time::Instant::now().elapsed().subsec_nanos().hash(&mut h);
+    std::time::Instant::now()
+        .elapsed()
+        .subsec_nanos()
+        .hash(&mut h);
     let b = h.finish();
 
     format!(
@@ -194,11 +188,7 @@ async fn http_get_trending(relay_url: &str, limit: u32) -> Result<TrendingResult
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("Relay returned HTTP {}", resp.status()));
     }

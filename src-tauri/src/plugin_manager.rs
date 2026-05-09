@@ -177,16 +177,15 @@ fn validate_manifest(manifest: &PluginManifest) -> Result<(), String> {
     }
     // Security: reject path traversal in entrypoint
     if manifest.entrypoint.contains("..") || manifest.entrypoint.starts_with('/') {
-        return Err("Plugin entrypoint must be a plain filename without path separators".to_string());
-    }
-    if manifest.kind == PluginKind::MetadataSource && manifest.url_patterns.is_empty() {
         return Err(
-            "A metadata-source plugin must declare at least one urlPattern".to_string(),
+            "Plugin entrypoint must be a plain filename without path separators".to_string(),
         );
     }
+    if manifest.kind == PluginKind::MetadataSource && manifest.url_patterns.is_empty() {
+        return Err("A metadata-source plugin must declare at least one urlPattern".to_string());
+    }
     for pattern in &manifest.url_patterns {
-        Regex::new(pattern)
-            .map_err(|e| format!("Invalid urlPattern '{pattern}': {e}"))?;
+        Regex::new(pattern).map_err(|e| format!("Invalid urlPattern '{pattern}': {e}"))?;
     }
     Ok(())
 }
@@ -281,7 +280,10 @@ pub async fn fetch_metadata_via_plugin(
         return Err(format!("Plugin '{}' is disabled", manifest.id));
     }
     if manifest.kind != PluginKind::MetadataSource {
-        return Err(format!("Plugin '{}' is not a metadata-source plugin", manifest.id));
+        return Err(format!(
+            "Plugin '{}' is not a metadata-source plugin",
+            manifest.id
+        ));
     }
 
     // Pre-fetch the URL in the async context before handing off to the sync JS engine.
@@ -331,8 +333,7 @@ pub fn plugin_list() -> Vec<PluginSummary> {
 /// extracted alongside the entrypoint.
 #[tauri::command]
 pub fn plugin_install_from_zip(zip_path: String) -> Result<PluginSummary, String> {
-    let bytes = std::fs::read(&zip_path)
-        .map_err(|e| format!("Cannot read zip file: {e}"))?;
+    let bytes = std::fs::read(&zip_path).map_err(|e| format!("Cannot read zip file: {e}"))?;
     let cursor = std::io::Cursor::new(bytes);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid zip archive: {e}"))?;
@@ -352,9 +353,12 @@ pub fn plugin_install_from_zip(zip_path: String) -> Result<PluginSummary, String
     validate_manifest(&manifest)?;
 
     // Confirm the declared entrypoint exists in the zip.
-    archive
-        .by_name(&manifest.entrypoint)
-        .map_err(|_| format!("Plugin zip is missing declared entrypoint '{}'", manifest.entrypoint))?;
+    archive.by_name(&manifest.entrypoint).map_err(|_| {
+        format!(
+            "Plugin zip is missing declared entrypoint '{}'",
+            manifest.entrypoint
+        )
+    })?;
 
     let safe_id = sanitize_plugin_id(&manifest.id);
     if safe_id.is_empty() {
@@ -384,7 +388,9 @@ pub fn plugin_install_from_zip(zip_path: String) -> Result<PluginSummary, String
 
     // Register in the global plugin registry.
     let mut registry = load_registry();
-    registry.plugins.retain(|p| sanitize_plugin_id(&p.id) != safe_id);
+    registry
+        .plugins
+        .retain(|p| sanitize_plugin_id(&p.id) != safe_id);
     registry.plugins.push(manifest.clone());
     save_registry(&registry)?;
 
@@ -400,8 +406,8 @@ pub fn plugin_install_inline(
     manifest_json: String,
     script: String,
 ) -> Result<PluginSummary, String> {
-    let mut manifest: PluginManifest = serde_json::from_str(&manifest_json)
-        .map_err(|e| format!("Invalid manifest JSON: {e}"))?;
+    let mut manifest: PluginManifest =
+        serde_json::from_str(&manifest_json).map_err(|e| format!("Invalid manifest JSON: {e}"))?;
 
     manifest.kind = PluginKind::MetadataSource;
     if manifest.entrypoint.trim().is_empty() {
@@ -427,7 +433,9 @@ pub fn plugin_install_inline(
     .map_err(|e| e.to_string())?;
 
     let mut registry = load_registry();
-    registry.plugins.retain(|p| sanitize_plugin_id(&p.id) != safe_id);
+    registry
+        .plugins
+        .retain(|p| sanitize_plugin_id(&p.id) != safe_id);
     registry.plugins.push(manifest.clone());
     save_registry(&registry)?;
 
@@ -457,7 +465,9 @@ pub fn plugin_delete(id: String) -> Result<(), String> {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
     let mut registry = load_registry();
-    registry.plugins.retain(|p| sanitize_plugin_id(&p.id) != safe_id);
+    registry
+        .plugins
+        .retain(|p| sanitize_plugin_id(&p.id) != safe_id);
     save_registry(&registry)
 }
 
@@ -510,10 +520,7 @@ pub fn plugin_match_url(url: String) -> Option<PluginSummary> {
 
 /// Fetch metadata for a URL using a specific plugin.
 #[tauri::command]
-pub async fn plugin_fetch_metadata(
-    plugin_id: String,
-    url: String,
-) -> Result<GameMetadata, String> {
+pub async fn plugin_fetch_metadata(plugin_id: String, url: String) -> Result<GameMetadata, String> {
     let safe_id = sanitize_plugin_id(&plugin_id);
     let registry = load_registry();
     let manifest = registry

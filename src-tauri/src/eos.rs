@@ -31,31 +31,28 @@ const EOS_DLL: &str = "libEOSSDK-Linux-Shipping.so";
 const EOS_DLL: &str = "libEOSSDK-Mac-Shipping.dylib";
 
 // ── EOS opaque handle types (all are pointers to opaque C structs) ────────────
-type EosHPlatform       = *mut c_void;
-type EosHAuth           = *mut c_void;
-type EosHEcom           = *mut c_void;
-type EosHAchievements   = *mut c_void;
-type EosEpicAccountId   = *mut c_void;   // EOS_EpicAccountId = struct EOS_EpicAccountIdDetails*
-type EosEResult         = i32;
-type EosBool            = i32;
+type EosHPlatform = *mut c_void;
+type EosHAuth = *mut c_void;
+type EosHEcom = *mut c_void;
+type EosHAchievements = *mut c_void;
+type EosEpicAccountId = *mut c_void; // EOS_EpicAccountId = struct EOS_EpicAccountIdDetails*
+type EosEResult = i32;
+type EosBool = i32;
 
 const EOS_SUCCESS: EosEResult = 0;
 const EOS_ALREADY_CONFIGURED: EosEResult = 14;
 const EOS_EPICACCOUNTID_MAX_LENGTH: usize = 32;
 
 // EOS_ELoginCredentialType
-const EOS_LCT_EXCHANGE_CODE:   i32 = 1;
+const EOS_LCT_EXCHANGE_CODE: i32 = 1;
 const EOS_LCT_PERSISTENT_AUTH: i32 = 2;
-const EOS_LCT_ACCOUNT_PORTAL:  i32 = 6;
+const EOS_LCT_ACCOUNT_PORTAL: i32 = 6;
 
 // EOS_ELoginStatus
-const EOS_LS_NOT_LOGGED_IN:      i32 = 0;
-const EOS_LS_USING_LOCAL_PROFILE: i32 = 1;
-const EOS_LS_LOGGED_IN:          i32 = 2;
+const EOS_LS_LOGGED_IN: i32 = 2;
 
 // EOS_EOwnershipStatus
-const EOS_OS_NOT_OWNED: i32 = 0;
-const EOS_OS_OWNED:     i32 = 1;
+const EOS_OS_OWNED: i32 = 1;
 
 // EOS_PF_DISABLE_OVERLAY | EOS_PF_DISABLE_SOCIAL_OVERLAY
 const EOS_PF_DISABLE_OVERLAY: u64 = 0x2;
@@ -65,11 +62,11 @@ const EOS_PF_DISABLE_SOCIAL_OVERLAY: u64 = 0x4;
 const EOS_SCOPE_FLAGS: u32 = 0x1 | 0x2 | 0x4;
 
 // API version constants (from EOS SDK headers)
-const EOS_INITIALIZE_API_LATEST:          i32 = 5;
-const EOS_PLATFORM_OPTIONS_API_LATEST:    i32 = 15;
-const EOS_AUTH_CREDENTIALS_API_LATEST:    i32 = 4;
-const EOS_AUTH_LOGIN_API_LATEST:          i32 = 3;
-const EOS_AUTH_LOGOUT_API_LATEST:         i32 = 1;
+const EOS_INITIALIZE_API_LATEST: i32 = 5;
+const EOS_PLATFORM_OPTIONS_API_LATEST: i32 = 15;
+const EOS_AUTH_CREDENTIALS_API_LATEST: i32 = 4;
+const EOS_AUTH_LOGIN_API_LATEST: i32 = 3;
+const EOS_AUTH_LOGOUT_API_LATEST: i32 = 1;
 const EOS_ECOM_QUERYOWNERSHIP_API_LATEST: i32 = 2;
 const EOS_ACHIEVEMENTS_QUERYDEFINITIONS_API_LATEST: i32 = 3;
 const EOS_ACHIEVEMENTS_GETDEFINITIONCOUNT_API_LATEST: i32 = 1;
@@ -82,19 +79,19 @@ const EOS_ACHIEVEMENTS_COPYDEFINITIONV2_API_LATEST: i32 = 2;
 struct EosInitializeOptions {
     api_version: i32,
     // 4 bytes padding (auto by repr(C))
-    alloc_fn:   *const c_void,
+    alloc_fn: *const c_void,
     realloc_fn: *const c_void,
-    free_fn:    *const c_void,
-    product_name:    *const c_char,
+    free_fn: *const c_void,
+    product_name: *const c_char,
     product_version: *const c_char,
-    reserved:        *mut c_void,
-    system_init:     *mut c_void,
+    reserved: *mut c_void,
+    system_init: *mut c_void,
     thread_affinity: *mut c_void,
 }
 
 #[repr(C)]
 struct EosPlatformClientCredentials {
-    client_id:     *const c_char,
+    client_id: *const c_char,
     client_secret: *const c_char,
 }
 
@@ -102,115 +99,115 @@ struct EosPlatformClientCredentials {
 struct EosPlatformOptions {
     api_version: i32,
     // 4 bytes padding
-    reserved:    *const c_void,
-    product_id:  *const c_char,
-    sandbox_id:  *const c_char,
+    reserved: *const c_void,
+    product_id: *const c_char,
+    sandbox_id: *const c_char,
     client_credentials: EosPlatformClientCredentials,
-    is_server:   EosBool,
+    is_server: EosBool,
     // 4 bytes padding
-    encryption_key:        *const c_char,
+    encryption_key: *const c_char,
     override_country_code: *const c_char,
-    override_locale_code:  *const c_char,
-    deployment_id:         *const c_char,
-    flags:                 u64,
-    cache_directory:       *const c_char,
-    tick_budget_ms:        u32,
+    override_locale_code: *const c_char,
+    deployment_id: *const c_char,
+    flags: u64,
+    cache_directory: *const c_char,
+    tick_budget_ms: u32,
     // 4 bytes padding
-    rtc_options:                   *const c_void,
-    integrated_platform_options:   *const c_void,
-    system_specific:               *const c_void,
-    task_network_timeout:          *const c_void,
+    rtc_options: *const c_void,
+    integrated_platform_options: *const c_void,
+    system_specific: *const c_void,
+    task_network_timeout: *const c_void,
 }
 
 #[repr(C)]
 struct EosAuthCredentials {
-    api_version:       i32,
+    api_version: i32,
     // 4 bytes padding
-    id:                *const c_char,
-    token:             *const c_char,
-    credential_type:   i32,
+    id: *const c_char,
+    token: *const c_char,
+    credential_type: i32,
     // 4 bytes padding
-    system_auth_opts:  *mut c_void,
-    external_type:     i32,
+    system_auth_opts: *mut c_void,
+    external_type: i32,
     // 4 bytes padding (struct size = 48)
 }
 
 #[repr(C)]
 struct EosAuthLoginOptions {
-    api_version:  i32,
+    api_version: i32,
     // 4 bytes padding
-    credentials:  *const EosAuthCredentials,
-    scope_flags:  u32,
+    credentials: *const EosAuthCredentials,
+    scope_flags: u32,
     // 4 bytes padding
-    login_flags:  u64,
+    login_flags: u64,
 }
 
 #[repr(C)]
 struct EosAuthLoginCallbackInfo {
-    result_code:          EosEResult,
+    result_code: EosEResult,
     // 4 bytes padding
-    client_data:          *mut c_void,
-    local_user_id:        EosEpicAccountId,
-    pin_grant_info:       *const c_void,
-    continuance_token:    *const c_void,
-    acct_feature_info:    *const c_void,  // DEPRECATED field
-    selected_account_id:  EosEpicAccountId,
+    client_data: *mut c_void,
+    local_user_id: EosEpicAccountId,
+    pin_grant_info: *const c_void,
+    continuance_token: *const c_void,
+    acct_feature_info: *const c_void, // DEPRECATED field
+    selected_account_id: EosEpicAccountId,
 }
 
 #[repr(C)]
 struct EosAuthLogoutOptions {
-    api_version:   i32,
+    api_version: i32,
     // 4 bytes padding
     local_user_id: EosEpicAccountId,
 }
 
 #[repr(C)]
 struct EosAuthLogoutCallbackInfo {
-    result_code:   EosEResult,
+    result_code: EosEResult,
     // 4 bytes padding
-    client_data:   *mut c_void,
+    client_data: *mut c_void,
     local_user_id: EosEpicAccountId,
 }
 
 #[repr(C)]
 struct EosEcomQueryOwnershipOptions {
-    api_version:            i32,
+    api_version: i32,
     // 4 bytes padding
-    local_user_id:          EosEpicAccountId,
-    catalog_item_ids:       *const *const c_char,
+    local_user_id: EosEpicAccountId,
+    catalog_item_ids: *const *const c_char,
     catalog_item_ids_count: u32,
     // 4 bytes padding
-    catalog_namespace:      *const c_char,
+    catalog_namespace: *const c_char,
 }
 
 #[repr(C)]
 struct EosEcomItemOwnership {
-    api_version:       i32,
+    api_version: i32,
     // 4 bytes padding
-    id:                *const c_char,
-    ownership_status:  i32,
+    id: *const c_char,
+    ownership_status: i32,
     // 4 bytes padding (struct size = 24)
 }
 
 #[repr(C)]
 struct EosEcomQueryOwnershipCallbackInfo {
-    result_code:          EosEResult,
+    result_code: EosEResult,
     // 4 bytes padding
-    client_data:          *mut c_void,
-    local_user_id:        EosEpicAccountId,
-    item_ownership:       *const EosEcomItemOwnership,
+    client_data: *mut c_void,
+    local_user_id: EosEpicAccountId,
+    item_ownership: *const EosEcomItemOwnership,
     item_ownership_count: u32,
     // 4 bytes padding
 }
 
 #[repr(C)]
 struct EosAchievementsQueryDefinitionsOptions {
-    api_version:  i32,
+    api_version: i32,
     // 4 bytes padding
-    local_user_id: *mut c_void,    // EOS_ProductUserId – null = use defaults
-    epic_user_id:  *mut c_void,    // EOS_EpicAccountId – deprecated, null
-    hidden_ids:    *const *const c_char,
-    hidden_count:  u32,
+    local_user_id: *mut c_void, // EOS_ProductUserId – null = use defaults
+    epic_user_id: *mut c_void,  // EOS_EpicAccountId – deprecated, null
+    hidden_ids: *const *const c_char,
+    hidden_count: u32,
     // 4 bytes padding
 }
 
@@ -228,45 +225,45 @@ struct EosAchievementsGetDefinitionCountOptions {
 
 #[repr(C)]
 struct EosAchievementsCopyDefinitionV2ByIndexOptions {
-    api_version:      i32,
+    api_version: i32,
     achievement_index: u32,
 }
 
 #[repr(C)]
 struct EosAchievementsStatThresholds {
     api_version: i32,
-    name:        *const c_char,
-    threshold:   i32,
+    name: *const c_char,
+    threshold: i32,
 }
 
 #[repr(C)]
 struct EosAchievementsDefinitionV2 {
-    api_version:         i32,
+    api_version: i32,
     // 4 bytes padding
-    achievement_id:      *const c_char,
-    unlocked_name:       *const c_char,
-    unlocked_desc:       *const c_char,
-    locked_name:         *const c_char,
-    locked_desc:         *const c_char,
-    flavor_text:         *const c_char,
-    unlocked_icon_url:   *const c_char,
-    locked_icon_url:     *const c_char,
-    is_hidden:           EosBool,
+    achievement_id: *const c_char,
+    unlocked_name: *const c_char,
+    unlocked_desc: *const c_char,
+    locked_name: *const c_char,
+    locked_desc: *const c_char,
+    flavor_text: *const c_char,
+    unlocked_icon_url: *const c_char,
+    locked_icon_url: *const c_char,
+    is_hidden: EosBool,
     stat_thresholds_count: u32,
-    stat_thresholds:     *const EosAchievementsStatThresholds,
+    stat_thresholds: *const EosAchievementsStatThresholds,
 }
 
 // ── Raw function pointer types ────────────────────────────────────────────────
 
-type FnEosInitialize        = unsafe extern "C" fn(*const EosInitializeOptions) -> EosEResult;
-type FnEosShutdown          = unsafe extern "C" fn() -> EosEResult;
-type FnEosPlatformCreate    = unsafe extern "C" fn(*const EosPlatformOptions) -> EosHPlatform;
-type FnEosPlatformTick      = unsafe extern "C" fn(EosHPlatform);
-type FnEosPlatformRelease   = unsafe extern "C" fn(EosHPlatform);
-type FnEosGetVersion        = unsafe extern "C" fn() -> *const c_char;
+type FnEosInitialize = unsafe extern "C" fn(*const EosInitializeOptions) -> EosEResult;
+type FnEosShutdown = unsafe extern "C" fn() -> EosEResult;
+type FnEosPlatformCreate = unsafe extern "C" fn(*const EosPlatformOptions) -> EosHPlatform;
+type FnEosPlatformTick = unsafe extern "C" fn(EosHPlatform);
+type FnEosPlatformRelease = unsafe extern "C" fn(EosHPlatform);
+type FnEosGetVersion = unsafe extern "C" fn() -> *const c_char;
 
-type FnEosPlatformGetAuth         = unsafe extern "C" fn(EosHPlatform) -> EosHAuth;
-type FnEosPlatformGetEcom         = unsafe extern "C" fn(EosHPlatform) -> EosHEcom;
+type FnEosPlatformGetAuth = unsafe extern "C" fn(EosHPlatform) -> EosHAuth;
+type FnEosPlatformGetEcom = unsafe extern "C" fn(EosHPlatform) -> EosHEcom;
 type FnEosPlatformGetAchievements = unsafe extern "C" fn(EosHPlatform) -> EosHAchievements;
 
 type FnEosAuthLogin = unsafe extern "C" fn(
@@ -281,12 +278,13 @@ type FnEosAuthLogout = unsafe extern "C" fn(
     *mut c_void,
     unsafe extern "C" fn(*const EosAuthLogoutCallbackInfo),
 );
-type FnEosAuthGetLoginStatus            = unsafe extern "C" fn(EosHAuth, EosEpicAccountId) -> i32;
-type FnEosAuthGetLoggedInAccountsCount  = unsafe extern "C" fn(EosHAuth) -> i32;
+type FnEosAuthGetLoginStatus = unsafe extern "C" fn(EosHAuth, EosEpicAccountId) -> i32;
+type FnEosAuthGetLoggedInAccountsCount = unsafe extern "C" fn(EosHAuth) -> i32;
 type FnEosAuthGetLoggedInAccountByIndex = unsafe extern "C" fn(EosHAuth, i32) -> EosEpicAccountId;
 
-type FnEosEpicAccountIdToString = unsafe extern "C" fn(EosEpicAccountId, *mut c_char, *mut i32) -> EosEResult;
-type FnEosEpicAccountIdIsValid  = unsafe extern "C" fn(EosEpicAccountId) -> EosBool;
+type FnEosEpicAccountIdToString =
+    unsafe extern "C" fn(EosEpicAccountId, *mut c_char, *mut i32) -> EosEResult;
+type FnEosEpicAccountIdIsValid = unsafe extern "C" fn(EosEpicAccountId) -> EosBool;
 
 type FnEosEcomQueryOwnership = unsafe extern "C" fn(
     EosHEcom,
@@ -301,10 +299,8 @@ type FnEosAchievementsQueryDefinitions = unsafe extern "C" fn(
     *mut c_void,
     unsafe extern "C" fn(*const EosAchievementsQueryDefinitionsCompleteInfo),
 );
-type FnEosAchievementsGetDefinitionCount = unsafe extern "C" fn(
-    EosHAchievements,
-    *const EosAchievementsGetDefinitionCountOptions,
-) -> u32;
+type FnEosAchievementsGetDefinitionCount =
+    unsafe extern "C" fn(EosHAchievements, *const EosAchievementsGetDefinitionCountOptions) -> u32;
 type FnEosAchievementsCopyDefinitionV2ByIndex = unsafe extern "C" fn(
     EosHAchievements,
     *const EosAchievementsCopyDefinitionV2ByIndexOptions,
@@ -314,27 +310,27 @@ type FnEosAchievementsDefinitionV2Release = unsafe extern "C" fn(*mut EosAchieve
 
 // ── API function table (set once, never mutated) ──────────────────────────────
 struct EosApis {
-    fn_initialize:        FnEosInitialize,
-    fn_shutdown:          FnEosShutdown,
-    fn_platform_create:   FnEosPlatformCreate,
-    fn_platform_tick:     FnEosPlatformTick,
-    fn_platform_release:  FnEosPlatformRelease,
-    fn_get_version:       FnEosGetVersion,
-    fn_get_auth:          FnEosPlatformGetAuth,
-    fn_get_ecom:          FnEosPlatformGetEcom,
-    fn_get_achievements:  FnEosPlatformGetAchievements,
-    fn_auth_login:        FnEosAuthLogin,
-    fn_auth_logout:       FnEosAuthLogout,
-    fn_auth_status:       FnEosAuthGetLoginStatus,
-    fn_auth_count:        FnEosAuthGetLoggedInAccountsCount,
+    fn_initialize: FnEosInitialize,
+    fn_shutdown: FnEosShutdown,
+    fn_platform_create: FnEosPlatformCreate,
+    fn_platform_tick: FnEosPlatformTick,
+    fn_platform_release: FnEosPlatformRelease,
+    fn_get_version: FnEosGetVersion,
+    fn_get_auth: FnEosPlatformGetAuth,
+    fn_get_ecom: FnEosPlatformGetEcom,
+    fn_get_achievements: FnEosPlatformGetAchievements,
+    fn_auth_login: FnEosAuthLogin,
+    fn_auth_logout: FnEosAuthLogout,
+    fn_auth_status: FnEosAuthGetLoginStatus,
+    fn_auth_count: FnEosAuthGetLoggedInAccountsCount,
     fn_auth_get_by_index: FnEosAuthGetLoggedInAccountByIndex,
-    fn_account_to_str:    FnEosEpicAccountIdToString,
-    fn_account_is_valid:  FnEosEpicAccountIdIsValid,
+    fn_account_to_str: FnEosEpicAccountIdToString,
+    fn_account_is_valid: FnEosEpicAccountIdIsValid,
     fn_ecom_query_ownership: FnEosEcomQueryOwnership,
-    fn_ach_query_defs:    FnEosAchievementsQueryDefinitions,
-    fn_ach_def_count:     FnEosAchievementsGetDefinitionCount,
-    fn_ach_copy_def:      FnEosAchievementsCopyDefinitionV2ByIndex,
-    fn_ach_def_release:   FnEosAchievementsDefinitionV2Release,
+    fn_ach_query_defs: FnEosAchievementsQueryDefinitions,
+    fn_ach_def_count: FnEosAchievementsGetDefinitionCount,
+    fn_ach_copy_def: FnEosAchievementsCopyDefinitionV2ByIndex,
+    fn_ach_def_release: FnEosAchievementsDefinitionV2Release,
 }
 
 unsafe impl Send for EosApis {}
@@ -347,10 +343,10 @@ struct EosPlatformState {
 unsafe impl Send for EosPlatformState {}
 
 // ── Statics ───────────────────────────────────────────────────────────────────
-static EOS_LIB:      OnceLock<Library>                         = OnceLock::new();
-static EOS_APIS:     OnceLock<EosApis>                         = OnceLock::new();
+static EOS_LIB: OnceLock<Library> = OnceLock::new();
+static EOS_APIS: OnceLock<EosApis> = OnceLock::new();
 static EOS_PLATFORM: OnceLock<Mutex<Option<EosPlatformState>>> = OnceLock::new();
-static EOS_TICK_ACTIVE: AtomicBool                             = AtomicBool::new(false);
+static EOS_TICK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 fn platform_state() -> &'static Mutex<Option<EosPlatformState>> {
     EOS_PLATFORM.get_or_init(|| Mutex::new(None))
@@ -387,9 +383,7 @@ fn locate_eos_dll(app: &AppHandle) -> Option<PathBuf> {
 
     // 3. third_party/EOS-SDK/SDK/Bin/ relative to cwd (development)
     if let Ok(cwd) = std::env::current_dir() {
-        let candidate = cwd
-            .join("third_party/EOS-SDK/SDK/Bin")
-            .join(EOS_DLL);
+        let candidate = cwd.join("third_party/EOS-SDK/SDK/Bin").join(EOS_DLL);
         if candidate.exists() {
             return Some(candidate);
         }
@@ -420,27 +414,67 @@ macro_rules! get_fn {
 fn load_apis(lib: &Library) -> Result<EosApis, String> {
     Ok(unsafe {
         EosApis {
-            fn_initialize:        get_fn!(lib, "EOS_Initialize",                               FnEosInitialize),
-            fn_shutdown:          get_fn!(lib, "EOS_Shutdown",                                 FnEosShutdown),
-            fn_platform_create:   get_fn!(lib, "EOS_Platform_Create",                         FnEosPlatformCreate),
-            fn_platform_tick:     get_fn!(lib, "EOS_Platform_Tick",                           FnEosPlatformTick),
-            fn_platform_release:  get_fn!(lib, "EOS_Platform_Release",                        FnEosPlatformRelease),
-            fn_get_version:       get_fn!(lib, "EOS_GetVersion",                              FnEosGetVersion),
-            fn_get_auth:          get_fn!(lib, "EOS_Platform_GetAuthInterface",               FnEosPlatformGetAuth),
-            fn_get_ecom:          get_fn!(lib, "EOS_Platform_GetEcomInterface",               FnEosPlatformGetEcom),
-            fn_get_achievements:  get_fn!(lib, "EOS_Platform_GetAchievementsInterface",       FnEosPlatformGetAchievements),
-            fn_auth_login:        get_fn!(lib, "EOS_Auth_Login",                              FnEosAuthLogin),
-            fn_auth_logout:       get_fn!(lib, "EOS_Auth_Logout",                             FnEosAuthLogout),
-            fn_auth_status:       get_fn!(lib, "EOS_Auth_GetLoginStatus",                     FnEosAuthGetLoginStatus),
-            fn_auth_count:        get_fn!(lib, "EOS_Auth_GetLoggedInAccountsCount",           FnEosAuthGetLoggedInAccountsCount),
-            fn_auth_get_by_index: get_fn!(lib, "EOS_Auth_GetLoggedInAccountByIndex",          FnEosAuthGetLoggedInAccountByIndex),
-            fn_account_to_str:    get_fn!(lib, "EOS_EpicAccountId_ToString",                  FnEosEpicAccountIdToString),
-            fn_account_is_valid:  get_fn!(lib, "EOS_EpicAccountId_IsValid",                   FnEosEpicAccountIdIsValid),
-            fn_ecom_query_ownership: get_fn!(lib, "EOS_Ecom_QueryOwnership",                  FnEosEcomQueryOwnership),
-            fn_ach_query_defs:    get_fn!(lib, "EOS_Achievements_QueryDefinitions",           FnEosAchievementsQueryDefinitions),
-            fn_ach_def_count:     get_fn!(lib, "EOS_Achievements_GetAchievementDefinitionCount", FnEosAchievementsGetDefinitionCount),
-            fn_ach_copy_def:      get_fn!(lib, "EOS_Achievements_CopyAchievementDefinitionV2ByIndex", FnEosAchievementsCopyDefinitionV2ByIndex),
-            fn_ach_def_release:   get_fn!(lib, "EOS_Achievements_DefinitionV2_Release",       FnEosAchievementsDefinitionV2Release),
+            fn_initialize: get_fn!(lib, "EOS_Initialize", FnEosInitialize),
+            fn_shutdown: get_fn!(lib, "EOS_Shutdown", FnEosShutdown),
+            fn_platform_create: get_fn!(lib, "EOS_Platform_Create", FnEosPlatformCreate),
+            fn_platform_tick: get_fn!(lib, "EOS_Platform_Tick", FnEosPlatformTick),
+            fn_platform_release: get_fn!(lib, "EOS_Platform_Release", FnEosPlatformRelease),
+            fn_get_version: get_fn!(lib, "EOS_GetVersion", FnEosGetVersion),
+            fn_get_auth: get_fn!(lib, "EOS_Platform_GetAuthInterface", FnEosPlatformGetAuth),
+            fn_get_ecom: get_fn!(lib, "EOS_Platform_GetEcomInterface", FnEosPlatformGetEcom),
+            fn_get_achievements: get_fn!(
+                lib,
+                "EOS_Platform_GetAchievementsInterface",
+                FnEosPlatformGetAchievements
+            ),
+            fn_auth_login: get_fn!(lib, "EOS_Auth_Login", FnEosAuthLogin),
+            fn_auth_logout: get_fn!(lib, "EOS_Auth_Logout", FnEosAuthLogout),
+            fn_auth_status: get_fn!(lib, "EOS_Auth_GetLoginStatus", FnEosAuthGetLoginStatus),
+            fn_auth_count: get_fn!(
+                lib,
+                "EOS_Auth_GetLoggedInAccountsCount",
+                FnEosAuthGetLoggedInAccountsCount
+            ),
+            fn_auth_get_by_index: get_fn!(
+                lib,
+                "EOS_Auth_GetLoggedInAccountByIndex",
+                FnEosAuthGetLoggedInAccountByIndex
+            ),
+            fn_account_to_str: get_fn!(
+                lib,
+                "EOS_EpicAccountId_ToString",
+                FnEosEpicAccountIdToString
+            ),
+            fn_account_is_valid: get_fn!(
+                lib,
+                "EOS_EpicAccountId_IsValid",
+                FnEosEpicAccountIdIsValid
+            ),
+            fn_ecom_query_ownership: get_fn!(
+                lib,
+                "EOS_Ecom_QueryOwnership",
+                FnEosEcomQueryOwnership
+            ),
+            fn_ach_query_defs: get_fn!(
+                lib,
+                "EOS_Achievements_QueryDefinitions",
+                FnEosAchievementsQueryDefinitions
+            ),
+            fn_ach_def_count: get_fn!(
+                lib,
+                "EOS_Achievements_GetAchievementDefinitionCount",
+                FnEosAchievementsGetDefinitionCount
+            ),
+            fn_ach_copy_def: get_fn!(
+                lib,
+                "EOS_Achievements_CopyAchievementDefinitionV2ByIndex",
+                FnEosAchievementsCopyDefinitionV2ByIndex
+            ),
+            fn_ach_def_release: get_fn!(
+                lib,
+                "EOS_Achievements_DefinitionV2_Release",
+                FnEosAchievementsDefinitionV2Release
+            ),
         }
     })
 }
@@ -456,7 +490,8 @@ fn account_id_to_string(apis: &EosApis, id: EosEpicAccountId) -> Option<String> 
     }
     let mut buf = vec![0u8; EOS_EPICACCOUNTID_MAX_LENGTH + 1];
     let mut buf_len = (EOS_EPICACCOUNTID_MAX_LENGTH + 1) as i32;
-    let res = unsafe { (apis.fn_account_to_str)(id, buf.as_mut_ptr() as *mut c_char, &mut buf_len) };
+    let res =
+        unsafe { (apis.fn_account_to_str)(id, buf.as_mut_ptr() as *mut c_char, &mut buf_len) };
     if res != EOS_SUCCESS {
         return None;
     }
@@ -547,53 +582,41 @@ unsafe extern "C" fn eos_query_defs_callback(
 
 // ── Public serializable types ─────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct EosConfig {
-    pub product_id:    String,
-    pub sandbox_id:    String,
+    pub product_id: String,
+    pub sandbox_id: String,
     pub deployment_id: String,
-    pub client_id:     String,
-    pub enabled:       bool,
-}
-
-impl Default for EosConfig {
-    fn default() -> Self {
-        Self {
-            product_id:    String::new(),
-            sandbox_id:    String::new(),
-            deployment_id: String::new(),
-            client_id:     String::new(),
-            enabled:       false,
-        }
-    }
+    pub client_id: String,
+    pub enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct EosStatusResult {
     pub is_initialized: bool,
-    pub is_logged_in:   bool,
-    pub account_id:     Option<String>,
-    pub sdk_version:    Option<String>,
-    pub dll_path:       Option<String>,
+    pub is_logged_in: bool,
+    pub account_id: Option<String>,
+    pub sdk_version: Option<String>,
+    pub dll_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnershipResult {
     pub catalog_item_id: String,
-    pub owned:           bool,
+    pub owned: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct EosAchievementDef {
     pub achievement_id: String,
-    pub display_name:   String,
-    pub description:    String,
-    pub is_hidden:      bool,
-    pub locked_icon_url:   Option<String>,
+    pub display_name: String,
+    pub description: String,
+    pub is_hidden: bool,
+    pub locked_icon_url: Option<String>,
     pub unlocked_icon_url: Option<String>,
 }
 
@@ -648,10 +671,8 @@ pub fn eos_get_client_secret_set() -> bool {
 #[tauri::command]
 pub fn eos_initialize(app: AppHandle) -> Result<(), String> {
     // Already initialized?
-    if EOS_APIS.get().is_some() {
-        if get_platform().is_some() {
-            return Ok(());
-        }
+    if EOS_APIS.get().is_some() && get_platform().is_some() {
+        return Ok(());
     }
 
     let cfg = load_config();
@@ -663,7 +684,10 @@ pub fn eos_initialize(app: AppHandle) -> Result<(), String> {
         || cfg.deployment_id.is_empty()
         || cfg.client_id.is_empty()
     {
-        return Err("EOS configuration is incomplete (check Product/Sandbox/Deployment/Client IDs)".to_string());
+        return Err(
+            "EOS configuration is incomplete (check Product/Sandbox/Deployment/Client IDs)"
+                .to_string(),
+        );
     }
     let client_secret = crate::vault::get_secret(VAULT_CLIENT_SECRET_KEY)
         .ok()
@@ -699,14 +723,14 @@ pub fn eos_initialize(app: AppHandle) -> Result<(), String> {
     let product_name = CString::new("LIBMALY").unwrap();
     let product_version = CString::new(env!("CARGO_PKG_VERSION")).unwrap();
     let init_opts = EosInitializeOptions {
-        api_version:    EOS_INITIALIZE_API_LATEST,
-        alloc_fn:       std::ptr::null(),
-        realloc_fn:     std::ptr::null(),
-        free_fn:        std::ptr::null(),
-        product_name:   product_name.as_ptr(),
+        api_version: EOS_INITIALIZE_API_LATEST,
+        alloc_fn: std::ptr::null(),
+        realloc_fn: std::ptr::null(),
+        free_fn: std::ptr::null(),
+        product_name: product_name.as_ptr(),
         product_version: product_version.as_ptr(),
-        reserved:       std::ptr::null_mut(),
-        system_init:    std::ptr::null_mut(),
+        reserved: std::ptr::null_mut(),
+        system_init: std::ptr::null_mut(),
         thread_affinity: std::ptr::null_mut(),
     };
     let init_result = unsafe { (apis.fn_initialize)(&init_opts) };
@@ -715,33 +739,33 @@ pub fn eos_initialize(app: AppHandle) -> Result<(), String> {
     }
 
     // --- EOS_Platform_Create ---
-    let product_id_c    = CString::new(cfg.product_id.as_str()).unwrap();
-    let sandbox_id_c    = CString::new(cfg.sandbox_id.as_str()).unwrap();
+    let product_id_c = CString::new(cfg.product_id.as_str()).unwrap();
+    let sandbox_id_c = CString::new(cfg.sandbox_id.as_str()).unwrap();
     let deployment_id_c = CString::new(cfg.deployment_id.as_str()).unwrap();
-    let client_id_c     = CString::new(cfg.client_id.as_str()).unwrap();
+    let client_id_c = CString::new(cfg.client_id.as_str()).unwrap();
     let client_secret_c = CString::new(client_secret.as_str()).unwrap();
 
     let platform_opts = EosPlatformOptions {
-        api_version:  EOS_PLATFORM_OPTIONS_API_LATEST,
-        reserved:     std::ptr::null(),
-        product_id:   product_id_c.as_ptr(),
-        sandbox_id:   sandbox_id_c.as_ptr(),
+        api_version: EOS_PLATFORM_OPTIONS_API_LATEST,
+        reserved: std::ptr::null(),
+        product_id: product_id_c.as_ptr(),
+        sandbox_id: sandbox_id_c.as_ptr(),
         client_credentials: EosPlatformClientCredentials {
-            client_id:     client_id_c.as_ptr(),
+            client_id: client_id_c.as_ptr(),
             client_secret: client_secret_c.as_ptr(),
         },
-        is_server:    0,  // client application
-        encryption_key:        std::ptr::null(),
+        is_server: 0, // client application
+        encryption_key: std::ptr::null(),
         override_country_code: std::ptr::null(),
-        override_locale_code:  std::ptr::null(),
+        override_locale_code: std::ptr::null(),
         deployment_id: deployment_id_c.as_ptr(),
         flags: EOS_PF_DISABLE_OVERLAY | EOS_PF_DISABLE_SOCIAL_OVERLAY,
         cache_directory: std::ptr::null(),
         tick_budget_ms: 0,
-        rtc_options:                  std::ptr::null(),
-        integrated_platform_options:  std::ptr::null(),
-        system_specific:              std::ptr::null(),
-        task_network_timeout:         std::ptr::null(),
+        rtc_options: std::ptr::null(),
+        integrated_platform_options: std::ptr::null(),
+        system_specific: std::ptr::null(),
+        task_network_timeout: std::ptr::null(),
     };
     let platform = unsafe { (apis.fn_platform_create)(&platform_opts) };
     if platform.is_null() {
@@ -839,25 +863,25 @@ pub async fn eos_login(login_type: String) -> Result<String, String> {
         let auth = unsafe { (apis.fn_get_auth)(platform) };
 
         let credential_type = match login_type.as_str() {
-            "exchange_code"   => EOS_LCT_EXCHANGE_CODE,
-            "persistent"      => EOS_LCT_PERSISTENT_AUTH,
-            "account_portal"  => EOS_LCT_ACCOUNT_PORTAL,
+            "exchange_code" => EOS_LCT_EXCHANGE_CODE,
+            "persistent" => EOS_LCT_PERSISTENT_AUTH,
+            "account_portal" => EOS_LCT_ACCOUNT_PORTAL,
             other => return Err(format!("Unknown EOS login type: {}", other)),
         };
 
         let creds = EosAuthCredentials {
-            api_version:     EOS_AUTH_CREDENTIALS_API_LATEST,
-            id:              std::ptr::null(),
-            token:           std::ptr::null(),
+            api_version: EOS_AUTH_CREDENTIALS_API_LATEST,
+            id: std::ptr::null(),
+            token: std::ptr::null(),
             credential_type,
             system_auth_opts: std::ptr::null_mut(),
-            external_type:   0,
+            external_type: 0,
         };
         let opts = EosAuthLoginOptions {
-            api_version:  EOS_AUTH_LOGIN_API_LATEST,
-            credentials:  &creds,
-            scope_flags:  EOS_SCOPE_FLAGS,
-            login_flags:  0,
+            api_version: EOS_AUTH_LOGIN_API_LATEST,
+            credentials: &creds,
+            scope_flags: EOS_SCOPE_FLAGS,
+            login_flags: 0,
         };
 
         let (tx, rx) = mpsc::sync_channel::<LoginCallbackPayload>(1);
@@ -870,12 +894,10 @@ pub async fn eos_login(login_type: String) -> Result<String, String> {
 
     // Only rx (Receiver<LoginCallbackPayload>: Send) crosses the await
     // Wait on tick thread to deliver the callback (up to 120 s for account portal)
-    let payload = tokio::task::spawn_blocking(move || {
-        rx.recv_timeout(Duration::from_secs(120))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|_| "EOS login timed out".to_string())?;
+    let payload = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(120)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "EOS login timed out".to_string())?;
 
     if payload.result != EOS_SUCCESS {
         return Err(format!("EOS login failed (code {})", payload.result));
@@ -900,7 +922,7 @@ pub async fn eos_logout() -> Result<(), String> {
         let local_user_id = unsafe { (apis.fn_auth_get_by_index)(auth, 0) };
 
         let opts = EosAuthLogoutOptions {
-            api_version:   EOS_AUTH_LOGOUT_API_LATEST,
+            api_version: EOS_AUTH_LOGOUT_API_LATEST,
             local_user_id,
         };
 
@@ -912,12 +934,10 @@ pub async fn eos_logout() -> Result<(), String> {
         // opts, local_user_id, auth, platform (all !Send) dropped here
     };
 
-    let result = tokio::task::spawn_blocking(move || {
-        rx.recv_timeout(Duration::from_secs(30))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|_| "EOS logout timed out".to_string())?;
+    let result = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(30)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "EOS logout timed out".to_string())?;
 
     if result != EOS_SUCCESS {
         return Err(format!("EOS logout failed (code {})", result));
@@ -957,11 +977,11 @@ pub async fn eos_query_ownership(
 
         let ecom = unsafe { (apis.fn_get_ecom)(platform) };
         let opts = EosEcomQueryOwnershipOptions {
-            api_version:            EOS_ECOM_QUERYOWNERSHIP_API_LATEST,
+            api_version: EOS_ECOM_QUERYOWNERSHIP_API_LATEST,
             local_user_id,
-            catalog_item_ids:       ptrs.as_ptr(),
+            catalog_item_ids: ptrs.as_ptr(),
             catalog_item_ids_count: ptrs.len() as u32,
-            catalog_namespace:      std::ptr::null(),
+            catalog_namespace: std::ptr::null(),
         };
 
         let (tx, rx) = mpsc::sync_channel::<Result<Vec<OwnershipResult>, String>>(1);
@@ -992,11 +1012,11 @@ pub async fn eos_get_achievements() -> Result<Vec<EosAchievementDef>, String> {
         let ach_handle = unsafe { (apis.fn_get_achievements)(platform) };
 
         let query_opts = EosAchievementsQueryDefinitionsOptions {
-            api_version:  EOS_ACHIEVEMENTS_QUERYDEFINITIONS_API_LATEST,
+            api_version: EOS_ACHIEVEMENTS_QUERYDEFINITIONS_API_LATEST,
             local_user_id: std::ptr::null_mut(),
-            epic_user_id:  std::ptr::null_mut(),
-            hidden_ids:    std::ptr::null(),
-            hidden_count:  0,
+            epic_user_id: std::ptr::null_mut(),
+            hidden_ids: std::ptr::null(),
+            hidden_count: 0,
         };
         let (tx, rx) = mpsc::sync_channel::<EosEResult>(1);
         let tx_ptr = Box::into_raw(Box::new(tx)) as *mut c_void;
@@ -1009,12 +1029,11 @@ pub async fn eos_get_achievements() -> Result<Vec<EosAchievementDef>, String> {
     };
 
     // Only rx (Receiver<EosEResult>: Send) crosses the await
-    let query_result = tokio::task::spawn_blocking(move || {
-        rx.recv_timeout(Duration::from_secs(30))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|_| "EOS achievement definitions query timed out".to_string())?;
+    let query_result =
+        tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(30)))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|_| "EOS achievement definitions query timed out".to_string())?;
 
     if query_result != EOS_SUCCESS {
         return Err(format!(
@@ -1039,7 +1058,7 @@ pub async fn eos_get_achievements() -> Result<Vec<EosAchievementDef>, String> {
         let mut defs = Vec::with_capacity(count as usize);
         for i in 0..count {
             let copy_opts = EosAchievementsCopyDefinitionV2ByIndexOptions {
-                api_version:      EOS_ACHIEVEMENTS_COPYDEFINITIONV2_API_LATEST,
+                api_version: EOS_ACHIEVEMENTS_COPYDEFINITIONV2_API_LATEST,
                 achievement_index: i,
             };
             let mut def_ptr: *mut EosAchievementsDefinitionV2 = std::ptr::null_mut();
@@ -1048,10 +1067,12 @@ pub async fn eos_get_achievements() -> Result<Vec<EosAchievementDef>, String> {
                 continue;
             }
             let def = unsafe { &*def_ptr };
-            let achievement_id    = unsafe { cstr_to_string(def.achievement_id).unwrap_or_default() };
-            let display_name      = unsafe { cstr_to_string(def.unlocked_name).unwrap_or_else(|| achievement_id.clone()) };
-            let description       = unsafe { cstr_to_string(def.unlocked_desc).unwrap_or_default() };
-            let locked_icon_url   = unsafe { cstr_to_string(def.locked_icon_url) };
+            let achievement_id = unsafe { cstr_to_string(def.achievement_id).unwrap_or_default() };
+            let display_name = unsafe {
+                cstr_to_string(def.unlocked_name).unwrap_or_else(|| achievement_id.clone())
+            };
+            let description = unsafe { cstr_to_string(def.unlocked_desc).unwrap_or_default() };
+            let locked_icon_url = unsafe { cstr_to_string(def.locked_icon_url) };
             let unlocked_icon_url = unsafe { cstr_to_string(def.unlocked_icon_url) };
             let is_hidden = def.is_hidden != 0;
 

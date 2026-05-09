@@ -83,8 +83,12 @@ pub struct PulseConfig {
     pub relay_url: Option<String>,
 }
 
-fn def_true() -> bool { true }
-fn def_port() -> u16 { DEFAULT_LAN_PORT }
+fn def_true() -> bool {
+    true
+}
+fn def_port() -> u16 {
+    DEFAULT_LAN_PORT
+}
 
 impl Default for PulseConfig {
     fn default() -> Self {
@@ -199,10 +203,17 @@ fn wait_or_timeout(stop: &AtomicBool, timeout: Duration) -> bool {
     let (m, cv) = wake();
     let mut flag = m.lock().unwrap();
     loop {
-        if stop.load(Ordering::Relaxed) { return false; }
-        if *flag { *flag = false; return true; } // triggered early
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        if *flag {
+            *flag = false;
+            return true;
+        } // triggered early
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() { return true; } // timed out normally
+        if remaining.is_zero() {
+            return true;
+        } // timed out normally
         let (new_flag, _) = cv.wait_timeout(flag, remaining).unwrap();
         flag = new_flag;
     }
@@ -229,7 +240,9 @@ pub fn load_or_create_peer_id() -> String {
     let path = app_data_root().join(PEER_ID_FILE);
     if let Ok(id) = std::fs::read_to_string(&path) {
         let id = id.trim().to_owned();
-        if !id.is_empty() { return id; }
+        if !id.is_empty() {
+            return id;
+        }
     }
     use rand::Rng;
     let id: String = rand::thread_rng()
@@ -257,14 +270,19 @@ fn build_beacon(cfg: &PulseConfig, peer_id: &str, offline: bool) -> PulseBeacon 
     } else {
         let mut act = activity().lock().unwrap().clone();
         if let Some(ref mut a) = act {
-            if !cfg.share_cover { a.cover_url = None; }
+            if !cfg.share_cover {
+                a.cover_url = None;
+            }
         }
         act
     };
     PulseBeacon {
         v: 1,
         peer_id: peer_id.to_owned(),
-        display_name: cfg.display_name.clone().unwrap_or_else(|| "Anonymous".into()),
+        display_name: cfg
+            .display_name
+            .clone()
+            .unwrap_or_else(|| "Anonymous".into()),
         avatar_url: None, // future: read from profile storage
         room: cfg.room_key.clone(),
         activity,
@@ -284,14 +302,17 @@ fn process_beacon(beacon: PulseBeacon, via_relay: bool, app: &AppHandle, my_id: 
     if beacon.offline {
         map.remove(&beacon.peer_id);
     } else {
-        map.insert(beacon.peer_id.clone(), PeerInfo {
-            peer_id: beacon.peer_id,
-            display_name: beacon.display_name,
-            avatar_url: beacon.avatar_url,
-            activity: beacon.activity,
-            last_seen: now_secs(),
-            via_relay,
-        });
+        map.insert(
+            beacon.peer_id.clone(),
+            PeerInfo {
+                peer_id: beacon.peer_id,
+                display_name: beacon.display_name,
+                avatar_url: beacon.avatar_url,
+                activity: beacon.activity,
+                last_seen: now_secs(),
+                via_relay,
+            },
+        );
     }
     let snapshot: Vec<PeerInfo> = map.values().cloned().collect();
     drop(map);
@@ -301,36 +322,38 @@ fn process_beacon(beacon: PulseBeacon, via_relay: bool, app: &AppHandle, my_id: 
     let social_records: Vec<crate::social_providers::SocialPeerRecord> = snapshot
         .iter()
         .map(|p| crate::social_providers::SocialPeerRecord {
-            provider_id:      crate::social_providers::PROVIDER_PULSE.to_owned(),
+            provider_id: crate::social_providers::PROVIDER_PULSE.to_owned(),
             provider_peer_id: p.peer_id.clone(),
-            display_name:     p.display_name.clone(),
-            avatar_url:       p.avatar_url.clone(),
-            activity:         p.activity.as_ref().map(|a| crate::social_providers::SocialActivity {
-                title:         a.title.clone(),
-                cover_url:     a.cover_url.clone(),
-                session_start: Some(a.session_start),
-                status_text:   None,
-            }),
+            display_name: p.display_name.clone(),
+            avatar_url: p.avatar_url.clone(),
+            activity: p
+                .activity
+                .as_ref()
+                .map(|a| crate::social_providers::SocialActivity {
+                    title: a.title.clone(),
+                    cover_url: a.cover_url.clone(),
+                    session_start: Some(a.session_start),
+                    status_text: None,
+                }),
             last_seen: p.last_seen,
             online: true,
         })
         .collect();
-    crate::social_providers::submit_peers(
-        crate::social_providers::PROVIDER_PULSE,
-        social_records,
-    );
+    crate::social_providers::submit_peers(crate::social_providers::PROVIDER_PULSE, social_records);
 }
 
 // ── URL encoding helper ────────────────────────────────────────────────────────
 
 fn url_encode(s: &str) -> String {
-    s.chars().flat_map(|c| {
-        if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') {
-            vec![c]
-        } else {
-            format!("%{:02X}", c as u32).chars().collect::<Vec<_>>()
-        }
-    }).collect()
+    s.chars()
+        .flat_map(|c| {
+            if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                vec![c]
+            } else {
+                format!("%{:02X}", c as u32).chars().collect::<Vec<_>>()
+            }
+        })
+        .collect()
 }
 
 // ── LAN broadcast thread ──────────────────────────────────────────────────────
@@ -338,21 +361,34 @@ fn url_encode(s: &str) -> String {
 fn lan_broadcast_thread(cfg: PulseConfig, peer_id: String, stop: Arc<AtomicBool>) {
     let socket = match UdpSocket::bind("0.0.0.0:0") {
         Ok(s) => s,
-        Err(e) => { eprintln!("[pulse] broadcast bind failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("[pulse] broadcast bind failed: {e}");
+            return;
+        }
     };
     let _ = socket.set_broadcast(true);
     let addr = format!("255.255.255.255:{}", cfg.lan_port);
 
     loop {
-        if stop.load(Ordering::Relaxed) { break; }
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
         send_lan_beacon(&socket, &addr, &cfg, &peer_id, false);
-        if !wait_or_timeout(&stop, BROADCAST_INTERVAL) { break; }
+        if !wait_or_timeout(&stop, BROADCAST_INTERVAL) {
+            break;
+        }
     }
     // Offline beacon on clean exit
     send_lan_beacon(&socket, &addr, &cfg, &peer_id, true);
 }
 
-fn send_lan_beacon(socket: &UdpSocket, addr: &str, cfg: &PulseConfig, peer_id: &str, offline: bool) {
+fn send_lan_beacon(
+    socket: &UdpSocket,
+    addr: &str,
+    cfg: &PulseConfig,
+    peer_id: &str,
+    offline: bool,
+) {
     let beacon = build_beacon(cfg, peer_id, offline);
     if let Ok(json) = serde_json::to_string(&beacon) {
         let _ = socket.send_to(json.as_bytes(), addr);
@@ -361,10 +397,19 @@ fn send_lan_beacon(socket: &UdpSocket, addr: &str, cfg: &PulseConfig, peer_id: &
 
 // ── LAN receive thread ─────────────────────────────────────────────────────────
 
-fn lan_receive_thread(port: u16, peer_id: String, room_key: String, stop: Arc<AtomicBool>, app: AppHandle) {
+fn lan_receive_thread(
+    port: u16,
+    peer_id: String,
+    room_key: String,
+    stop: Arc<AtomicBool>,
+    app: AppHandle,
+) {
     let socket = match UdpSocket::bind(format!("0.0.0.0:{}", port)) {
         Ok(s) => s,
-        Err(e) => { eprintln!("[pulse] receive bind on port {port} failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("[pulse] receive bind on port {port} failed: {e}");
+            return;
+        }
     };
     let _ = socket.set_read_timeout(Some(Duration::from_secs(2)));
 
@@ -376,8 +421,9 @@ fn lan_receive_thread(port: u16, peer_id: String, room_key: String, stop: Arc<At
                     process_beacon(beacon, false, &app, &peer_id, &room_key);
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                   || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) => eprintln!("[pulse] receive error: {e}"),
         }
     }
@@ -393,9 +439,15 @@ fn relay_thread(cfg: PulseConfig, peer_id: String, stop: Arc<AtomicBool>, app: A
         None => return,
     };
 
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
-        Err(e) => { eprintln!("[pulse] relay runtime init failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("[pulse] relay runtime init failed: {e}");
+            return;
+        }
     };
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
@@ -405,13 +457,16 @@ fn relay_thread(cfg: PulseConfig, peer_id: String, stop: Arc<AtomicBool>, app: A
     let room_seg = url_encode(&cfg.room_key);
 
     loop {
-        if stop.load(Ordering::Relaxed) { break; }
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
 
         // POST our beacon
         let beacon = build_beacon(&cfg, &peer_id, false);
         if let Ok(json) = serde_json::to_string(&beacon) {
             let post_url = format!("{}/pulse/{}/beacon", relay_url, room_seg);
-            let fut = client.post(&post_url)
+            let fut = client
+                .post(&post_url)
                 .header("Content-Type", "application/json")
                 .body(json)
                 .send();
@@ -420,7 +475,10 @@ fn relay_thread(cfg: PulseConfig, peer_id: String, stop: Arc<AtomicBool>, app: A
 
         // GET peers
         let since = now_secs().saturating_sub(BROADCAST_INTERVAL.as_secs() * 3);
-        let get_url = format!("{}/pulse/{}/peers?since={}&me={}", relay_url, room_seg, since, peer_id);
+        let get_url = format!(
+            "{}/pulse/{}/peers?since={}&me={}",
+            relay_url, room_seg, since, peer_id
+        );
         if let Ok(resp) = rt.block_on(client.get(&get_url).send()) {
             if let Ok(body) = rt.block_on(resp.text()) {
                 if let Ok(beacons) = serde_json::from_str::<Vec<PulseBeacon>>(&body) {
@@ -431,14 +489,17 @@ fn relay_thread(cfg: PulseConfig, peer_id: String, stop: Arc<AtomicBool>, app: A
             }
         }
 
-        if !wait_or_timeout(&stop, BROADCAST_INTERVAL) { break; }
+        if !wait_or_timeout(&stop, BROADCAST_INTERVAL) {
+            break;
+        }
     }
 
     // Send offline beacon to relay on clean exit
     let offline_beacon = build_beacon(&cfg, &peer_id, true);
     if let Ok(json) = serde_json::to_string(&offline_beacon) {
         let post_url = format!("{}/pulse/{}/beacon", relay_url, room_seg);
-        let fut = client.post(&post_url)
+        let fut = client
+            .post(&post_url)
             .header("Content-Type", "application/json")
             .body(json)
             .send();
@@ -673,13 +734,22 @@ async fn probe_relay_url(url: &str) -> RelayCapabilities {
                         ensure_baseline(&mut caps);
                         caps
                     }
-                    Err(_) => RelayCapabilities { probe_status: status, ..Default::default() },
+                    Err(_) => RelayCapabilities {
+                        probe_status: status,
+                        ..Default::default()
+                    },
                 }
             } else {
-                RelayCapabilities { probe_status: status, ..Default::default() }
+                RelayCapabilities {
+                    probe_status: status,
+                    ..Default::default()
+                }
             }
         }
-        Err(_) => RelayCapabilities { probe_status: 0, ..Default::default() },
+        Err(_) => RelayCapabilities {
+            probe_status: 0,
+            ..Default::default()
+        },
     }
 }
 
@@ -749,7 +819,11 @@ pub fn pulse_get_peers() -> Vec<PeerInfo> {
     let mut map = peers().lock().unwrap();
     let now = now_secs();
     map.retain(|_, p| {
-        let expiry = if p.via_relay { PEER_EXPIRY_RELAY } else { PEER_EXPIRY_LAN };
+        let expiry = if p.via_relay {
+            PEER_EXPIRY_RELAY
+        } else {
+            PEER_EXPIRY_LAN
+        };
         now.saturating_sub(p.last_seen) < expiry
     });
     map.values().cloned().collect()

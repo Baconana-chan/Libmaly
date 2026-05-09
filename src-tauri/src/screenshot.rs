@@ -412,16 +412,17 @@ unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: usize, lparam: isi
                     // F9 → save instant replay
                     let exe = state.exe.clone();
                     let app_r = state.app.clone();
-                    std::thread::spawn(move || {
-                        match crate::replay::save_replay(&exe, "gif") {
-                            Ok(clip) => {
-                                let _ = app_r.emit(
-                                    "replay-saved",
-                                    crate::replay::ReplaySaved { game_exe: exe, clip },
-                                );
-                            }
-                            Err(e) => eprintln!("[replay] F9: {e}"),
+                    std::thread::spawn(move || match crate::replay::save_replay(&exe, "gif") {
+                        Ok(clip) => {
+                            let _ = app_r.emit(
+                                "replay-saved",
+                                crate::replay::ReplaySaved {
+                                    game_exe: exe,
+                                    clip,
+                                },
+                            );
                         }
+                        Err(e) => eprintln!("[replay] F9: {e}"),
                     });
                 } else if let Some(ref boss) = state.boss_key {
                     if kb.vkCode == boss.vk_code {

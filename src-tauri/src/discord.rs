@@ -503,7 +503,10 @@ unsafe extern "C" fn discord_status_changed_callback(
         | Discord_Client_Status::HttpWait => "connecting",
         _ => "disconnected",
     };
-    crate::social_providers::set_provider_status(crate::social_providers::PROVIDER_DISCORD, social_status);
+    crate::social_providers::set_provider_status(
+        crate::social_providers::PROVIDER_DISCORD,
+        social_status,
+    );
     drop(snapshot);
     if let Some(next_status) = status_log {
         push_discord_log("info", format!("client status -> {}", next_status));
@@ -846,7 +849,10 @@ fn refresh_snapshot_from_runtime(runtime: &DiscordRuntime) {
 
                 let user_id = unsafe { (api.user_handle_id)(&mut user) }.to_string();
 
-                let mut dname = Discord_String { ptr: null_mut(), size: 0 };
+                let mut dname = Discord_String {
+                    ptr: null_mut(),
+                    size: 0,
+                };
                 unsafe { (api.user_handle_display_name)(&mut user, &mut dname) };
                 let display_name = discord_string_to_rust(dname);
                 if display_name.is_empty() {
@@ -854,7 +860,10 @@ fn refresh_snapshot_from_runtime(runtime: &DiscordRuntime) {
                     continue;
                 }
 
-                let mut avatar_url_str = Discord_String { ptr: null_mut(), size: 0 };
+                let mut avatar_url_str = Discord_String {
+                    ptr: null_mut(),
+                    size: 0,
+                };
                 unsafe {
                     (api.user_handle_avatar_url)(
                         &mut user,
@@ -865,26 +874,38 @@ fn refresh_snapshot_from_runtime(runtime: &DiscordRuntime) {
                 }
                 let avatar_url = {
                     let v = discord_string_to_rust(avatar_url_str);
-                    if v.is_empty() { None } else { Some(v) }
+                    if v.is_empty() {
+                        None
+                    } else {
+                        Some(v)
+                    }
                 };
 
                 let status_type = unsafe { (api.user_handle_status)(&mut user) };
-                let online = !matches!(status_type, Discord_StatusType::Offline | Discord_StatusType::Blocked);
+                let online = !matches!(
+                    status_type,
+                    Discord_StatusType::Offline | Discord_StatusType::Blocked
+                );
 
                 // Try to get current game activity
                 let activity = {
                     let mut act = Discord_Activity { opaque: null_mut() };
                     unsafe { (api.activity_init)(&mut act) };
-                    let has_activity = unsafe { (api.user_handle_game_activity)(&mut user, &mut act) };
+                    let has_activity =
+                        unsafe { (api.user_handle_game_activity)(&mut user, &mut act) };
                     let result = if has_activity {
-                        let mut name_str = Discord_String { ptr: null_mut(), size: 0 };
+                        let mut name_str = Discord_String {
+                            ptr: null_mut(),
+                            size: 0,
+                        };
                         unsafe { (api.activity_get_name)(&mut act, &mut name_str) };
                         let title = discord_string_to_rust(name_str);
 
                         let mut timestamps = Discord_ActivityTimestamps { opaque: null_mut() };
                         unsafe { (api.activity_timestamps_init)(&mut timestamps) };
                         unsafe { (api.activity_get_timestamps)(&mut act, &mut timestamps) };
-                        let start_ms = unsafe { (api.activity_timestamps_get_start)(&mut timestamps) };
+                        let start_ms =
+                            unsafe { (api.activity_timestamps_get_start)(&mut timestamps) };
                         unsafe { (api.activity_timestamps_drop_alias)(&mut timestamps) };
 
                         if title.is_empty() {
@@ -893,7 +914,11 @@ fn refresh_snapshot_from_runtime(runtime: &DiscordRuntime) {
                             Some(crate::social_providers::SocialActivity {
                                 title,
                                 cover_url: None,
-                                session_start: if start_ms > 0 { Some(start_ms / 1000) } else { None },
+                                session_start: if start_ms > 0 {
+                                    Some(start_ms / 1000)
+                                } else {
+                                    None
+                                },
                                 status_text: Some("Playing via Discord".to_owned()),
                             })
                         }
@@ -905,7 +930,7 @@ fn refresh_snapshot_from_runtime(runtime: &DiscordRuntime) {
                 };
 
                 social_records.push(crate::social_providers::SocialPeerRecord {
-                    provider_id:      crate::social_providers::PROVIDER_DISCORD.to_owned(),
+                    provider_id: crate::social_providers::PROVIDER_DISCORD.to_owned(),
                     provider_peer_id: user_id,
                     display_name,
                     avatar_url,
@@ -919,7 +944,10 @@ fn refresh_snapshot_from_runtime(runtime: &DiscordRuntime) {
             }
         }
 
-        crate::social_providers::submit_peers(crate::social_providers::PROVIDER_DISCORD, social_records);
+        crate::social_providers::submit_peers(
+            crate::social_providers::PROVIDER_DISCORD,
+            social_records,
+        );
     } else {
         crate::social_providers::submit_peers(crate::social_providers::PROVIDER_DISCORD, vec![]);
         snapshot.current_user = None;
@@ -1095,7 +1123,10 @@ pub fn discord_shutdown() -> Result<(), String> {
     *snapshot_slot().lock().unwrap() = DiscordSdkSnapshot::default();
     // Clear Discord peers from the social registry
     crate::social_providers::submit_peers(crate::social_providers::PROVIDER_DISCORD, vec![]);
-    crate::social_providers::set_provider_status(crate::social_providers::PROVIDER_DISCORD, "disconnected");
+    crate::social_providers::set_provider_status(
+        crate::social_providers::PROVIDER_DISCORD,
+        "disconnected",
+    );
     push_discord_log("info", "Discord Social SDK shut down");
     Ok(())
 }

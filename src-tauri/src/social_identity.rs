@@ -184,7 +184,10 @@ pub fn identity_get_fingerprint() -> Option<String> {
 /// Save editable profile fields (display_name, avatar_base64).
 /// Does NOT touch the keypair.
 #[tauri::command]
-pub fn identity_save_profile(display_name: String, avatar_base64: Option<String>) -> Result<(), String> {
+pub fn identity_save_profile(
+    display_name: String,
+    avatar_base64: Option<String>,
+) -> Result<(), String> {
     let mut profile = load_profile();
     profile.display_name = display_name.chars().take(64).collect();
     profile.avatar_base64 = avatar_base64;
@@ -212,10 +215,7 @@ pub fn identity_generate_keys() -> Result<SocialIdentityProfile, String> {
 /// (i.e., the user has a keypair — even if the profile is empty).
 #[tauri::command]
 pub fn identity_has_keys() -> bool {
-    get_secret(VAULT_PRIVATE_KEY)
-        .ok()
-        .flatten()
-        .is_some()
+    get_secret(VAULT_PRIVATE_KEY).ok().flatten().is_some()
 }
 
 /// Export the full portable identity bundle as a JSON string.
@@ -229,8 +229,7 @@ pub fn identity_export_bundle() -> Result<String, String> {
         .ok_or_else(|| "No identity keypair found. Generate one first.".to_string())?;
     let profile = load_profile();
     let pub_b64 = if profile.public_key_b64.is_empty() {
-        public_from_private(&priv_b64)
-            .ok_or("Stored private key is malformed.")?
+        public_from_private(&priv_b64).ok_or("Stored private key is malformed.")?
     } else {
         profile.public_key_b64.clone()
     };
@@ -267,7 +266,8 @@ pub fn identity_import_bundle(bundle_json: String) -> Result<SocialIdentityProfi
     }
 
     // Validate private key bytes
-    let priv_bytes = B64.decode(&bundle.private_key_b64)
+    let priv_bytes = B64
+        .decode(&bundle.private_key_b64)
         .map_err(|_| "Private key is not valid base64.".to_string())?;
     let priv_arr: [u8; 32] = priv_bytes
         .try_into()

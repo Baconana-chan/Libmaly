@@ -36,6 +36,7 @@ pub struct HighlightCandidate {
     pub reason: String,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Serialize, Clone)]
 pub struct ReplaySaved {
     pub game_exe: String,
@@ -97,7 +98,12 @@ pub fn start_capture(pid: u32, exe: String) {
                         if g.len() >= MAX_FRAMES {
                             g.pop_front();
                         }
-                        g.push_back(Frame { pixels: px, width: w, height: h, timestamp_ms: ts });
+                        g.push_back(Frame {
+                            pixels: px,
+                            width: w,
+                            height: h,
+                            timestamp_ms: ts,
+                        });
                     }
                 }
                 std::thread::sleep(interval);
@@ -149,7 +155,11 @@ pub fn save_replay(game_exe: &str, format_hint: &str) -> Result<ReplayClip, Stri
 
     let ts = now_secs();
     let duration_secs = {
-        let span = frames.last().unwrap().3.saturating_sub(frames.first().unwrap().3);
+        let span = frames
+            .last()
+            .unwrap()
+            .3
+            .saturating_sub(frames.first().unwrap().3);
         (span as f32 / 1000.0).max(0.1)
     };
     let frame_count = frames.len();
@@ -181,11 +191,7 @@ pub fn get_clips(game_exe: &str) -> Vec<ReplayClip> {
     let mut clips: Vec<ReplayClip> = rd
         .filter_map(|e| e.ok())
         .filter_map(|e| {
-            let ext = e
-                .path()
-                .extension()?
-                .to_string_lossy()
-                .to_lowercase();
+            let ext = e.path().extension()?.to_string_lossy().to_lowercase();
             if ext != "gif" && ext != "mp4" {
                 return None;
             }
@@ -302,7 +308,11 @@ pub fn analyze_highlights(min_score: f32) -> Vec<HighlightCandidate> {
         });
     }
 
-    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     candidates.truncate(10);
     candidates
 }
@@ -338,7 +348,11 @@ pub fn save_highlight_clip(
 
     let ts = now_secs();
     let duration_secs = {
-        let span = frames.last().unwrap().3.saturating_sub(frames.first().unwrap().3);
+        let span = frames
+            .last()
+            .unwrap()
+            .3
+            .saturating_sub(frames.first().unwrap().3);
         (span as f32 / 1000.0).max(0.1)
     };
     let frame_count = frames.len();
@@ -369,19 +383,24 @@ fn encode_gif(
     let file = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
 
     let mut enc = GifEncoder::new_with_speed(file, 10);
-    enc.set_repeat(Repeat::Infinite).map_err(|e| e.to_string())?;
+    enc.set_repeat(Repeat::Infinite)
+        .map_err(|e| e.to_string())?;
 
     // Compute per-frame delay from actual timestamps; clamp to ≥ 20 ms.
     let interval_ms: u32 = if frames.len() > 1 {
-        let span = frames.last().unwrap().3.saturating_sub(frames.first().unwrap().3);
+        let span = frames
+            .last()
+            .unwrap()
+            .3
+            .saturating_sub(frames.first().unwrap().3);
         ((span / (frames.len() as u64 - 1)) as u32).max(20)
     } else {
         200
     };
 
     for (pixels, w, h, _) in frames {
-        let img = RgbaImage::from_raw(*w, *h, pixels.clone())
-            .ok_or("Frame pixel data is malformed")?;
+        let img =
+            RgbaImage::from_raw(*w, *h, pixels.clone()).ok_or("Frame pixel data is malformed")?;
         let frame = ImgFrame::from_parts(img, 0, 0, Delay::from_numer_denom_ms(interval_ms, 1));
         enc.encode_frame(frame).map_err(|e| e.to_string())?;
     }
@@ -404,8 +423,8 @@ fn encode_mp4(
     ts: u64,
     duration_secs: f32,
 ) -> Result<ReplayClip, String> {
-    use std::process::Command;
     use image::RgbaImage;
+    use std::process::Command;
 
     if !Command::new("ffmpeg")
         .arg("-version")
@@ -420,7 +439,11 @@ fn encode_mp4(
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
 
     let fps: u32 = if frames.len() > 1 {
-        let span = frames.last().unwrap().3.saturating_sub(frames.first().unwrap().3);
+        let span = frames
+            .last()
+            .unwrap()
+            .3
+            .saturating_sub(frames.first().unwrap().3);
         ((frames.len() as f64 * 1000.0 / span.max(1) as f64).round() as u32).clamp(1, 60)
     } else {
         5
@@ -541,9 +564,8 @@ mod win {
         SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
     };
     use winapi::um::winuser::{
-        ClientToScreen, EnumWindows, GetClientRect, GetDC, GetForegroundWindow,
-        GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, ReleaseDC,
-        GWL_STYLE,
+        ClientToScreen, EnumWindows, GetClientRect, GetDC, GetForegroundWindow, GetWindowLongW,
+        GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, ReleaseDC, GWL_STYLE,
     };
 
     struct FindData {
@@ -574,14 +596,26 @@ mod win {
     }
 
     fn find_window(pid: u32) -> Option<HWND> {
-        let mut d = FindData { pid, hwnd: std::ptr::null_mut(), strict: true };
+        let mut d = FindData {
+            pid,
+            hwnd: std::ptr::null_mut(),
+            strict: true,
+        };
         unsafe { EnumWindows(Some(enum_proc), &mut d as *mut _ as LPARAM) };
         if !d.hwnd.is_null() {
             return Some(d.hwnd);
         }
-        let mut d2 = FindData { pid, hwnd: std::ptr::null_mut(), strict: false };
+        let mut d2 = FindData {
+            pid,
+            hwnd: std::ptr::null_mut(),
+            strict: false,
+        };
         unsafe { EnumWindows(Some(enum_proc), &mut d2 as *mut _ as LPARAM) };
-        if d2.hwnd.is_null() { None } else { Some(d2.hwnd) }
+        if d2.hwnd.is_null() {
+            None
+        } else {
+            Some(d2.hwnd)
+        }
     }
 
     /// Returns raw RGBA pixels and dimensions for the game window, or `None`.
@@ -634,7 +668,12 @@ mod win {
                     biClrUsed: 0,
                     biClrImportant: 0,
                 },
-                bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
+                bmiColors: [RGBQUAD {
+                    rgbBlue: 0,
+                    rgbGreen: 0,
+                    rgbRed: 0,
+                    rgbReserved: 0,
+                }],
             };
 
             let mut buf = vec![0u8; (w * h * 4) as usize];
@@ -684,7 +723,11 @@ fn linux_capture_raw(pid: u32) -> Option<(Vec<u8>, u32, u32)> {
         .ok()
         .and_then(|o| {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
         });
 
     let ok = win_id

@@ -56,7 +56,7 @@ const RELAY_FETCH_WINDOW_SECS: u64 = 3600;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatConfig {
     /// Whether P2P chat is enabled.
@@ -76,17 +76,6 @@ pub struct ChatConfig {
     /// Cached local X25519 public key (base64).
     #[serde(default)]
     pub my_x25519_pub_b64: String,
-}
-
-impl Default for ChatConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            relay_url: None,
-            room_key: None,
-            my_x25519_pub_b64: String::new(),
-        }
-    }
 }
 
 // ── Contact ───────────────────────────────────────────────────────────────────
@@ -170,9 +159,17 @@ fn messages_path(peer_fingerprint: &str) -> std::path::PathBuf {
     // Sanitize fingerprint for use as filename.
     let safe: String = peer_fingerprint
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    app_data_root().join(MESSAGES_DIR).join(format!("{}.json", safe))
+    app_data_root()
+        .join(MESSAGES_DIR)
+        .join(format!("{}.json", safe))
 }
 
 fn now_secs() -> u64 {
@@ -199,7 +196,9 @@ fn load_config() -> ChatConfig {
 
 fn persist_config(cfg: &ChatConfig) -> Result<(), String> {
     let path = config_path();
-    if let Some(p) = path.parent() { std::fs::create_dir_all(p).ok(); }
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).ok();
+    }
     let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| e.to_string())
 }
@@ -213,7 +212,9 @@ fn load_contacts() -> Vec<ChatContact> {
 
 fn persist_contacts(contacts: &[ChatContact]) -> Result<(), String> {
     let path = contacts_path();
-    if let Some(p) = path.parent() { std::fs::create_dir_all(p).ok(); }
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).ok();
+    }
     let json = serde_json::to_string_pretty(contacts).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| e.to_string())
 }
@@ -227,7 +228,9 @@ fn load_messages(peer_fingerprint: &str) -> Vec<ChatMessageRecord> {
 
 fn persist_messages(peer_fingerprint: &str, msgs: &[ChatMessageRecord]) -> Result<(), String> {
     let path = messages_path(peer_fingerprint);
-    if let Some(p) = path.parent() { std::fs::create_dir_all(p).ok(); }
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).ok();
+    }
     let json = serde_json::to_string_pretty(msgs).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| e.to_string())
 }
@@ -303,7 +306,9 @@ fn encrypt_message(
     recipient_fingerprint: &str,
 ) -> Result<(String, String), String> {
     let my_secret = get_or_create_x25519_secret()?;
-    let pub_bytes = B64.decode(recipient_x25519_pub_b64).map_err(|e| e.to_string())?;
+    let pub_bytes = B64
+        .decode(recipient_x25519_pub_b64)
+        .map_err(|e| e.to_string())?;
     let pub_arr: [u8; 32] = pub_bytes
         .try_into()
         .map_err(|_| "invalid recipient X25519 key".to_string())?;
@@ -327,7 +332,7 @@ fn encrypt_message(
         .encrypt(&nonce, payload)
         .map_err(|_| "encryption failed".to_string())?;
 
-    Ok((B64.encode(&ciphertext), B64.encode(&nonce_bytes)))
+    Ok((B64.encode(&ciphertext), B64.encode(nonce_bytes)))
 }
 
 fn decrypt_message(
@@ -338,7 +343,9 @@ fn decrypt_message(
     recipient_fingerprint: &str,
 ) -> Result<String, String> {
     let my_secret = get_or_create_x25519_secret()?;
-    let pub_bytes = B64.decode(sender_x25519_pub_b64).map_err(|e| e.to_string())?;
+    let pub_bytes = B64
+        .decode(sender_x25519_pub_b64)
+        .map_err(|e| e.to_string())?;
     let pub_arr: [u8; 32] = pub_bytes
         .try_into()
         .map_err(|_| "invalid sender X25519 key".to_string())?;
@@ -361,9 +368,9 @@ fn decrypt_message(
         aad: aad.as_bytes(),
     };
 
-    let plaintext_bytes = cipher
-        .decrypt(&nonce, payload)
-        .map_err(|_| "decryption failed — message may be corrupted or from wrong key".to_string())?;
+    let plaintext_bytes = cipher.decrypt(&nonce, payload).map_err(|_| {
+        "decryption failed — message may be corrupted or from wrong key".to_string()
+    })?;
 
     String::from_utf8(plaintext_bytes).map_err(|e| e.to_string())
 }
@@ -434,7 +441,11 @@ async fn relay_send(
     room_key: &str,
     envelope: &OutboundEnvelope,
 ) -> Result<(), String> {
-    let url = format!("{}/pulse/{}/chat/send", relay_url.trim_end_matches('/'), room_key);
+    let url = format!(
+        "{}/pulse/{}/chat/send",
+        relay_url.trim_end_matches('/'),
+        room_key
+    );
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -472,11 +483,7 @@ async fn relay_fetch(
         .build()
         .map_err(|e| e.to_string())?;
 
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
 
     if !resp.status().is_success() {
         return Err(format!("relay returned {}", resp.status()));
@@ -532,7 +539,9 @@ pub fn chat_save_contact(
     x25519_pub_b64: String,
 ) -> Result<(), String> {
     // Validate base64 and key length.
-    let bytes = B64.decode(&x25519_pub_b64).map_err(|e| format!("invalid X25519 key: {}", e))?;
+    let bytes = B64
+        .decode(&x25519_pub_b64)
+        .map_err(|e| format!("invalid X25519 key: {}", e))?;
     if bytes.len() != 32 {
         return Err("X25519 key must be exactly 32 bytes".to_string());
     }
@@ -618,7 +627,7 @@ pub fn chat_get_conversations() -> Vec<ConversationSummary> {
         }
     }
 
-    summaries.sort_by(|a, b| b.last_timestamp.cmp(&a.last_timestamp));
+    summaries.sort_by_key(|summary| std::cmp::Reverse(summary.last_timestamp));
     summaries
 }
 
@@ -703,9 +712,9 @@ pub async fn chat_send_message(
     let mut status = "pending".to_string();
     if let (Some(relay_url), Some(room_key)) = (&cfg.relay_url, &cfg.room_key) {
         if cfg.enabled {
-            match relay_send(relay_url, room_key, &envelope).await {
-                Ok(_) => status = "delivered".to_string(),
-                Err(_) => {} // keep "pending"; next fetch retry will re-queue
+            // On failure, keep "pending"; next fetch retry will re-queue.
+            if relay_send(relay_url, room_key, &envelope).await.is_ok() {
+                status = "delivered".to_string();
             }
         }
     }
@@ -775,7 +784,12 @@ pub async fn chat_fetch_remote() -> Result<usize, String> {
 
         // Verify signature if we have the sender's ED25519 key.
         if let Some(ref pub_b64) = sender_ed25519_pub {
-            if !verify_signature(&env.nonce_b64, &env.ciphertext_b64, &env.signature_b64, pub_b64) {
+            if !verify_signature(
+                &env.nonce_b64,
+                &env.ciphertext_b64,
+                &env.signature_b64,
+                pub_b64,
+            ) {
                 continue; // drop tampered message silently
             }
         }

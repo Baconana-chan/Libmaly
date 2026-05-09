@@ -36,7 +36,7 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn from_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -195,8 +195,7 @@ fn get_or_create_nostr_keypair() -> Result<(SecretKey, String), String> {
     let (xonly, _) = keypair.x_only_public_key();
     let pubkey_hex = to_hex(&xonly.serialize());
 
-    set_secret(VAULT_NOSTR_SECRET, &to_hex(&secret.secret_bytes()))
-        .map_err(|e| e.to_string())?;
+    set_secret(VAULT_NOSTR_SECRET, &to_hex(&secret.secret_bytes())).map_err(|e| e.to_string())?;
 
     Ok((secret, pubkey_hex))
 }
@@ -289,17 +288,14 @@ fn sign_nostr_event(event: &mut NostrEvent, secret: &SecretKey) -> Result<(), St
 // ── Nostr relay publishing ────────────────────────────────────────────────────
 
 async fn publish_to_relay(relay_url: &str, event: &NostrEvent) -> Result<bool, String> {
-    let (mut ws, _) = tokio::time::timeout(
-        Duration::from_secs(10),
-        connect_async(relay_url),
-    )
-    .await
-    .map_err(|_| "relay connection timed out".to_string())?
-    .map_err(|e| format!("relay connect: {}", e))?;
+    let (mut ws, _) = tokio::time::timeout(Duration::from_secs(10), connect_async(relay_url))
+        .await
+        .map_err(|_| "relay connection timed out".to_string())?
+        .map_err(|e| format!("relay connect: {}", e))?;
 
     // Send ["EVENT", event_object].
-    let msg_json = serde_json::to_string(&serde_json::json!(["EVENT", event]))
-        .map_err(|e| e.to_string())?;
+    let msg_json =
+        serde_json::to_string(&serde_json::json!(["EVENT", event])).map_err(|e| e.to_string())?;
     ws.send(WsMessage::Text(msg_json))
         .await
         .map_err(|e| format!("relay send: {}", e))?;
@@ -331,8 +327,7 @@ async fn mastodon_upload_media(
     token: &str,
     file_path: &str,
 ) -> Result<String, String> {
-    let bytes = std::fs::read(file_path)
-        .map_err(|e| format!("cannot read screenshot: {}", e))?;
+    let bytes = std::fs::read(file_path).map_err(|e| format!("cannot read screenshot: {}", e))?;
 
     let ext = std::path::Path::new(file_path)
         .extension()
@@ -516,16 +511,14 @@ pub async fn dshare_publish(
         let instance = match &cfg.mastodon_instance_url {
             Some(u) if !u.is_empty() => u.clone(),
             _ => {
-                result.mastodon_error =
-                    Some("Mastodon instance URL not configured".to_string());
+                result.mastodon_error = Some("Mastodon instance URL not configured".to_string());
                 return Ok(result);
             }
         };
         let token = match &cfg.mastodon_access_token {
             Some(t) if !t.is_empty() => t.clone(),
             _ => {
-                result.mastodon_error =
-                    Some("Mastodon access token not configured".to_string());
+                result.mastodon_error = Some("Mastodon access token not configured".to_string());
                 return Ok(result);
             }
         };

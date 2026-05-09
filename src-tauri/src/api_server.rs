@@ -97,6 +97,7 @@ fn default_cors() -> String {
 
 // ── Server runtime state ──────────────────────────────────────────────────────
 
+#[derive(Default)]
 struct ServerRuntime {
     /// Address the server is actually bound to (after start).
     bound_addr: Option<SocketAddr>,
@@ -104,16 +105,6 @@ struct ServerRuntime {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     /// Startup timestamp for uptime calculation.
     started_at: Option<Instant>,
-}
-
-impl Default for ServerRuntime {
-    fn default() -> Self {
-        Self {
-            bound_addr: None,
-            shutdown_tx: None,
-            started_at: None,
-        }
-    }
 }
 
 static RUNTIME: OnceLock<Mutex<ServerRuntime>> = OnceLock::new();
@@ -211,10 +202,7 @@ macro_rules! auth {
 
 // ── Route: GET /api/status ────────────────────────────────────────────────────
 
-async fn route_status(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-) -> Response {
+async fn route_status(headers: HeaderMap, State(state): State<AppState>) -> Response {
     auth!(headers, state);
     let telemetry = sysmonitor::read();
     let active_game = {
@@ -251,10 +239,7 @@ async fn route_status(
 
 // ── Route: GET /api/library ───────────────────────────────────────────────────
 
-async fn route_library(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-) -> Response {
+async fn route_library(headers: HeaderMap, State(state): State<AppState>) -> Response {
     auth!(headers, state);
     match read_state_entries() {
         Ok(entries) => {
@@ -316,10 +301,7 @@ async fn route_launch(
 
 // ── Route: POST /api/kill ─────────────────────────────────────────────────────
 
-async fn route_kill(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-) -> Response {
+async fn route_kill(headers: HeaderMap, State(state): State<AppState>) -> Response {
     auth!(headers, state);
     let _ = state.app.emit("api-kill-game", ());
     Json(json!({ "ok": true })).into_response()
@@ -327,10 +309,7 @@ async fn route_kill(
 
 // ── Route: GET /api/volume ────────────────────────────────────────────────────
 
-async fn route_volume_get(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-) -> Response {
+async fn route_volume_get(headers: HeaderMap, State(state): State<AppState>) -> Response {
     auth!(headers, state);
     // Volume querying requires platform-specific OS audio APIs.
     // Return null here; the frontend can maintain a cached value via WebSocket.
@@ -374,11 +353,7 @@ async fn route_metadata(
             let meta = entries
                 .get("game-metadata")
                 .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                .and_then(|map| {
-                    map.as_object()
-                        .and_then(|m| m.get(&q.path))
-                        .cloned()
-                })
+                .and_then(|map| map.as_object().and_then(|m| m.get(&q.path)).cloned())
                 .unwrap_or(Value::Null);
             Json(meta).into_response()
         }
@@ -404,11 +379,7 @@ async fn route_stats(
             let stats = entries
                 .get("game-stats")
                 .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                .and_then(|map| {
-                    map.as_object()
-                        .and_then(|m| m.get(&q.path))
-                        .cloned()
-                })
+                .and_then(|map| map.as_object().and_then(|m| m.get(&q.path)).cloned())
                 .unwrap_or(Value::Null);
             Json(stats).into_response()
         }
@@ -434,11 +405,7 @@ async fn route_notes(
             let notes = entries
                 .get("game-notes-v1")
                 .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                .and_then(|map| {
-                    map.as_object()
-                        .and_then(|m| m.get(&q.path))
-                        .cloned()
-                })
+                .and_then(|map| map.as_object().and_then(|m| m.get(&q.path)).cloned())
                 .unwrap_or(Value::Null);
             Json(json!({ "path": q.path, "notes": notes })).into_response()
         }
@@ -541,7 +508,7 @@ async fn ws_handler(mut socket: WebSocket, state: AppState) {
         "payload": { "version": APP_VERSION }
     })
     .to_string();
-    if socket.send(Message::Text(welcome.into())).await.is_err() {
+    if socket.send(Message::Text(welcome)).await.is_err() {
         return;
     }
 
@@ -571,12 +538,12 @@ async fn ws_handler(mut socket: WebSocket, state: AppState) {
                         "activeGame": active_game,
                     }
                 }).to_string();
-                if socket.send(Message::Text(msg.into())).await.is_err() {
+                if socket.send(Message::Text(msg)).await.is_err() {
                     break;
                 }
             }
             Ok(msg) = rx.recv() => {
-                if socket.send(Message::Text(msg.into())).await.is_err() {
+                if socket.send(Message::Text(msg)).await.is_err() {
                     break;
                 }
             }
@@ -656,9 +623,9 @@ fn build_game_entry(entries: &HashMap<String, String>, path: &str) -> Value {
         .unwrap_or_default();
     let games_raw = entries.get("games-list-v2").cloned().unwrap_or_default();
     let games: Vec<Value> = serde_json::from_str(&games_raw).unwrap_or_default();
-    let game = games.into_iter().find(|g| {
-        g.get("path").and_then(|p| p.as_str()) == Some(path)
-    });
+    let game = games
+        .into_iter()
+        .find(|g| g.get("path").and_then(|p| p.as_str()) == Some(path));
     json!({
         "path": path,
         "name": game.as_ref().and_then(|g| g.get("name")),
@@ -705,7 +672,10 @@ pub fn start(app: Arc<AppHandle>, config: &ApiServerConfig) -> Result<(), String
         .route("/api/notes", get(route_notes))
         .route("/api/notify", post(route_notify))
         .route("/api/overlay/widget", post(route_overlay_widget_push))
-        .route("/api/overlay/widget/:id", delete(route_overlay_widget_remove))
+        .route(
+            "/api/overlay/widget/:id",
+            delete(route_overlay_widget_remove),
+        )
         .route("/ws", get(route_ws))
         .layer(cors)
         .with_state(app_state);
@@ -714,9 +684,8 @@ pub fn start(app: Arc<AppHandle>, config: &ApiServerConfig) -> Result<(), String
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
 
-    let listener = std::net::TcpListener::bind(addr).map_err(|e| {
-        format!("Cannot bind API server to port {}: {}", port, e)
-    })?;
+    let listener = std::net::TcpListener::bind(addr)
+        .map_err(|e| format!("Cannot bind API server to port {}: {}", port, e))?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let bound_addr = listener.local_addr().map_err(|e| e.to_string())?;
 

@@ -3055,8 +3055,8 @@ pub async fn fetch_steamgriddb_artwork(
     query: String,
     steam_app_id: Option<String>,
 ) -> Result<SteamGridDbArtworkResult, String> {
-    let key = get_api_key("steamgriddb".to_string())
-        .ok_or("SteamGridDB API key is not configured")?;
+    let key =
+        get_api_key("steamgriddb".to_string()).ok_or("SteamGridDB API key is not configured")?;
     let key = key.trim();
     if key.is_empty() {
         return Err("SteamGridDB API key is empty".to_string());
@@ -3071,7 +3071,11 @@ pub async fn fetch_steamgriddb_artwork(
     let mut game_id: Option<i64> = None;
     let mut game_name: Option<String> = None;
 
-    if let Some(app_id) = steam_app_id.as_ref().map(|x| x.trim()).filter(|x| !x.is_empty()) {
+    if let Some(app_id) = steam_app_id
+        .as_ref()
+        .map(|x| x.trim())
+        .filter(|x| !x.is_empty())
+    {
         let steam_url = format!("https://www.steamgriddb.com/api/v2/games/steam/{app_id}");
         if let Ok(resp) = client
             .get(&steam_url)

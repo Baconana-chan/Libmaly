@@ -42,10 +42,10 @@ mod metadata;
 use metadata::{
     dlsite_is_logged_in, dlsite_login, dlsite_logout, f95_is_logged_in, f95_login, f95_logout,
     fakku_is_logged_in, fakku_login, fakku_logout, fetch_dlsite_metadata, fetch_f95_metadata,
-    fetch_fakku_metadata, fetch_igdb_metadata, fetch_itchio_metadata, fetch_johren_metadata, fetch_mangagamer_metadata,
-    fetch_mobygames_metadata, fetch_rawg_metadata, fetch_steamgriddb_artwork,
-    fetch_vndb_metadata, get_api_key, get_scraper_health_snapshot, search_suggest_links,
-    set_api_key,
+    fetch_fakku_metadata, fetch_igdb_metadata, fetch_itchio_metadata, fetch_johren_metadata,
+    fetch_mangagamer_metadata, fetch_mobygames_metadata, fetch_rawg_metadata,
+    fetch_steamgriddb_artwork, fetch_vndb_metadata, get_api_key, get_scraper_health_snapshot,
+    search_suggest_links, set_api_key,
 };
 mod sysmonitor;
 
@@ -73,85 +73,77 @@ use itch::{
     itch_butler_list_owned_games, itch_butler_status,
 };
 
-mod screenshot;
-mod replay;
-mod plugin_manager;
 mod api_server;
+mod friend_activity;
+mod plugin_manager;
 mod pulse;
+mod replay;
+mod screenshot;
+mod social_identity;
 mod social_providers;
 mod trending;
-mod social_identity;
-mod friend_activity;
-use social_identity::{
-    identity_get_profile, identity_get_fingerprint, identity_save_profile,
-    identity_generate_keys, identity_has_keys,
-    identity_export_bundle, identity_import_bundle, identity_delete,
+use api_server::{
+    api_server_broadcast_game_event, api_server_get_config, api_server_get_token,
+    api_server_notify_library_updated, api_server_regenerate_token, api_server_save_config,
+    api_server_status,
 };
 use friend_activity::{
-    friends_list, friends_add, friends_remove, friends_update,
-    friends_get_activity, friends_get_now_playing,
-};
-use social_providers::{
-    social_get_unified_peers, social_get_provider_configs, social_save_provider_config,
-    social_get_provider_statuses, social_link_identities, social_unlink_identities,
-    social_get_identity_links, social_get_link_suggestions,
-    social_steam_start, social_steam_stop, social_get_activity_feed,
+    friends_add, friends_get_activity, friends_get_now_playing, friends_list, friends_remove,
+    friends_update,
 };
 use plugin_manager::{
-    find_plugin_for_url, fetch_metadata_via_plugin,
-    plugin_list, plugin_install_from_zip, plugin_install_inline,
-    plugin_set_enabled, plugin_delete, plugin_get_script,
-    plugin_get_panel_path, plugin_match_url, plugin_fetch_metadata,
+    fetch_metadata_via_plugin, find_plugin_for_url, plugin_delete, plugin_fetch_metadata,
+    plugin_get_panel_path, plugin_get_script, plugin_install_from_zip, plugin_install_inline,
+    plugin_list, plugin_match_url, plugin_set_enabled,
 };
-use api_server::{
-    api_server_get_config, api_server_save_config, api_server_status,
-    api_server_regenerate_token, api_server_get_token,
-    api_server_notify_library_updated, api_server_broadcast_game_event,
-};
-use pulse::
-{
-    pulse_get_config, pulse_save_config, pulse_get_peers,
+use pulse::{
+    pulse_get_active_relay_caps, pulse_get_config, pulse_get_peer_id, pulse_get_peers,
+    pulse_get_relay_caps, pulse_probe_relay, pulse_save_config, pulse_set_cover,
     pulse_start_service, pulse_stop_service,
-    pulse_get_peer_id, pulse_set_cover,
-    pulse_probe_relay, pulse_get_relay_caps, pulse_get_active_relay_caps,
-};
-use trending::{
-    trending_get_config, trending_save_config,
-    trending_fetch, trending_contribute, trending_contribution_cooldown_secs,
 };
 use screenshot::{
     delete_screenshot_file, export_screenshots_zip, get_screenshot_data_url, get_screenshots,
     open_screenshots_folder, overwrite_screenshot_png, save_screenshot_tags,
     take_screenshot_manual,
 };
+use social_identity::{
+    identity_delete, identity_export_bundle, identity_generate_keys, identity_get_fingerprint,
+    identity_get_profile, identity_has_keys, identity_import_bundle, identity_save_profile,
+};
+use social_providers::{
+    social_get_activity_feed, social_get_identity_links, social_get_link_suggestions,
+    social_get_provider_configs, social_get_provider_statuses, social_get_unified_peers,
+    social_link_identities, social_save_provider_config, social_steam_start, social_steam_stop,
+    social_unlink_identities,
+};
+use trending::{
+    trending_contribute, trending_contribution_cooldown_secs, trending_fetch, trending_get_config,
+    trending_save_config,
+};
 mod data_paths;
 mod discord;
+mod p2p_chat;
 mod save_transfer;
 mod sync;
-mod p2p_chat;
 use p2p_chat::{
-    chat_get_config, chat_save_config,
-    chat_get_my_x25519_pub,
-    chat_get_contacts, chat_save_contact, chat_remove_contact,
-    chat_get_conversations, chat_get_messages,
-    chat_send_message, chat_fetch_remote,
-    chat_mark_read, chat_delete_conversation,
+    chat_delete_conversation, chat_fetch_remote, chat_get_config, chat_get_contacts,
+    chat_get_conversations, chat_get_messages, chat_get_my_x25519_pub, chat_mark_read,
+    chat_remove_contact, chat_save_config, chat_save_contact, chat_send_message,
 };
 mod decentralized_share;
 use decentralized_share::{
-    dshare_get_config, dshare_save_config,
-    dshare_get_nostr_pubkey, dshare_preview_content, dshare_publish,
+    dshare_get_config, dshare_get_nostr_pubkey, dshare_preview_content, dshare_publish,
+    dshare_save_config,
 };
 mod eos;
-use eos::{
-    eos_get_config, eos_save_config, eos_get_client_secret_set,
-    eos_initialize, eos_shutdown, eos_get_status,
-    eos_login, eos_logout, eos_query_ownership, eos_get_achievements,
-};
 use data_paths::{app_data_root, crash_report_path, is_portable_mode};
 use discord::{
     discord_clear_presence, discord_get_snapshot, discord_initialize,
     discord_open_connected_games_settings, discord_set_presence, discord_shutdown,
+};
+use eos::{
+    eos_get_achievements, eos_get_client_secret_set, eos_get_config, eos_get_status,
+    eos_initialize, eos_login, eos_logout, eos_query_ownership, eos_save_config, eos_shutdown,
 };
 use save_transfer::{
     is_valid_save_directory as check_valid_save_directory, SavePathInfo, TransferResult,
@@ -3207,7 +3199,10 @@ async fn open_overlay_browser(app: AppHandle, url: String) -> Result<(), String>
 
     if let Some(w) = app.get_webview_window("overlay-browser") {
         // Window already exists — navigate it in-place via eval and bring to front
-        let js = format!("location.href = {};", serde_json::to_string(&url_str).unwrap_or_default());
+        let js = format!(
+            "location.href = {};",
+            serde_json::to_string(&url_str).unwrap_or_default()
+        );
         let _ = w.eval(&js);
         let _ = w.show();
         let _ = w.set_focus();
@@ -6043,7 +6038,10 @@ fn detect_mugen_game(path: String) -> bool {
 /// that contains `MS/x86/` and optionally `MS/x86_64/`).  MUGEN is 32-bit so
 /// we always prefer the x86 DLLs.  Returns the list of DLL names copied.
 #[tauri::command]
-fn apply_dgvoodoo_wrapper(game_path: String, dgvoodoo_folder: String) -> Result<Vec<String>, String> {
+fn apply_dgvoodoo_wrapper(
+    game_path: String,
+    dgvoodoo_folder: String,
+) -> Result<Vec<String>, String> {
     let game_dir = std::path::Path::new(&game_path)
         .parent()
         .ok_or_else(|| "Invalid game path".to_string())?;
@@ -6065,14 +6063,19 @@ fn apply_dgvoodoo_wrapper(game_path: String, dgvoodoo_folder: String) -> Result<
         }
     };
 
-    let candidates = ["D3D8.dll", "D3D9.dll", "D3D11.dll", "D3DImm.dll", "DDraw.dll"];
+    let candidates = [
+        "D3D8.dll",
+        "D3D9.dll",
+        "D3D11.dll",
+        "D3DImm.dll",
+        "DDraw.dll",
+    ];
     let mut copied: Vec<String> = Vec::new();
     for dll in &candidates {
         let src = src_dir.join(dll);
         if src.exists() {
             let dst = game_dir.join(dll);
-            std::fs::copy(&src, &dst)
-                .map_err(|e| format!("Failed to copy {dll}: {e}"))?;
+            std::fs::copy(&src, &dst).map_err(|e| format!("Failed to copy {dll}: {e}"))?;
             copied.push((*dll).to_string());
         }
     }
@@ -6089,13 +6092,18 @@ fn remove_dgvoodoo_wrapper(game_path: String) -> Result<Vec<String>, String> {
     let game_dir = std::path::Path::new(&game_path)
         .parent()
         .ok_or_else(|| "Invalid game path".to_string())?;
-    let candidates = ["D3D8.dll", "D3D9.dll", "D3D11.dll", "D3DImm.dll", "DDraw.dll"];
+    let candidates = [
+        "D3D8.dll",
+        "D3D9.dll",
+        "D3D11.dll",
+        "D3DImm.dll",
+        "DDraw.dll",
+    ];
     let mut removed: Vec<String> = Vec::new();
     for dll in &candidates {
         let p = game_dir.join(dll);
         if p.exists() {
-            std::fs::remove_file(&p)
-                .map_err(|e| format!("Failed to remove {dll}: {e}"))?;
+            std::fs::remove_file(&p).map_err(|e| format!("Failed to remove {dll}: {e}"))?;
             removed.push((*dll).to_string());
         }
     }
@@ -6163,7 +6171,13 @@ fn write_pe_characteristics(exe_path: &Path, characteristics: u16) -> Result<(),
         .write(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .open(exe_path)
-        .map_err(|e| format!("Failed to open executable for patching '{}': {}", exe_path.display(), e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to open executable for patching '{}': {}",
+                exe_path.display(),
+                e
+            )
+        })?;
     file.seek(SeekFrom::Start(char_offset))
         .map_err(|e| format!("Failed to seek to characteristics field: {}", e))?;
     file.write_all(&characteristics.to_le_bytes())
@@ -6342,7 +6356,10 @@ fn launch_game(
                 }
 
                 let _ = app.emit("game-started", &path_clone);
-                api_server::broadcast_event("game-started", serde_json::json!({ "path": &path_clone }));
+                api_server::broadcast_event(
+                    "game-started",
+                    serde_json::json!({ "path": &path_clone }),
+                );
                 pulse::on_game_started(&path_clone, None);
 
                 // Start the instant-replay ring-buffer capture loop.
@@ -6452,10 +6469,13 @@ fn launch_game(
                         }),
                     },
                 );
-                api_server::broadcast_event("game-finished", serde_json::json!({
-                    "path": &path_clone,
-                    "durationSecs": duration,
-                }));
+                api_server::broadcast_event(
+                    "game-finished",
+                    serde_json::json!({
+                        "path": &path_clone,
+                        "durationSecs": duration,
+                    }),
+                );
                 pulse::on_game_stopped();
             }
             Err(e) => {
@@ -9556,11 +9576,17 @@ pub fn run() {
                 if api_config.enabled {
                     let app_arc = std::sync::Arc::new(app.handle().clone());
                     if let Err(e) = api_server::start(app_arc, &api_config) {
-                        push_rust_log(Some(app.handle()), "warn",
-                            format!("API server failed to start: {}", e));
+                        push_rust_log(
+                            Some(app.handle()),
+                            "warn",
+                            format!("API server failed to start: {}", e),
+                        );
                     } else {
-                        push_rust_log(Some(app.handle()), "info",
-                            format!("API server listening on port {}", api_config.port));
+                        push_rust_log(
+                            Some(app.handle()),
+                            "info",
+                            format!("API server listening on port {}", api_config.port),
+                        );
                     }
                 }
             }
@@ -9575,8 +9601,11 @@ pub fn run() {
                 let pulse_cfg = pulse::load_config();
                 if pulse_cfg.enabled {
                     if let Err(e) = pulse::start(app.handle().clone(), &pulse_cfg) {
-                        push_rust_log(Some(app.handle()), "warn",
-                            format!("Pulse failed to start: {}", e));
+                        push_rust_log(
+                            Some(app.handle()),
+                            "warn",
+                            format!("Pulse failed to start: {}", e),
+                        );
                     } else {
                         push_rust_log(Some(app.handle()), "info", "Pulse P2P service started");
                     }
@@ -9667,7 +9696,8 @@ pub fn run() {
                                     let path = game.path.clone();
                                     let app2 = app.clone();
                                     thread::spawn(move || {
-                                        let _ = launch_game(app2, path, None, None, None, None, None);
+                                        let _ =
+                                            launch_game(app2, path, None, None, None, None, None);
                                     });
                                 }
                             }

@@ -165,10 +165,10 @@ impl SocialProviderConfig {
             provider_id: id.to_owned(),
             enabled: false,
             label: match id {
-                PROVIDER_PULSE   => "Pulse (LAN / Relay)".to_owned(),
+                PROVIDER_PULSE => "Pulse (LAN / Relay)".to_owned(),
                 PROVIDER_DISCORD => "Discord".to_owned(),
-                PROVIDER_STEAM   => "Steam".to_owned(),
-                other            => other.to_owned(),
+                PROVIDER_STEAM => "Steam".to_owned(),
+                other => other.to_owned(),
             },
             credentials: HashMap::new(),
         }
@@ -187,8 +187,8 @@ pub struct SocialProviderStatus {
 
 // ── Config / links file names ─────────────────────────────────────────────────
 
-const CONFIG_FILE: &str  = "social_providers.json";
-const LINKS_FILE: &str   = "social_identity_links.json";
+const CONFIG_FILE: &str = "social_providers.json";
+const LINKS_FILE: &str = "social_identity_links.json";
 
 const BUILTIN_PROVIDERS: &[&str] = &[PROVIDER_PULSE, PROVIDER_DISCORD, PROVIDER_STEAM];
 
@@ -202,7 +202,9 @@ fn uf_find(parent: &mut HashMap<UfKey, UfKey>, key: UfKey) -> UfKey {
         return key;
     }
     let p = parent[&key].clone();
-    if p == key { return key; }
+    if p == key {
+        return key;
+    }
     let root = uf_find(parent, p);
     parent.insert(key.clone(), root.clone());
     root
@@ -243,7 +245,8 @@ impl SocialRegistry {
 
     fn unified_peers(&self) -> Vec<UnifiedPeer> {
         // Collect all online records across all enabled providers
-        let all: Vec<&SocialPeerRecord> = self.records
+        let all: Vec<&SocialPeerRecord> = self
+            .records
             .values()
             .flat_map(|v| v.iter())
             .filter(|r| r.online)
@@ -273,10 +276,10 @@ impl SocialRegistry {
 
         // Provider priority for display_name / avatar resolution
         let priority = |pid: &str| match pid {
-            PROVIDER_PULSE   => 0u8,
+            PROVIDER_PULSE => 0u8,
             PROVIDER_DISCORD => 1,
-            PROVIDER_STEAM   => 2,
-            _                => 3,
+            PROVIDER_STEAM => 2,
+            _ => 3,
         };
 
         let mut unified: Vec<UnifiedPeer> = groups
@@ -284,7 +287,7 @@ impl SocialRegistry {
             .map(|(root_key, mut records)| {
                 records.sort_by_key(|r| priority(&r.provider_id));
 
-                let primary   = records[0];
+                let primary = records[0];
                 let last_seen = records.iter().map(|r| r.last_seen).max().unwrap_or(0);
 
                 // Best activity: prefer the record with the most recent session_start
@@ -301,12 +304,15 @@ impl SocialRegistry {
                     display_name: primary.display_name.clone(),
                     avatar_url,
                     activity,
-                    sources: records.iter().map(|r| SocialSource {
-                        provider_id:      r.provider_id.clone(),
-                        provider_peer_id: r.provider_peer_id.clone(),
-                        last_seen:        r.last_seen,
-                        online:           r.online,
-                    }).collect(),
+                    sources: records
+                        .iter()
+                        .map(|r| SocialSource {
+                            provider_id: r.provider_id.clone(),
+                            provider_peer_id: r.provider_peer_id.clone(),
+                            last_seen: r.last_seen,
+                            online: r.online,
+                        })
+                        .collect(),
                     last_seen,
                 }
             })
@@ -314,7 +320,9 @@ impl SocialRegistry {
 
         // Sort: playing first, then by last_seen descending
         unified.sort_by(|a, b| {
-            b.activity.is_some().cmp(&a.activity.is_some())
+            b.activity
+                .is_some()
+                .cmp(&a.activity.is_some())
                 .then(b.last_seen.cmp(&a.last_seen))
         });
 
@@ -322,34 +330,39 @@ impl SocialRegistry {
     }
 
     fn suggest_links(&self) -> Vec<IdentityLinkSuggestion> {
-        let all: Vec<&SocialPeerRecord> = self.records
-            .values()
-            .flat_map(|v| v.iter())
-            .collect();
+        let all: Vec<&SocialPeerRecord> = self.records.values().flat_map(|v| v.iter()).collect();
 
         let mut suggestions = Vec::new();
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
                 let a = all[i];
                 let b = all[j];
-                if a.provider_id == b.provider_id { continue; }
+                if a.provider_id == b.provider_id {
+                    continue;
+                }
 
                 // Skip already linked
                 let linked = self.links.iter().any(|l| {
-                    (l.provider_a == a.provider_id && l.peer_id_a == a.provider_peer_id
-                     && l.provider_b == b.provider_id && l.peer_id_b == b.provider_peer_id)
-                    || (l.provider_a == b.provider_id && l.peer_id_a == b.provider_peer_id
-                        && l.provider_b == a.provider_id && l.peer_id_b == a.provider_peer_id)
+                    (l.provider_a == a.provider_id
+                        && l.peer_id_a == a.provider_peer_id
+                        && l.provider_b == b.provider_id
+                        && l.peer_id_b == b.provider_peer_id)
+                        || (l.provider_a == b.provider_id
+                            && l.peer_id_a == b.provider_peer_id
+                            && l.provider_b == a.provider_id
+                            && l.peer_id_b == a.provider_peer_id)
                 });
-                if linked { continue; }
+                if linked {
+                    continue;
+                }
 
                 if a.display_name.trim().to_lowercase() == b.display_name.trim().to_lowercase() {
                     suggestions.push(IdentityLinkSuggestion {
-                        provider_a:     a.provider_id.clone(),
-                        peer_id_a:      a.provider_peer_id.clone(),
+                        provider_a: a.provider_id.clone(),
+                        peer_id_a: a.provider_peer_id.clone(),
                         display_name_a: a.display_name.clone(),
-                        provider_b:     b.provider_id.clone(),
-                        peer_id_b:      b.provider_peer_id.clone(),
+                        provider_b: b.provider_id.clone(),
+                        peer_id_b: b.provider_peer_id.clone(),
                         display_name_b: b.display_name.clone(),
                     });
                 }
@@ -385,7 +398,8 @@ pub fn init(app: AppHandle) {
 pub fn submit_peers(provider_id: &str, records: Vec<SocialPeerRecord>) {
     let mut reg = registry().lock().unwrap();
     reg.records.insert(provider_id.to_owned(), records);
-    reg.statuses.insert(provider_id.to_owned(), "active".to_owned());
+    reg.statuses
+        .insert(provider_id.to_owned(), "active".to_owned());
     reg.emit_update();
 }
 
@@ -393,7 +407,8 @@ pub fn submit_peers(provider_id: &str, records: Vec<SocialPeerRecord>) {
 /// Calling with a non-active status clears the peer list for that provider.
 pub fn set_provider_status(provider_id: &str, status: &str) {
     let mut reg = registry().lock().unwrap();
-    reg.statuses.insert(provider_id.to_owned(), status.to_owned());
+    reg.statuses
+        .insert(provider_id.to_owned(), status.to_owned());
     if status.starts_with("error") || status.starts_with("disconnected") {
         reg.records.remove(provider_id);
         reg.emit_update();
@@ -518,7 +533,9 @@ pub fn start_steam_provider(api_key: String, steam_id: String) {
             set_provider_status(PROVIDER_STEAM, "connecting");
 
             loop {
-                if stop.load(Ordering::Relaxed) { break; }
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
 
                 // ── Fetch friend list ──
                 let friends_url = format!(
@@ -528,18 +545,19 @@ pub fn start_steam_provider(api_key: String, steam_id: String) {
                 );
 
                 let friend_ids: Vec<String> = match rt.block_on(client.get(&friends_url).send()) {
-                    Ok(resp) => {
-                        match rt.block_on(resp.json::<SteamFriendListResponse>()) {
-                            Ok(r) => r.friendslist.friends.into_iter()
-                                .map(|f| f.steamid)
-                                .collect(),
-                            Err(e) => {
-                                set_provider_status(PROVIDER_STEAM, &format!("error: {}", e));
-                                std::thread::sleep(Duration::from_secs(60));
-                                continue;
-                            }
+                    Ok(resp) => match rt.block_on(resp.json::<SteamFriendListResponse>()) {
+                        Ok(r) => r
+                            .friendslist
+                            .friends
+                            .into_iter()
+                            .map(|f| f.steamid)
+                            .collect(),
+                        Err(e) => {
+                            set_provider_status(PROVIDER_STEAM, &format!("error: {}", e));
+                            std::thread::sleep(Duration::from_secs(60));
+                            continue;
                         }
-                    }
+                    },
                     Err(e) => {
                         set_provider_status(PROVIDER_STEAM, &format!("error: {}", e));
                         std::thread::sleep(Duration::from_secs(60));
@@ -554,7 +572,9 @@ pub fn start_steam_provider(api_key: String, steam_id: String) {
                 }
 
                 // ── Fetch player summaries (max 100 at once) ──
-                let ids_str = friend_ids.iter().take(100)
+                let ids_str = friend_ids
+                    .iter()
+                    .take(100)
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(",");
@@ -570,25 +590,26 @@ pub fn start_steam_provider(api_key: String, steam_id: String) {
                         match rt.block_on(resp.json::<SteamPlayerSummariesResponse>()) {
                             Ok(r) => {
                                 let now = now_secs();
-                                r.response.players.into_iter()
+                                r.response
+                                    .players
+                                    .into_iter()
                                     .filter(|p| p.personastate > 0) // 0 = offline
                                     .map(|p| {
-                                        let activity = p.gameextrainfo.as_ref().map(|game| {
-                                            SocialActivity {
+                                        let activity =
+                                            p.gameextrainfo.as_ref().map(|game| SocialActivity {
                                                 title: game.clone(),
                                                 cover_url: None,
                                                 session_start: None,
                                                 status_text: Some("Playing via Steam".to_owned()),
-                                            }
-                                        });
+                                            });
                                         SocialPeerRecord {
-                                            provider_id:      PROVIDER_STEAM.to_owned(),
+                                            provider_id: PROVIDER_STEAM.to_owned(),
                                             provider_peer_id: p.steamid,
-                                            display_name:     p.personaname,
-                                            avatar_url:       p.avatarfull,
+                                            display_name: p.personaname,
+                                            avatar_url: p.avatarfull,
                                             activity,
-                                            last_seen:        now,
-                                            online:           true,
+                                            last_seen: now,
+                                            online: true,
                                         }
                                     })
                                     .collect::<Vec<_>>()
@@ -641,7 +662,11 @@ pub fn social_get_provider_configs() -> Vec<SocialProviderConfig> {
 #[tauri::command]
 pub fn social_save_provider_config(config: SocialProviderConfig) -> Result<(), String> {
     let mut reg = registry().lock().unwrap();
-    if let Some(existing) = reg.configs.iter_mut().find(|c| c.provider_id == config.provider_id) {
+    if let Some(existing) = reg
+        .configs
+        .iter_mut()
+        .find(|c| c.provider_id == config.provider_id)
+    {
         *existing = config;
     } else {
         reg.configs.push(config);
@@ -656,22 +681,34 @@ pub fn social_get_provider_statuses() -> Vec<SocialProviderStatus> {
     for c in &reg.configs {
         ids.insert(c.provider_id.clone());
     }
-    let mut out: Vec<SocialProviderStatus> = ids.into_iter().map(|id| {
-        let status = reg.statuses.get(&id)
-            .cloned()
-            .unwrap_or_else(|| "disconnected".to_owned());
-        let peer_count = reg.records.get(&id).map(|v| v.len()).unwrap_or(0);
-        SocialProviderStatus { provider_id: id, status, peer_count }
-    }).collect();
+    let mut out: Vec<SocialProviderStatus> = ids
+        .into_iter()
+        .map(|id| {
+            let status = reg
+                .statuses
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| "disconnected".to_owned());
+            let peer_count = reg.records.get(&id).map(|v| v.len()).unwrap_or(0);
+            SocialProviderStatus {
+                provider_id: id,
+                status,
+                peer_count,
+            }
+        })
+        .collect();
     // Stable order: builtin first, then alphabetical
     let order = |id: &str| match id {
-        PROVIDER_PULSE   => 0u8,
+        PROVIDER_PULSE => 0u8,
         PROVIDER_DISCORD => 1,
-        PROVIDER_STEAM   => 2,
-        _                => 3,
+        PROVIDER_STEAM => 2,
+        _ => 3,
     };
-    out.sort_by(|a, b| order(&a.provider_id).cmp(&order(&b.provider_id))
-        .then(a.provider_id.cmp(&b.provider_id)));
+    out.sort_by(|a, b| {
+        order(&a.provider_id)
+            .cmp(&order(&b.provider_id))
+            .then(a.provider_id.cmp(&b.provider_id))
+    });
     out
 }
 
@@ -680,19 +717,24 @@ pub fn social_get_provider_statuses() -> Vec<SocialProviderStatus> {
 #[tauri::command]
 pub fn social_link_identities(
     provider_a: String,
-    peer_id_a:  String,
+    peer_id_a: String,
     provider_b: String,
-    peer_id_b:  String,
+    peer_id_b: String,
 ) -> Result<(), String> {
     let mut reg = registry().lock().unwrap();
     // Remove any link that already involves either endpoint
     reg.links.retain(|l| {
         !((l.provider_a == provider_a && l.peer_id_a == peer_id_a)
-          || (l.provider_b == provider_a && l.peer_id_b == peer_id_a)
-          || (l.provider_a == provider_b && l.peer_id_a == peer_id_b)
-          || (l.provider_b == provider_b && l.peer_id_b == peer_id_b))
+            || (l.provider_b == provider_a && l.peer_id_b == peer_id_a)
+            || (l.provider_a == provider_b && l.peer_id_a == peer_id_b)
+            || (l.provider_b == provider_b && l.peer_id_b == peer_id_b))
     });
-    reg.links.push(SocialIdentityLink { provider_a, peer_id_a, provider_b, peer_id_b });
+    reg.links.push(SocialIdentityLink {
+        provider_a,
+        peer_id_a,
+        provider_b,
+        peer_id_b,
+    });
     let links = reg.links.clone();
     save_links(&links)?;
     reg.emit_update();
@@ -705,7 +747,7 @@ pub fn social_unlink_identities(provider_a: String, peer_id_a: String) -> Result
     let mut reg = registry().lock().unwrap();
     reg.links.retain(|l| {
         !((l.provider_a == provider_a && l.peer_id_a == peer_id_a)
-          || (l.provider_b == provider_a && l.peer_id_b == peer_id_a))
+            || (l.provider_b == provider_a && l.peer_id_b == peer_id_a))
     });
     let links = reg.links.clone();
     save_links(&links)?;
@@ -782,25 +824,29 @@ pub struct FeedItem {
 #[tauri::command]
 pub fn social_get_activity_feed() -> Vec<FeedItem> {
     let reg = registry().lock().unwrap();
-    let mut items: Vec<FeedItem> = reg.records.values()
+    let mut items: Vec<FeedItem> = reg
+        .records
+        .values()
         .flat_map(|v| v.iter())
         .filter(|r| r.online)
         .map(|r| FeedItem {
-            provider_id:  r.provider_id.clone(),
+            provider_id: r.provider_id.clone(),
             display_name: r.display_name.clone(),
-            avatar_url:   r.avatar_url.clone(),
-            game_title:   r.activity.as_ref().map(|a| a.title.clone()),
-            cover_url:    r.activity.as_ref().and_then(|a| a.cover_url.clone()),
+            avatar_url: r.avatar_url.clone(),
+            game_title: r.activity.as_ref().map(|a| a.title.clone()),
+            cover_url: r.activity.as_ref().and_then(|a| a.cover_url.clone()),
             session_start: r.activity.as_ref().and_then(|a| a.session_start),
-            status_text:  r.activity.as_ref().and_then(|a| a.status_text.clone()),
-            last_seen:    r.last_seen,
-            is_online:    r.online,
+            status_text: r.activity.as_ref().and_then(|a| a.status_text.clone()),
+            last_seen: r.last_seen,
+            is_online: r.online,
         })
         .collect();
 
     items.sort_by(|a, b| {
         // Playing a game first, then by last_seen desc
-        b.game_title.is_some().cmp(&a.game_title.is_some())
+        b.game_title
+            .is_some()
+            .cmp(&a.game_title.is_some())
             .then(b.last_seen.cmp(&a.last_seen))
     });
     items

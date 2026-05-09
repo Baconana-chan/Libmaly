@@ -125,38 +125,46 @@ fn now_secs() -> u64 {
 fn merge(entry: &FriendEntry, peer: Option<&PeerInfo>) -> FriendActivityEntry {
     let now = now_secs();
 
-    let (display_name, avatar_url, game_title, cover_url, session_start, is_online, last_seen, via_relay) =
-        match peer {
-            Some(p) => {
-                let online = now.saturating_sub(p.last_seen) < ONLINE_WINDOW_SECS;
-                (
-                    entry
-                        .nickname
-                        .clone()
-                        .unwrap_or_else(|| p.display_name.clone()),
-                    p.avatar_url.clone(),
-                    p.activity.as_ref().map(|a| a.title.clone()),
-                    p.activity.as_ref().and_then(|a| a.cover_url.clone()),
-                    p.activity.as_ref().map(|a| a.session_start),
-                    online,
-                    Some(p.last_seen),
-                    p.via_relay,
-                )
-            }
-            None => (
+    let (
+        display_name,
+        avatar_url,
+        game_title,
+        cover_url,
+        session_start,
+        is_online,
+        last_seen,
+        via_relay,
+    ) = match peer {
+        Some(p) => {
+            let online = now.saturating_sub(p.last_seen) < ONLINE_WINDOW_SECS;
+            (
                 entry
                     .nickname
                     .clone()
-                    .unwrap_or_else(|| entry.peer_id.clone()),
-                None,
-                None,
-                None,
-                None,
-                false,
-                None,
-                false,
-            ),
-        };
+                    .unwrap_or_else(|| p.display_name.clone()),
+                p.avatar_url.clone(),
+                p.activity.as_ref().map(|a| a.title.clone()),
+                p.activity.as_ref().and_then(|a| a.cover_url.clone()),
+                p.activity.as_ref().map(|a| a.session_start),
+                online,
+                Some(p.last_seen),
+                p.via_relay,
+            )
+        }
+        None => (
+            entry
+                .nickname
+                .clone()
+                .unwrap_or_else(|| entry.peer_id.clone()),
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+        ),
+    };
 
     FriendActivityEntry {
         peer_id: entry.peer_id.clone(),
@@ -252,10 +260,8 @@ pub fn friends_get_activity() -> Vec<FriendActivityEntry> {
 
     // Snapshot the live peer map once.
     let live_peers: Vec<PeerInfo> = pulse_get_peers();
-    let peer_map: std::collections::HashMap<&str, &PeerInfo> = live_peers
-        .iter()
-        .map(|p| (p.peer_id.as_str(), p))
-        .collect();
+    let peer_map: std::collections::HashMap<&str, &PeerInfo> =
+        live_peers.iter().map(|p| (p.peer_id.as_str(), p)).collect();
 
     let mut entries: Vec<FriendActivityEntry> = cfg
         .friends
@@ -264,12 +270,10 @@ pub fn friends_get_activity() -> Vec<FriendActivityEntry> {
         .collect();
 
     // Sort: online first, then by last_seen desc.
-    entries.sort_by(|a, b| {
-        match (a.is_online, b.is_online) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => b.last_seen.cmp(&a.last_seen),
-        }
+    entries.sort_by(|a, b| match (a.is_online, b.is_online) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => b.last_seen.cmp(&a.last_seen),
     });
 
     entries

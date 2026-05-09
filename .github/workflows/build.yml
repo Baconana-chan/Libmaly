@@ -14,6 +14,11 @@ on:
         description: 'Create a GitHub Release from this build'
         type: boolean
         default: false
+      tag:
+        description: 'Release tag to create/update when running manually, e.g. v1.10.0'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: write   # needed to create releases and upload assets
@@ -158,18 +163,24 @@ jobs:
       # ── Tauri build ───────────────────────────────────────────────────────
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: "LIBMALY ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || github.sha }}"
-          releaseBody: |
-            See the [changelog](https://github.com/${{ github.repository }}/blob/main/TODO.md) for details.
-          releaseDraft: true
-          prerelease: false
           args: >-
             --target ${{ matrix.platform.target }}
             --bundles ${{ matrix.platform.bundles }}
+
+      - name: Zip macOS app bundle
+        if: contains(matrix.platform.runner, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir="src-tauri/target/${{ matrix.platform.target }}/release/bundle/macos"
+          if compgen -G "$bundle_dir/*.app" > /dev/null; then
+            for app in "$bundle_dir"/*.app; do
+              zip_name="$bundle_dir/$(basename "$app" .app)-${{ matrix.platform.target }}.zip"
+              ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_name"
+              echo "Created $zip_name"
+            done
+          fi
 
       # ── Upload artifacts (also available without a release) ───────────────
       - name: Upload installers as workflow artifacts
@@ -184,6 +195,7 @@ jobs:
             src-tauri/target/${{ matrix.platform.target }}/release/bundle/deb/*.deb
             src-tauri/target/${{ matrix.platform.target }}/release/bundle/rpm/*.rpm
             src-tauri/target/${{ matrix.platform.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.platform.target }}/release/bundle/macos/*.zip
             src-tauri/target/${{ matrix.platform.target }}/release/bundle/macos/*.app
 
   # ── Optional portable package (Windows) ───────────────────────────────────
@@ -257,11 +269,43 @@ jobs:
           retention-days: 14
           path: portable/libmaly-portable-windows-x64.zip
 
-      - name: Attach portable package to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+  # ── Single release publisher ──────────────────────────────────────────────
+  release:
+    name: Create Draft Release
+    needs:
+      - build
+      - portable-windows
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release && inputs.tag != '')
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          lfs: true
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: find release-assets -type f -maxdepth 4 | sort
+
+      - name: Create or update GitHub draft release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
+          name: LIBMALY ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
+          body: |
+            See the [changelog](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
           draft: true
-          files: portable/libmaly-portable-windows-x64.zip
-          fail_on_unmatched_files: true
+          prerelease: false
+          files: |
+            release-assets/**/*.exe
+            release-assets/**/*.msi
+            release-assets/**/*.AppImage
+            release-assets/**/*.deb
+            release-assets/**/*.rpm
+            release-assets/**/*.dmg
+            release-assets/**/*.zip
+          fail_on_unmatched_files: false

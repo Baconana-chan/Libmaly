@@ -22,7 +22,7 @@ Mobile app work is tracked separately in [TODO_MOBILE.md](TODO_MOBILE.md) so the
 
 ## 📊 Stats & Tracking
 
-- [ ] **Goal-based play tracking** — weekly/monthly playtime or completion goals per collection, tag, developer, source, or individual game.
+- [x] **Goal-based play tracking** — weekly/monthly playtime or completion goals per collection, tag, developer, source, or individual game.
 - [ ] **Backlog planning view** — estimate remaining backlog by status, rating, ownership source, playtime, and completion goals.
 - [ ] **Cross-profile stats comparison** — compare playtime, completion, ratings, and source breakdowns across profiles without merging their libraries.
 - [ ] **Importable external activity** — optional import of play sessions from Steam/GOG/Playnite exports as historical sessions rather than only aggregate playtime.

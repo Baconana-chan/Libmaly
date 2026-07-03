@@ -27,6 +27,7 @@ export const SK_STEAM_WEB_API_KEY = "steam-web-api-key-v1";
 export const SK_STEAM_PROFILE_REF = "steam-profile-ref-v1";
 export const SK_METADATA_RULES = "metadata-rules-v1";
 export const SK_EMULATOR_PROFILES = "emulator-profiles-v1";
+export const SK_PLAY_GOALS = "play-goals-v1";
 
 // ─── Background Job Constants ─────────────────────────────────────────────────
 export const BACKGROUND_JOB_BUSY_STATUSES = ["queued", "running", "retrying"] as const;

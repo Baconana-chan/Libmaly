@@ -831,6 +831,22 @@ export interface AppSettings {
   customGuideProviders?: GuideProvider[];
 }
 
+// ─── Goal-based play tracking types ────────────────────────────────────────────
+
+export interface PlayGoal {
+  id: string;
+  name: string;
+  period: 'weekly' | 'monthly';
+  metric: 'playtime' | 'completion';
+  target: number;
+  /** For playtime: target in seconds. For completion: target number of games. */
+  scope: {
+    type: 'game' | 'collection' | 'tag' | 'developer' | 'source' | 'all';
+    value?: string;
+  };
+  createdAt: number;
+}
+
 // ─── Layout / preset types ────────────────────────────────────────────────────
 
 export type GameDetailLayoutPreset = "metadata-first" | "screenshots-first" | "notes-first";
@@ -1092,4 +1108,5 @@ export type ProfileStorageSnapshot = {
   dirMtimes: DirMtime[];
   viewMode: "list" | "compact" | "grid";
   sidebarWidth: number;
+  playGoals: PlayGoal[];
 };

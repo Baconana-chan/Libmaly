@@ -8,17 +8,19 @@ import {
   SK_GAMES, SK_MTIMES, SK_FOLDERS, SK_STATS, SK_META, SK_HIDDEN, SK_FAVS, SK_GHOST,
   SK_CUSTOM, SK_NOTES, SK_ACHIEVEMENTS, SK_COLLECTIONS, SK_LAUNCH, SK_RECENT, SK_ORDER,
   SK_SESSION_LOG, SK_WISHLIST, SK_HISTORY, SK_SETTINGS, SK_PATH, SK_VIEW_MODE, SK_SIDEBAR_WIDTH,
+  SK_PLAY_GOALS,
   DEFAULT_SETTINGS, DEFAULT_LAUNCH_CONFIG,
 } from "./constants";
 import { normalizeAchievementsMap } from "./gameAchievements";
 import { mergeDefaultRssFeeds } from "./helpers";
 import type {
-  ProfileStorageSnapshot, AppSettings, Game, LibraryFolder,
+  ProfileStorageSnapshot, AppSettings, Game, LibraryFolder, PlayGoal,
 } from "../types";
 
 export function readProfileStorageSnapshot(): ProfileStorageSnapshot {
   const cachedSettings = loadCache(SK_SETTINGS, DEFAULT_SETTINGS) as Partial<AppSettings>;
   return {
+    playGoals: loadCache<PlayGoal[]>(SK_PLAY_GOALS, []),
     libraryFolders: (() => {
       const stored = loadCache<LibraryFolder[]>(SK_FOLDERS, []);
       if (stored.length > 0) return stored;
@@ -52,10 +54,11 @@ export function readProfileStorageSnapshot(): ProfileStorageSnapshot {
   };
 }
 
-export function buildSnapshotEntries(payload: Omit<ProfileStorageSnapshot, "viewMode" | "sidebarWidth" | "recentGames" | "customOrder"> & {
+export function buildSnapshotEntries(payload: Omit<ProfileStorageSnapshot, "viewMode" | "sidebarWidth" | "recentGames" | "customOrder" | "playGoals"> & {
   recentGames: ProfileStorageSnapshot["recentGames"];
   customOrder: ProfileStorageSnapshot["customOrder"];
   dirMtimes: ProfileStorageSnapshot["dirMtimes"];
+  playGoals?: PlayGoal[];
 }) {
   return {
     [SK_GAMES]: JSON.stringify(payload.games),
@@ -76,6 +79,7 @@ export function buildSnapshotEntries(payload: Omit<ProfileStorageSnapshot, "view
     [SK_SESSION_LOG]: JSON.stringify(payload.sessionLog),
     [SK_WISHLIST]: JSON.stringify(payload.wishlist),
     [SK_HISTORY]: JSON.stringify(payload.history),
+    [SK_PLAY_GOALS]: JSON.stringify(payload.playGoals ?? []),
     [SK_SETTINGS]: JSON.stringify(payload.appSettings),
   };
 }

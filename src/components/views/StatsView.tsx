@@ -1,8 +1,10 @@
-import { useState, useMemo } from "preact/hooks";
+import { useState, useMemo, useCallback } from "preact/hooks";
 import { useTranslation } from "react-i18next";
 import { formatTime } from "../../lib/helpers";
-import { RATING_CATEGORIES } from "../../lib/constants";
+import { RATING_CATEGORIES, SK_PLAY_GOALS } from "../../lib/constants";
+import { loadCache, saveCache } from "../../lib/appStorage";
 import { YearInReviewModal } from "../modals/YearInReviewModal";
+import type { PlayGoal } from "../../types";
 
 interface GameLike {
   name: string;
@@ -380,6 +382,197 @@ export function StatsView({
   const [timelineZoomDays, setTimelineZoomDays] = useState(56);
   const [selectedTimelineBucketStart, setSelectedTimelineBucketStart] = useState<number | null>(null);
   const [breakdownWindowWeeks, setBreakdownWindowWeeks] = useState(12);
+
+  // ── Goal-based play tracking ──────────────────────────────────────────────
+  const [goals, setGoals] = useState<PlayGoal[]>(() => loadCache<PlayGoal[]>(SK_PLAY_GOALS, []));
+  const [goalEditorOpen, setGoalEditorOpen] = useState(false);
+  const [editingGoal, setEditingGoal] = useState<PlayGoal | null>(null);
+  const [showGoalDeleteConfirm, setShowGoalDeleteConfirm] = useState<string | null>(null);
+
+  const persistGoals = useCallback((next: PlayGoal[]) => {
+    setGoals(next);
+    saveCache(SK_PLAY_GOALS, next);
+  }, []);
+
+  const startOfMonth = (ts: number): number => {
+    const d = new Date(ts);
+    d.setDate(1);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  };
+
+  const periodStart = (goal: PlayGoal): number =>
+    goal.period === 'weekly' ? startOfWeekMs(Date.now()) : startOfMonth(Date.now());
+
+  const periodEnd = (goal: PlayGoal): number => {
+    const start = periodStart(goal);
+    if (goal.period === 'weekly') {
+      return start + 7 * DAY_MS;
+    }
+    const d = new Date(start);
+    d.setMonth(d.getMonth() + 1);
+    return d.getTime();
+  };
+
+  const computePlaytimeForGame = (path: string, start: number, end: number): number => {
+    let total = 0;
+    for (const s of sessions) {
+      if (s.path === path && s.startedAt >= start && s.startedAt < end) {
+        total += s.duration;
+      }
+    }
+    return total;
+  };
+
+  const computeCompletionForGame = (path: string): boolean => {
+    return customizations[path]?.status === 'Completed';
+  };
+
+  // Resolve game paths for a given scope
+  const resolveScopePaths = (goal: PlayGoal): string[] => {
+    const { type, value } = goal.scope;
+    switch (type) {
+      case 'all':
+        return games.map(g => g.path);
+      case 'game':
+        return value ? [value] : [];
+      case 'collection': {
+        const col = collections.find(c => c.id === value);
+        return col ? col.gamePaths : [];
+      }
+      case 'tag':
+        if (!value) return [];
+        return games.filter(g => {
+          const tags = [
+            ...(metadata[g.path]?.tags || []),
+            ...(customizations[g.path]?.customTags || []),
+          ];
+          return tags.some(t => t.trim().toLowerCase() === value.toLowerCase());
+        }).map(g => g.path);
+      case 'developer':
+        if (!value) return [];
+        return games.filter(g => {
+          const m = metadata[g.path];
+          const c = customizations[g.path];
+          const dev = (c?.manualDeveloper || m?.circle || m?.developer || '').trim().toLowerCase();
+          return dev === value.toLowerCase();
+        }).map(g => g.path);
+      case 'source':
+        if (!value) return [];
+        return games.filter(g => (metadata[g.path]?.source || '').toLowerCase() === value.toLowerCase()).map(g => g.path);
+      default:
+        return [];
+    }
+  };
+
+  const computeGoalProgress = (goal: PlayGoal): { current: number; target: number; percent: number } => {
+    const pStart = periodStart(goal);
+    const pEnd = periodEnd(goal);
+
+    if (goal.metric === 'playtime') {
+      const paths = resolveScopePaths(goal);
+      let totalPlaytime = 0;
+      for (const path of paths) {
+        totalPlaytime += computePlaytimeForGame(path, pStart, pEnd);
+      }
+      const current = totalPlaytime;
+      const target = goal.target;
+      const percent = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
+      return { current, target, percent };
+    }
+
+    // Completion metric
+    if (goal.metric === 'completion') {
+      const paths = resolveScopePaths(goal);
+      let completedCount = 0;
+      for (const path of paths) {
+        if (computeCompletionForGame(path)) completedCount++;
+      }
+      const current = completedCount;
+      const target = goal.target;
+      const percent = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
+      return { current, target, percent };
+    }
+
+    return { current: 0, target: goal.target, percent: 0 };
+  };
+
+  // Get unique scope options for the create/edit form
+  const scopeOptions = useMemo(() => {
+    const gameOpts = games.map(g => ({
+      type: 'game' as const,
+      value: g.path,
+      label: customizations[g.path]?.displayName || metadata[g.path]?.title || g.name,
+    }));
+    const collectionOpts = collections.map(c => ({
+      type: 'collection' as const,
+      value: c.id,
+      label: c.name,
+    }));
+    const tagOptsMap = new Map<string, string>();
+    for (const m of Object.values(metadata)) {
+      for (const tag of (m?.tags || [])) {
+        const t = tag.trim();
+        if (t) tagOptsMap.set(t.toLowerCase(), t);
+      }
+    }
+    for (const c of Object.values(customizations)) {
+      for (const tag of (c?.customTags || [])) {
+        const t = tag.trim();
+        if (t) tagOptsMap.set(t.toLowerCase(), t);
+      }
+    }
+    const tagOpts = Array.from(tagOptsMap.values()).map(t => ({
+      type: 'tag' as const,
+      value: t,
+      label: t,
+    })).sort((a, b) => a.label.localeCompare(b.label));
+
+    const devOptsSet = new Set<string>();
+    for (const [path] of Object.entries(stats)) {
+      const m = metadata[path];
+      const c = customizations[path];
+      const dev = (c?.manualDeveloper || m?.circle || m?.developer || '').trim();
+      if (dev) devOptsSet.add(dev);
+    }
+    const devOpts = Array.from(devOptsSet).map(d => ({
+      type: 'developer' as const,
+      value: d,
+      label: d,
+    })).sort((a, b) => a.label.localeCompare(b.label));
+
+    const sourceOptsSet = new Set<string>();
+    for (const m of Object.values(metadata)) {
+      if (m?.source) sourceOptsSet.add(m.source);
+    }
+    const sourceOpts = Array.from(sourceOptsSet).map(s => ({
+      type: 'source' as const,
+      value: s,
+      label: s.charAt(0).toUpperCase() + s.slice(1),
+    })).sort((a, b) => a.label.localeCompare(b.label));
+
+    return {
+      games: gameOpts,
+      collections: collectionOpts,
+      tags: tagOpts,
+      developers: devOpts,
+      sources: sourceOpts,
+    };
+  }, [games, collections, metadata, customizations, stats]);
+
+  const goalProgresses = useMemo(() => {
+    return goals.map(g => ({ goal: g, progress: computeGoalProgress(g) }));
+  }, [goals, sessions, stats, metadata, customizations, collections, games]);
+
+  // Inline goal editor state
+  const emptyGoalForm = (): Omit<PlayGoal, 'id' | 'createdAt'> => ({
+    name: '',
+    period: 'weekly',
+    metric: 'playtime',
+    target: 3600,
+    scope: { type: 'all' },
+  });
+  const [goalForm, setGoalForm] = useState<Omit<PlayGoal, 'id' | 'createdAt'>>(emptyGoalForm());
 
   const resolveGameName = (path: string): string => {
     return customizations[path]?.displayName
@@ -1495,6 +1688,304 @@ export function StatsView({
               </div>
             ))}
           </div>
+        </div>
+
+        {/* ── Goals ──────────────────────────────────────────────────────── */}
+        <div className="rounded-xl p-5" style={{ background: "var(--color-panel)", border: "1px solid var(--color-border-soft)" }}>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <SectionHeader icon="🎯" title={t('stats_view.goals')} />
+            <button
+              onClick={() => {
+                setEditingGoal(null);
+                setGoalForm({ name: '', period: 'weekly', metric: 'playtime', target: 3600, scope: { type: 'all' } });
+                setGoalEditorOpen(true);
+              }}
+              className="px-3 py-1 rounded text-xs font-semibold transition-all hover:scale-105"
+              style={{ background: "var(--color-accent-deep)", color: "var(--color-accent)", border: "1px solid var(--color-accent)" }}
+            >
+              + {t('stats_view.goal_add')}
+            </button>
+          </div>
+
+          {goalEditorOpen && (
+            <div className="mb-4 rounded-lg p-4 space-y-3" style={{ background: "var(--color-panel-2)", border: "1px solid var(--color-border)" }}>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--color-text-muted)" }}>{t('stats_view.goal_name')}</label>
+                  <input
+                    type="text"
+                    className="raw-input"
+                    value={goalForm.name}
+                    onInput={(e) => setGoalForm(f => ({ ...f, name: (e.target as HTMLInputElement).value }))}
+                    placeholder="e.g. Weekly RPG grind"
+                    style={{ background: "var(--color-bg-deep)", border: "1px solid var(--color-border)", borderRadius: "6px", padding: "6px 10px", color: "var(--color-text)", fontSize: "13px" }}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--color-text-muted)" }}>{t('stats_view.goal_period')}</label>
+                  <select
+                    value={goalForm.period}
+                    onChange={(e) => setGoalForm(f => ({ ...f, period: (e.target as HTMLSelectElement).value as 'weekly' | 'monthly' }))}
+                  >
+                    <option value="weekly">{t('stats_view.goal_weekly')}</option>
+                    <option value="monthly">{t('stats_view.goal_monthly')}</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--color-text-muted)" }}>{t('stats_view.goal_metric')}</label>
+                  <select
+                    value={goalForm.metric}
+                    onChange={(e) => setGoalForm(f => ({ ...f, metric: (e.target as HTMLSelectElement).value as 'playtime' | 'completion' }))}
+                  >
+                    <option value="playtime">{t('stats_view.goal_playtime')}</option>
+                    <option value="completion">{t('stats_view.goal_completion')}</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--color-text-muted)" }}>{t('stats_view.goal_scope')}</label>
+                  <select
+                    value={goalForm.scope.type}
+                    onChange={(e) => {
+                      const type = (e.target as HTMLSelectElement).value as PlayGoal['scope']['type'];
+                      setGoalForm(f => ({ ...f, scope: { type, value: type === 'all' ? undefined : '' } }));
+                    }}
+                  >
+                    <option value="all">{t('stats_view.goal_scope_all')}</option>
+                    <option value="game">{t('stats_view.goal_scope_game')}</option>
+                    <option value="collection">{t('stats_view.goal_scope_collection')}</option>
+                    <option value="tag">{t('stats_view.goal_scope_tag')}</option>
+                    <option value="developer">{t('stats_view.goal_scope_developer')}</option>
+                    <option value="source">{t('stats_view.goal_scope_source')}</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Scope value selector */}
+              {goalForm.scope.type !== 'all' && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                    {goalForm.scope.type === 'game' ? t('stats_view.goal_scope_game') :
+                     goalForm.scope.type === 'collection' ? t('stats_view.goal_scope_collection') :
+                     goalForm.scope.type === 'tag' ? t('stats_view.goal_scope_tag') :
+                     goalForm.scope.type === 'developer' ? t('stats_view.goal_scope_developer') :
+                     t('stats_view.goal_scope_source')}
+                  </label>
+                  <select
+                    value={goalForm.scope.value || ''}
+                    onChange={(e) => setGoalForm(f => ({ ...f, scope: { ...f.scope, value: (e.target as HTMLSelectElement).value } }))}
+                  >
+                    <option value="" disabled>Select...</option>
+                    {goalForm.scope.type === 'game' && scopeOptions.games.map(o => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                    {goalForm.scope.type === 'collection' && scopeOptions.collections.map(o => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                    {goalForm.scope.type === 'tag' && scopeOptions.tags.map(o => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                    {goalForm.scope.type === 'developer' && scopeOptions.developers.map(o => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                    {goalForm.scope.type === 'source' && scopeOptions.sources.map(o => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                  {goalForm.metric === 'playtime' ? t('stats_view.goal_target_seconds') : t('stats_view.goal_target')} ({goalForm.metric === 'playtime' ? formatTime(goalForm.target) : `${goalForm.target}`})
+                </label>
+                <input
+                  type="range"
+                  min={goalForm.metric === 'playtime' ? 600 : 1}
+                  max={goalForm.metric === 'playtime' ? 86400 * 7 : 100}
+                  step={goalForm.metric === 'playtime' ? 600 : 1}
+                  value={goalForm.target}
+                  onInput={(e) => setGoalForm(f => ({ ...f, target: Number((e.target as HTMLInputElement).value) }))}
+                  style={{ width: '100%' }}
+                />
+                <div className="flex justify-between text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                  <span>{goalForm.metric === 'playtime' ? '10 min' : '1'}</span>
+                  <span>
+                    {goalForm.metric === 'playtime'
+                      ? `${Math.floor(goalForm.target / 3600)}h ${Math.floor((goalForm.target % 3600) / 60)}m`
+                      : `${goalForm.target} games`}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  onClick={() => { setGoalEditorOpen(false); setEditingGoal(null); }}
+                  className="px-3 py-1.5 rounded text-xs"
+                  style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  onClick={() => {
+                    if (!goalForm.name.trim()) return;
+                    if (goalForm.scope.type !== 'all' && !goalForm.scope.value) return;
+                    if (editingGoal) {
+                      persistGoals(goals.map(g => g.id === editingGoal.id ? { ...g, ...goalForm, id: g.id, createdAt: g.createdAt } : g));
+                    } else {
+                      const newGoal: PlayGoal = {
+                        ...goalForm,
+                        id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                        createdAt: Date.now(),
+                      };
+                      persistGoals([...goals, newGoal]);
+                    }
+                    setGoalEditorOpen(false);
+                    setEditingGoal(null);
+                  }}
+                  className="px-3 py-1.5 rounded text-xs font-semibold"
+                  style={{ background: "var(--color-accent-deep)", color: "var(--color-accent)", border: "1px solid var(--color-accent)" }}
+                >
+                  {editingGoal ? t('stats_view.goal_edit_title') : t('stats_view.goal_save')}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {goalProgresses.length === 0 ? (
+            <div className="flex flex-col items-center py-10 gap-2" style={{ color: "var(--color-text-muted)" }}>
+              <span className="text-2xl">🎯</span>
+              <p className="text-sm">{t('stats_view.goal_no_goals')}</p>
+              <p className="text-[11px]" style={{ color: "var(--color-text-dim)" }}>{t('stats_view.goal_no_goals_hint')}</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {goalProgresses.map(({ goal, progress }) => {
+                const isCompleted = progress.percent >= 100;
+                const scopeLabel = goal.scope.type === 'all' ? t('stats_view.goal_scope_all') :
+                  goal.scope.type === 'game' ? (() => {
+                    const g = games.find(gg => gg.path === goal.scope.value);
+                    return g ? (customizations[g.path]?.displayName || metadata[g.path]?.title || g.name) : goal.scope.value || '';
+                  })() :
+                  goal.scope.type === 'collection' ? (collections.find(c => c.id === goal.scope.value)?.name || goal.scope.value || '') :
+                  goal.scope.type === 'source' ? (goal.scope.value ? goal.scope.value.charAt(0).toUpperCase() + goal.scope.value.slice(1) : '') :
+                  goal.scope.value || '';
+
+                const metricIcon = goal.metric === 'playtime' ? '🕐' : '✓';
+                const periodLabel = goal.period === 'weekly' ? t('stats_view.goal_weekly') : t('stats_view.goal_monthly');
+
+                return (
+                  <div
+                    key={goal.id}
+                    className="rounded-lg p-3 relative group"
+                    style={{
+                      background: isCompleted ? 'var(--color-success-bg)' : 'var(--color-panel-2)',
+                      border: `1px solid ${isCompleted ? 'var(--color-success-border)' : 'var(--color-border-soft)'}`,
+                    }}
+                  >
+                    {/* Edit/Delete buttons */}
+                    <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => {
+                          setEditingGoal(goal);
+                          setGoalForm({
+                            name: goal.name,
+                            period: goal.period,
+                            metric: goal.metric,
+                            target: goal.target,
+                            scope: { ...goal.scope },
+                          });
+                          setGoalEditorOpen(true);
+                        }}
+                        className="w-6 h-6 flex items-center justify-center rounded text-[10px]"
+                        style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
+                        title={t('stats_view.goal_edit')}
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        onClick={() => setShowGoalDeleteConfirm(goal.id)}
+                        className="w-6 h-6 flex items-center justify-center rounded text-[10px]"
+                        style={{ background: "var(--color-danger-bg)", color: "var(--color-danger)" }}
+                        title={t('stats_view.goal_delete')}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+
+                    {showGoalDeleteConfirm === goal.id && (
+                      <div className="absolute top-2 right-12 flex items-center gap-1.5 z-10">
+                        <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{t('stats_view.goal_delete_confirm')}</span>
+                        <button
+                          onClick={() => {
+                            persistGoals(goals.filter(g => g.id !== goal.id));
+                            setShowGoalDeleteConfirm(null);
+                          }}
+                          className="px-2 py-0.5 rounded text-[10px] font-semibold"
+                          style={{ background: "var(--color-danger-bg)", color: "var(--color-danger)", border: "1px solid var(--color-danger)" }}
+                        >
+                          {t('common.yes')}
+                        </button>
+                        <button
+                          onClick={() => setShowGoalDeleteConfirm(null)}
+                          className="px-2 py-0.5 rounded text-[10px]"
+                          style={{ background: "var(--color-panel-3)", color: "var(--color-text-muted)" }}
+                        >
+                          {t('common.no')}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Goal info */}
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-base">{metricIcon}</span>
+                      <div className="flex flex-col gap-0">
+                        <span className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>{goal.name}</span>
+                        <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                          {periodLabel} {t('stats_view.goal_within')} {scopeLabel}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Progress bar */}
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1">
+                        <div className="h-2.5 rounded-full overflow-hidden" style={{ background: "var(--color-bg-deep)" }}>
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{
+                              width: `${Math.max(2, progress.percent)}%`,
+                              background: isCompleted
+                                ? 'linear-gradient(90deg, var(--color-success), var(--color-accent))'
+                                : progress.percent > 60
+                                  ? 'linear-gradient(90deg, var(--color-accent-dark), var(--color-accent))'
+                                  : 'var(--color-accent-muted)',
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {isCompleted && <span className="text-xs">🎉</span>}
+                        <span
+                          className="text-xs font-bold font-mono"
+                          style={{
+                            color: isCompleted ? 'var(--color-success)' :
+                              progress.percent > 60 ? 'var(--color-accent)' : 'var(--color-text-muted)',
+                          }}
+                        >
+                          {progress.percent}%
+                        </span>
+                        <span className="text-[10px]" style={{ color: "var(--color-text-dim)" }}>
+                          {goal.metric === 'playtime'
+                            ? `${formatTime(progress.current)} / ${formatTime(progress.target)}`
+                            : `${progress.current} / ${progress.target} ${t('stats_view.goal_games')}`}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* ── Empty State ─────────────────────────────────────────────────── */}

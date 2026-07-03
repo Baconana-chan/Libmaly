@@ -129,7 +129,7 @@
     "linux": {
       "rpm": {
         "depends": [
-          "libwebkit2gtk-4.1-devel",
+          "webkit2gtk4.1-devel",
           "libappindicator-gtk3-devel",
           "librsvg2-devel"
         ]

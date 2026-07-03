@@ -1,8 +1,9 @@
 # Changelog
 
-## 1.10.0 - 2026-07-03
+## 1.10.1 - 2026-07-03
 - New Stats "Goal-based play tracking"
 - Update Linux dependency from libwebkit2gtk-4.1-devel to webkit2gtk4.1-devel
+- Update cargo and bun packages
 
 ## 1.10.0 - 2026-05-10
 
